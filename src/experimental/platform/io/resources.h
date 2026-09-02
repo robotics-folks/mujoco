@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef MUJOCO_SRC_EXPERIMENTAL_PLATFORM_SYS_UTILS_H_
-#define MUJOCO_SRC_EXPERIMENTAL_PLATFORM_SYS_UTILS_H_
+#ifndef MUJOCO_SRC_EXPERIMENTAL_PLATFORM_IO_RESOURCES_H_
+#define MUJOCO_SRC_EXPERIMENTAL_PLATFORM_IO_RESOURCES_H_
 
 #include <string>
 
@@ -22,6 +22,9 @@ namespace mujoco::platform {
 // Returns the path to the directory of the current module (exe or shared lib).
 std::string GetModuleDir(void* addr);
 
+// Registers MuJoCo resource providers for font and filament assets.
+void RegisterResourceProviders();
+
 }  // namespace mujoco::platform
 
-#endif  // MUJOCO_SRC_EXPERIMENTAL_PLATFORM_SYS_UTILS_H_
+#endif  // MUJOCO_SRC_EXPERIMENTAL_PLATFORM_IO_RESOURCES_H_

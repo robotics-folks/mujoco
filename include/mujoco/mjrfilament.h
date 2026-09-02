@@ -223,6 +223,7 @@ void mjrf_setMeshData(mjrfMesh* mesh, const mjrfMeshData* data);
 
 // Parameters for creating a scene (mjrfScene).
 typedef struct mjrfSceneParams_ {
+  char unused;  // ensure min size of 1 for C/C++ compatibility
 } mjrfSceneParams;
 
 // Initializes the mjrfSceneParams to default values.
@@ -320,6 +321,8 @@ typedef struct mjrfMaterial_ {
   const mjrfTexture* orm_texture;         // occlusion/roughness/metallic texture (RGB8)
   const mjrfTexture* emissive_texture;    // emissive texture (RGB8)
   const mjrfTexture* reflection_texture;  // reflection texture, for internal use only
+  float reflection_normal[3];      // mirror normal, gates reflection to front face (internal)
+  float reflection_view_proj[16];  // main camera view-proj for reflection UV mapping (internal)
 } mjrfMaterial;
 
 // Initializes the mjrfMaterial to default values.

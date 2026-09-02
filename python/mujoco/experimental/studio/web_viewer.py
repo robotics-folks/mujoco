@@ -35,7 +35,6 @@ The WebViewer streams UI and simulation state to a browser:
     ports are loopback-internal.
 """
 
-import multiprocessing
 import os
 import queue
 import shutil
@@ -158,8 +157,6 @@ class WebViewer(viewer_protocol.Viewer):
       perturb: mujoco.MjvPerturb | None = None,
       render_flags: ux.RenderFlags | None = None,
       extra_geoms: list[mujoco.MjvGeom] | None = None,
-      host: str = '::',
-      http_port: int | None = None,
       ui_tcp_port: int = 0,
   ) -> None:
     """Initializes the WebViewer.
@@ -175,12 +172,6 @@ class WebViewer(viewer_protocol.Viewer):
       perturb: Perturbation parameters. Internal object is created if None.
       render_flags: Render flags. Internal object is created if None.
       extra_geoms: List of extra geoms. Internal list is created if None.
-      host: Public interface the server binds to. The default "::" accepts both
-        IPv6 and IPv4 connections (IPv4-only where IPv6 is unavailable).
-      http_port: The single public port: page, WASM, /model, and the /ui and
-        /state WebSocket paths. None falls back to config.http_port; 0 picks the
-        first free port starting at 8080, so several viewers can run side by
-        side.
       ui_tcp_port: Loopback TCP port the headless NetImgui client connects to. 0
         (the default) uses an OS-assigned ephemeral port — both endpoints live
         in this process tree, so no fixed number is needed.
@@ -198,13 +189,13 @@ class WebViewer(viewer_protocol.Viewer):
         extra_geoms=extra_geoms,
     )
 
-    self._host = host
+    self._host = '::'
     # Bind both listening sockets up front, in this process: bind conflicts
-    # surface here as one clear error, the public port stays stable across
-    # server restarts, and the loopback port is OS-assigned so viewer instances
-    # can never collide on it.
-    requested_port = config.http_port if http_port is None else http_port
-    self._http_sock = web_server.bind_public_socket(host, requested_port)
+    # surface here as one clear error, and the loopback port is OS-assigned so
+    # viewer instances can never collide on it.
+    self._http_sock = web_server.bind_public_socket(
+        self._host, config.http_port
+    )
     self._http_port = self._http_sock.getsockname()[1]
     self._tcp_sock = web_server.bind_loopback_socket(ui_tcp_port)
     self._ui_tcp_port = self._tcp_sock.getsockname()[1]
@@ -226,26 +217,17 @@ class WebViewer(viewer_protocol.Viewer):
     implot.set_imgui_context(ctx)
     implot.set_implot_context(self._headless_ui.get_implot_context())
 
-    # The single-port server (HTTP + /ui + /state + /drop). This is restarted
-    # whenever the model changes.
-    self._web_server: web_server.WebServer | None = None
+    # The persistent single-port server (HTTP + /ui + /state + /drop).
     self._model_crc32 = 0
 
-    # Files dropped onto the browser page arrive here from the server child as a
-    # dict of relative path -> bytes; owned by the viewer so it survives server
-    # restarts.
-    self._drop_queue = multiprocessing.get_context('fork').Queue()
-
-    # The controlling page's session id, written by the server child. Owned by
-    # the viewer so a fresh server (model change restarts it) can reserve the
-    # controller slot for the same page instead of letting whichever page
-    # reconnects first win it.
-    self._controller_sid = multiprocessing.get_context('fork').Array('c', 64)
+    # Files dropped onto the browser page arrive here from the server thread as
+    # a dict of relative path -> bytes.
+    self._drop_queue: queue.Queue[Any] = queue.Queue()
 
     # Temp dir holding the most recent drop's files; removed when the next drop
     # supersedes it (its model is already parsed) and on close.
     self._drop_dir = None
-    self._start_servers()
+    self._start_server()
     _print_url_banner(self._host, self._http_port)
 
     # Dispatch lifecycle event so handlers can cache the viewer reference.
@@ -255,10 +237,13 @@ class WebViewer(viewer_protocol.Viewer):
   # Server lifecycle.
   # ---------------------------------------------------------------------------
 
-  def _start_servers(self) -> None:
-    """Starts (or restarts) the web server, serving the current model."""
-    self._stop_servers()
+  def _start_server(self) -> None:
+    """Creates and starts the web server, serving the current model.
 
+    The server thread is started once and persists.  On model changes, call
+    _update_model() to swap the model bytes served at /model without restarting
+    the server.
+    """
     # Serialize the compiled model to MJB bytes (served as /model).
     buffer = np.empty(mujoco.mj_sizeModel(self.model), np.uint8)
     mujoco.mj_saveModel(self.model, None, buffer)
@@ -268,23 +253,24 @@ class WebViewer(viewer_protocol.Viewer):
     # changes, the browser refetches /model by reloading the page.
     self._model_crc32 = zlib.crc32(mjb_data)
 
-    state_sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
-    state_size = mujoco.mj_stateSize(self.model, state_sig)
-    max_payload = state_payload.max_state_payload_size(
-        state_size * np.float64().itemsize
-    )
-
     self._web_server = web_server.WebServer(
         http_sock=self._http_sock,
         tcp_sock=self._tcp_sock,
         mjb_data=mjb_data,
-        max_payload_size=max_payload,
         drop_queue=self._drop_queue,
-        controller_sid_shared=self._controller_sid,
     )
     self._web_server.start()
 
-  def _stop_servers(self) -> None:
+  def _update_model(self) -> None:
+    """Swaps the model bytes served at /model without restarting the server."""
+    buffer = np.empty(mujoco.mj_sizeModel(self.model), np.uint8)
+    mujoco.mj_saveModel(self.model, None, buffer)
+    mjb_data = buffer.tobytes()
+    self._model_crc32 = zlib.crc32(mjb_data)
+    if self._web_server is not None:
+      self._web_server.update_model(mjb_data)
+
+  def _stop_server(self) -> None:
     if self._web_server is not None:
       self._web_server.stop()
       self._web_server = None
@@ -295,16 +281,15 @@ class WebViewer(viewer_protocol.Viewer):
 
   @messages.handler(priority=messages.Priority.CRITICAL)
   def _on_model(self, event: messages.ModelEvent) -> bool:
-    """Loads the new model, then restarts the servers to serve it.
+    """Loads the new model, then updates the server to serve it.
 
     The plugin registry discovers handlers by name, so this override replaces
     the base Viewer's _on_model and must call it explicitly to load the model
-    before the servers serialize it. The browser reconnects to the new state
-    server, notices the changed model identity in the payload, and reloads
-    itself to fetch the new model.
+    before the server serializes it. The browser notices the changed model
+    identity in the state payload and reloads itself to fetch the new /model.
     """
     super()._on_model(event)
-    self._start_servers()
+    self._update_model()
     print('Model changed: the browser page reloads automatically.', flush=True)
     return False  # Do not consume; let other handlers see the event.
 
@@ -340,7 +325,7 @@ class WebViewer(viewer_protocol.Viewer):
     self._headless_ui.end_frame()
 
   def close(self) -> None:
-    self._stop_servers()
+    self._stop_server()
     self._http_sock.close()
     self._tcp_sock.close()
     if self._drop_dir is not None:

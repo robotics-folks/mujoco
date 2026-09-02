@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <array>
 #include <cfloat>
-#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -29,11 +28,11 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <implot.h>
 #include <mujoco/mujoco.h>
 #include "experimental/platform/hal/classic_renderer.h"
@@ -75,12 +74,8 @@ static void SelectParentPerturb(const mjModel* model, mjvPerturb& perturb) {
   // TODO: update selected element!
 }
 
-static constexpr const char* ICON_COPY_CAMERA = platform::ICON_FA_COPY;
 static constexpr const char* ICON_RELOAD_MODEL = platform::ICON_FA_REFRESH;
 static constexpr const char* ICON_RESET_MODEL = platform::ICON_FA_UNDO;
-static constexpr const char* ICON_PREV_FRAME = platform::ICON_FA_CARET_LEFT;
-static constexpr const char* ICON_NEXT_FRAME = platform::ICON_FA_CARET_RIGHT;
-static constexpr const char* ICON_CURR_FRAME = platform::ICON_FA_FAST_FORWARD;
 static constexpr const char* ICON_UNDO_SPEC = platform::ICON_FA_UNDO;
 static constexpr const char* ICON_REDO_SPEC = platform::ICON_FA_REPEAT;
 
@@ -109,7 +104,13 @@ App::App(Config config)
       [this](const mjModel* m, mjData* d) { PostStep(m, d); });
 }
 
-App::~App() { mjv_freeScene(&plugin_scene_); }
+App::~App() {
+  // ImGui's autosave is on a timer and covers only state it tracks, so recent
+  // changes and plugin visibility would be lost. window_ owns the ImGui context
+  // and outlives this body.
+  SaveSettings();
+  mjv_freeScene(&plugin_scene_);
+}
 
 void App::SwitchGraphicsMode(int width, int height,
                              platform::GraphicsMode mode) {
@@ -428,6 +429,14 @@ void App::LoadHistory(int offset) {
 }
 
 bool App::Update() {
+  // Must precede the first NewFrame: the dockspace is built lazily on the frame
+  // that finds no root node, so the saved nodes have to be there already or the
+  // default layout wins.
+  if (tmp_.first_frame) {
+    LoadSettings();
+    tmp_.first_frame = false;
+  }
+
   const platform::Window::Status status = window_->NewFrame();
 
   HandleWindowEvents();
@@ -921,7 +930,40 @@ void App::LoadSettings() {
           plugin->active = std::stoi(it->second) != 0;
         }
       });
+
+      // Applied later: the owning windows do not exist until first submitted.
+      window_state_storage_ =
+          platform::ReadIniSection(settings, "[Studio][WindowStateStorage]");
     }
+  }
+}
+
+// Key for one entry in state storage; the window name locates its owner on
+// load.
+static std::string WindowStateStorageKey(const char* window_name, ImGuiID id) {
+  char id_str[16];
+  std::snprintf(id_str, sizeof(id_str), "%08X", id);
+  return std::string(window_name) + "/" + id_str;
+}
+
+void App::ApplyWindowStateStorage() {
+  for (auto it = window_state_storage_.begin();
+       it != window_state_storage_.end();) {
+    const std::string::size_type sep = it->first.rfind('/');
+    if (sep == std::string::npos) {
+      it = window_state_storage_.erase(it);
+      continue;
+    }
+    // Child windows are "<parent>/<child>_<id>": id follows the last '/'.
+    ImGuiWindow* window =
+        ImGui::FindWindowByName(it->first.substr(0, sep).c_str());
+    if (window == nullptr) {
+      ++it;  // Window not submitted yet; try again next frame.
+      continue;
+    }
+    const ImGuiID id = std::strtoul(it->first.c_str() + sep + 1, nullptr, 16);
+    window->StateStorage.SetInt(id, std::stoi(it->second) != 0);
+    it = window_state_storage_.erase(it);
   }
 }
 
@@ -939,6 +981,21 @@ void App::SaveSettings() {
       plugin_names[plugin->name] = std::to_string((int)plugin->active);
     });
     platform::AppendIniSection(settings, "[Studio][Plugins]", plugin_names);
+
+    // Pending entries first, so state for windows never opened this session is
+    // not dropped, then let the live windows override. Merge into a local copy:
+    // window_state_storage_ must stay pending-only, or a stale value could
+    // re-apply over a newer toggle.
+    platform::KeyValues window_state_storage = window_state_storage_;
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    for (ImGuiWindow* window : g.Windows) {
+      for (const ImGuiStoragePair& pair : window->StateStorage.Data) {
+        window_state_storage[WindowStateStorageKey(window->Name, pair.key)] =
+            std::to_string(pair.val_i);
+      }
+    }
+    platform::AppendIniSection(settings, "[Studio][WindowStateStorage]",
+                               window_state_storage);
 
     platform::SaveText(settings, ini_path_);
   }
@@ -1177,11 +1234,12 @@ void App::BuildGui() {
     }
   });
 
+  // This frame's windows are submitted, so pending state storage can be
+  // restored. Must precede the save below, which would otherwise write the
+  // defaults.
+  ApplyWindowStateStorage();
+
   ImGuiIO& io = ImGui::GetIO();
-  if (tmp_.first_frame) {
-    LoadSettings();
-    tmp_.first_frame = false;
-  }
   if (io.WantSaveIniSettings) {
     SaveSettings();
     io.WantSaveIniSettings = false;
@@ -1221,7 +1279,7 @@ void App::ModelOptionsGui() {
 
   ImGui::BeginChild("PhysicsGui", {0, 0}, child_flags);
   if (platform::SectionHeader("Physics", node_flags, 0.65f)) {
-    platform::PhysicsGui(model(), min_width);
+    platform::PhysicsGui(model(), spec(), min_width);
     ImGui::TreePop();
   }
   ImGui::EndChild();
@@ -1396,10 +1454,13 @@ void App::SpecExplorerGui() {
 
   // Initialize the split height.
   const ImVec2 region = ImGui::GetContentRegionAvail();
-  if (tmp_.explorer_split < 0) {
-    tmp_.explorer_split = region.y * 0.7f;
+  if (region.y > 60.0f) {
+    if (tmp_.explorer_split < 0) {
+      tmp_.explorer_split = region.y * 0.7f;
+    }
+    tmp_.explorer_split =
+        std::clamp(tmp_.explorer_split, 20.0f, region.y - 40.0f);
   }
-  tmp_.explorer_split = std::clamp(tmp_.explorer_split, 20.f, region.y - 40.f);
 
   mjsElement* element = tmp_.curr_element;
   bool open = element != nullptr;
@@ -1540,10 +1601,12 @@ void App::SpecEditorGui() {
 
   // Initialize the split height.
   const ImVec2 region = ImGui::GetContentRegionAvail();
-  if (tmp_.editor_split < 0) {
-    tmp_.editor_split = region.y * 0.7f;
+  if (region.y > 60.0f) {
+    if (tmp_.editor_split < 0) {
+      tmp_.editor_split = region.y * 0.7f;
+    }
+    tmp_.editor_split = std::clamp(tmp_.editor_split, 20.0f, region.y - 40.0f);
   }
-  tmp_.editor_split = std::clamp(tmp_.editor_split, 20.0f, region.y - 40.0f);
 
   mjsElement* element = spec_editor_.GetActiveElement();
 
@@ -1776,8 +1839,8 @@ void App::ToolBarGui() {
     platform::StepControlGui(&step_control_, tmp_.speed_index);
 
     ImGui::SameLine(0, separator_width);
-    platform::TimelineScrubberGui(model(), data(), step_control_,
-                                  sim_history_, timeline_);
+    platform::TimelineScrubberGui(model(), data(), step_control_, sim_history_,
+                                  timeline_);
 
     ImGui::TableNextColumn();
 
@@ -1900,7 +1963,7 @@ void App::MainMenuGui() {
         SaveSettings();
       }
       if (ImGui::MenuItem("Reset Config")) {
-        platform::SaveText("\n\n", ini_path_);
+        platform::ResetConfig(ini_path_);
         LoadSettings();
       }
       ImGui::Separator();
@@ -1952,27 +2015,7 @@ void App::MainMenuGui() {
       }
       ImGui::Separator();
 
-      if (ImGui::BeginMenu("Theme")) {
-        if (ImGui::MenuItem("Light", nullptr,
-                            ui_.theme == platform::GuiTheme::kLight)) {
-          ui_.theme = platform::GuiTheme::kLight;
-          platform::SetupTheme(ui_.theme);
-          ImGui::GetIO().WantSaveIniSettings = true;
-        }
-        if (ImGui::MenuItem("Dark", nullptr,
-                            ui_.theme == platform::GuiTheme::kDark)) {
-          ui_.theme = platform::GuiTheme::kDark;
-          platform::SetupTheme(ui_.theme);
-          ImGui::GetIO().WantSaveIniSettings = true;
-        }
-        if (ImGui::MenuItem("Classic", nullptr,
-                            ui_.theme == platform::GuiTheme::kClassic)) {
-          ui_.theme = platform::GuiTheme::kClassic;
-          platform::SetupTheme(ui_.theme);
-          ImGui::GetIO().WantSaveIniSettings = true;
-        }
-        ImGui::EndMenu();
-      }
+      platform::ThemeMenuGui(&ui_.theme);
 
 #ifdef __linux__
       if (ImGui::BeginMenu("Graphics Mode (Experimental)")) {
