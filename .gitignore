@@ -49,3 +49,5 @@ compile_commands.json
 /deps
 /*.jpg
 /*.png
+
+pixi.lock
