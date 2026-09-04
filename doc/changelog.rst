@@ -13,10 +13,35 @@ General
 
 Engine
 ^^^^^^
+- Added a new integrator ``discrete``: the constraint solve and the implicit velocity update merge into one
+  operation, performed in the effective metric :math:`\widehat{M} = M + hD + h^2K`, which incorporates both
+  implicit damping :math:`hD` and implicit position stiffness :math:`h^2 K`.
+  Under this integrator ``mjData.qacc`` is the discrete step map :math:`(v^+ - v)/h`, and joint,
+  tendon and actuator stiffness and damping join the solver's metric, making joint and tendon springs and stiff
+  position servos stable at timesteps far beyond the explicit stability limit. The actuator-gain treatment
+  resolves the stiff-servo timestep limitation of :issue:`3443` (analysis contributed by
+  :github:user:`qiayuanl`). See the :ref:`integrator documentation<geIntegrators>` for semantics and current
+  limitations.
+
+  .. admonition:: Breaking API changes
+     :class: attention
+
+     Removed the implicit flex effective-metric special case under ``implicit``/``implicitfast`` with the ``CG``
+     solver, introduced in 3.11.0. This behavior now requires ``integrator="discrete"`` (with a primal solver:
+     ``CG`` or ``Newton``), which additionally treats joint damping and stiffness implicitly inside the solve. Models
+     relying on the old behavior should set :ref:`integrator<option-integrator>` to ``discrete``; models with flex
+     elasticity or passive flex contact under ``implicit``/``implicitfast`` now raise a runtime error carrying this
+     migration note.
+
 - Restored clamping of non-positive pivots in the sparse inertia factorization, along with the associated
   ``mjWARN_INERTIA`` warning. The guard was inadvertently dropped in the 3.3.0 conversion of ``qLD`` to CSR format;
   since then, models with singular mass matrices silently produced non-finite accelerations, typically surfacing as
   divergence warnings and automatic resets.
+- Added single-shot :ref:`multicontact<coMultiCCD>` for collisions with cylinder geoms.
+- The Newton solver with :ref:`elliptic cones<option-cone>` now rebuilds the cone-augmented Hessian factor with a
+  single refactorization instead of per-contact rank-1 updates when a flop-count model predicts this is faster.
+  Scenes with many simultaneously sliding contacts speed up by 1.4-2x on average and 3-4x on the slowest steps.
+  Contribution by :github:user:`kevinzakka`.
 
 Compiler
 ^^^^^^^^
@@ -30,6 +55,21 @@ Samples
 - Added :ref:`render.cc<saRender>`: a headless offscreen rendering sample that saves an image to a PNG image.
   Supports both the Filament and classic OpenGL backends, with command-line options for camera, resolution, keyframe,
   simulation steps, geom/site groups, visualization and rendering flags, labels, and frames.
+
+Bug fixes
+^^^^^^^^^
+
+- Rewrote the Plane-Mesh collider to fix bugs and improve performance. Fixes :issue:`3524`.
+
+Rendering
+^^^^^^^^^
+
+.. admonition:: Breaking API changes
+   :class: attention
+
+   - For materials with physically-based rendering parameters that do *not* provide a metallic texture the fallback is
+     now white. Previously the fallback was black, which caused scalar metallic values to be discarded when multiplied
+     in the PBR shader.
 
 Version 3.12.0 (August 20, 2026)
 --------------------------------

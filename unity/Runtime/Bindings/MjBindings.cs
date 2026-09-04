@@ -227,6 +227,7 @@ public enum mjtIntegrator : int{
   mjINT_RK4 = 1,
   mjINT_IMPLICIT = 2,
   mjINT_IMPLICITFAST = 3,
+  mjINT_DISCRETE = 4,
 }
 public enum mjtCone : int{
   mjCONE_PYRAMIDAL = 0,
@@ -5732,6 +5733,9 @@ public unsafe struct mjData_ {
   public int nJ;
   public int efm_active;
   public int nefmK;
+  public int nefmcon;
+  public int nefmT;
+  public int nefmA;
   public int nefmdof;
   public int nefmL;
   public int nY;
@@ -5895,11 +5899,24 @@ public unsafe struct mjData_ {
   public double* efc_vel;
   public double* efc_aref;
   public double* efm_c;
+  public double* efm_diag;
+  public double* efm_ck;
+  public double* efm_sdiag;
+  public double* efm_fluid;
+  public int* efm_tid;
+  public double* efm_ts;
+  public double* efm_tk;
+  public int* efm_aid;
+  public double* efm_as;
+  public double* efm_ak;
+  public double* efm_ca;
   public int* efm_K_rownnz;
   public int* efm_K_rowadr;
   public int* efm_K_colind;
   public double* efm_K_val;
   public int* efm_dofid;
+  public int* efm_con_ind;
+  public double* efm_con_val;
   public double* efm_L;
   public double* efc_b;
   public double* iefc_aref;
