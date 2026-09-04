@@ -8,7 +8,7 @@ RUN :\
     && apt-get install -y \
         build-essential pkg-config curl git wget cmake ccache unzip ninja-build python3-dev locales \
         man-db manpages manpages-dev manpages-posix manpages-posix-dev \
-        libgl1-mesa-dev libwayland-dev libxinerama-dev libxkbcommon-dev libxrandr-dev libxi-dev libxcursor-dev \
+        libgl1-mesa-dev libwayland-dev libxinerama-dev libxkbcommon-dev libxrandr-dev libxi-dev libxcursor-dev liblodepng-dev \
         gdb fzf bat ripgrep xclip xsel fd-find jq zip btop nvtop ncdu \
     && rm -rf /var/lib/apt/lists/* \
     && :
