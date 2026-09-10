@@ -1329,17 +1329,17 @@ int mj_effTendonPossible(const mjModel* m, int i) {
 }
 
 
-// can this actuator contribute to the metric (model-level type check; mirrored by island
-// discovery). Muscle and DC-motor types contribute velocity derivatives only
+// can this actuator contribute to the metric (model-level type check; mirrored by island discovery)
 int mj_effActuatorPossible(const mjModel* m, int i) {
   if (mjDISABLED(mjDSBL_ACTUATION)) {
     return 0;
   }
-  return m->actuator_biastype[i] == mjBIAS_AFFINE ||
-         m->actuator_biastype[i] == mjBIAS_SO3 ||
+  return m->actuator_biastype[i] == mjBIAS_AFFINE  ||
+         m->actuator_biastype[i] == mjBIAS_SO3     ||
          m->actuator_biastype[i] == mjBIAS_DCMOTOR ||
-         m->actuator_gaintype[i] == mjGAIN_AFFINE ||
-         m->actuator_gaintype[i] == mjGAIN_SO3 ||
-         m->actuator_gaintype[i] == mjGAIN_MUSCLE ||
+         m->actuator_biastype[i] == mjBIAS_MUSCLE  ||
+         m->actuator_gaintype[i] == mjGAIN_AFFINE  ||
+         m->actuator_gaintype[i] == mjGAIN_SO3     ||
+         m->actuator_gaintype[i] == mjGAIN_MUSCLE  ||
          m->actuator_gaintype[i] == mjGAIN_DCMOTOR;
 }

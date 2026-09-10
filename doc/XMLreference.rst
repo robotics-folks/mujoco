@@ -14,7 +14,8 @@ XML schema
 ~~~~~~~~~~
 
 The dropdown below summarizes the XML elements and their attributes in MJCF. All information in MJCF is entered through
-elements and attributes. Text content in elements is not used (except for CDATA in :ref:`custom text<custom-text>` elements); if present, the parser ignores it.
+elements and attributes. Text content in elements is not used (except for CDATA in :ref:`custom text<custom-text>`
+elements); if present, the parser ignores it.
 
 .. only:: html
 
@@ -373,9 +374,10 @@ adjust it properly through the XML.
    This attribute determines the ratio of frictional-to-normal constraint impedance for elliptic friction cones. The
    setting of solimp determines a single impedance value for all contact dimensions, which is then modulated by this
    attribute. Settings larger than 1 cause friction forces to be "harder" than normal forces, having the general effect
-   of preventing slip, without increasing the actual friction coefficient. For pyramidal friction cones the situation is
-   more complex because the pyramidal approximation mixes normal and frictional dimensions within each basis vector; it
-   is not recommended to use high impratio values with pyramidal cones.
+   of reducing :ref:`slow slippage<CSlowSlippage>` without increasing the actual friction coefficient or guaranteeing
+   exact sticking. For pyramidal friction cones the situation is more complex because the pyramidal approximation mixes
+   normal and frictional dimensions within each basis vector; it is not recommended to use high impratio values with
+   pyramidal cones.
 
 .. _option-gravity:
 
@@ -496,9 +498,10 @@ adjust it properly through the XML.
 .. _option-noslip_iterations:
 
 :at:`noslip_iterations`: :at-val:`int, "0"`
-   Maximum number of iterations of the Noslip solver. This is a post-processing step executed after the main solver. It
+   Maximum number of iterations of the NoSlip solver. This is a post-processing step executed after the main solver. It
    uses a modified PGS method to suppress slip/drift in friction dimensions resulting from the soft-constraint model.
-   The default setting 0 disables this post-processing step.
+   The default setting 0 disables this post-processing step. See the :ref:`NoSlip solver<soNoSlip>` for its mechanics
+   and tradeoffs, and :ref:`slow slippage<CSlowSlippage>` for practical guidance.
 
 .. _option-noslip_tolerance:
 
@@ -639,7 +642,9 @@ from its default.
    This flag enables a safety mechanism that prevents instabilities due to solref[0] being too small compared to the
    simulation timestep. Recall that solref[0] is the stiffness of the virtual spring-damper used for constraint
    stabilization. If this setting is enabled, the solver uses max(solref[0], 2*timestep) in place of solref[0]
-   separately for each active constraint.
+   separately for each active constraint. Under the :ref:`discrete<geIntegrators>` integrator, the flag instead
+   replaces contact and limit rows whose spring the timestep cannot resolve (solref[0]*solref[1] < timestep) by the
+   stiffest zero-restitution row for the timestep, keeping the authored damping ratio.
 
 .. _option-flag-sensor:
 
@@ -3021,7 +3026,7 @@ tendons, constructing slider-crank transmissions for actuators.
 
 .. _body-site-type:
 
-:at:`type`: :at-val:`[sphere, capsule, ellipsoid, cylinder, box], "sphere"`
+:at:`type`: :at-val:`[sphere, capsule, ellipsoid, cylinder, box, mesh], "sphere"`
    Type of geometric shape. This is used for rendering, and also determines the active sensor zone for :ref:`touch
    sensors <sensor-touch>`.
 
@@ -3035,6 +3040,11 @@ tendons, constructing slider-crank transmissions for actuators.
 
 :at:`material`: :at-val:`string, optional`
    Material used to specify the visual properties of the site.
+
+.. _body-site-mesh:
+
+:at:`mesh`: :at-val:`string, optional`
+   Mesh asset name. This attribute is required if the site type is "mesh".
 
 .. _body-site-rgba:
 
@@ -3592,9 +3602,11 @@ This sub-element adjusts the attributes of the sites in the composite object. Ot
 
 .. _composite-site-material:
 
+.. _composite-site-mesh:
+
 .. _composite-site-rgba:
 
-:at:`group`, :at:`size`, :at:`material`, :at:`rgba`
+:at:`group`, :at:`size`, :at:`material`, :at:`mesh`, :at:`rgba`
    Same meaning as regular :ref:`site <body-site>` attributes.
 
 
@@ -3801,7 +3813,7 @@ saving the XML:
      for the entire flex, independent of the number of vertices. The positions of the vertices are updated using
      quadratic interpolation over the bounding box. While this option requires more degrees of freedom than trilinear
      flexes, it enables curved deformation modes, while the only modes achievable for trilinear flexes are
-     strech/compression and shear. To understand the difference between the two parametrizations, see `a trilinear cube
+     stretch/compression and shear. To understand the difference between the two parametrizations, see `a trilinear cube
      <https://github.com/google-deepmind/mujoco/blob/main/model/flex/trilinear.xml>`__ and `a quadratic cube
      <https://github.com/google-deepmind/mujoco/blob/main/model/flex/quadratic.xml>`__.
 
@@ -10031,6 +10043,8 @@ if omitted.
 .. _default-site-quat:
 
 .. _default-site-material:
+
+.. _default-site-mesh:
 
 .. _default-site-size:
 

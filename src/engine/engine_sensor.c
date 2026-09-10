@@ -343,8 +343,7 @@ static int matchContact(const mjModel* m, const mjData* d, int conid,
 
   // site filter
   if (type1 == mjOBJ_SITE) {
-    if (!mju_insideGeom(d->site_xpos + 3 * id1, d->site_xmat + 9 * id1,
-                        m->site_size + 3 * id1, m->site_type[id1], d->contact[conid].pos)) {
+    if (!mj_insideSite(m, d, id1, d->contact[conid].pos)) {
       return 0;
     }
   }
@@ -747,11 +746,7 @@ static void mj_computeSensorPos(const mjModel* m, mjData* d, int i, mjtNum* sens
       xpos = d->subtree_com + 3*objid;
     }
 
-    sensordata[0] = mju_insideGeom(d->site_xpos + 3*refid,
-                                   d->site_xmat + 9*refid,
-                                   m->site_size + 3*refid,
-                                   m->site_type[refid],
-                                   xpos);
+    sensordata[0] = mj_insideSite(m, d, refid, xpos);
     break;
 
   case mjSENS_GEOMDIST:                               // signed distance between two geoms

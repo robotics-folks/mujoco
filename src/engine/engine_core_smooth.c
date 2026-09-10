@@ -189,12 +189,16 @@ void mj_kinematics1(const mjModel* m, mjData* d) {
 
 // forward kinematics part 2: body inertias, geoms and sites
 void mj_kinematics2(const mjModel* m, mjData* d) {
-  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
+  int sleep_enabled = mjENABLED(mjENBL_SLEEP);
+  int sleep_filter = sleep_enabled && d->nbody_awake < m->nbody;
   int nbody = sleep_filter ? d->nbody_awake : m->nbody;
 
   // compute/copy Cartesian positions and orientations of body inertial frames
   for (int b=1; b < nbody; b++) {
     int i = sleep_filter ? d->body_awake_ind[b] : b;
+
+    // skip static body
+    if (sleep_enabled && d->body_awake[i] == mjS_STATIC) continue;
 
     mj_local2Global(d, d->xipos+3*i, d->ximat+9*i,
                     m->body_ipos+3*i, m->body_iquat+4*i,
@@ -205,8 +209,8 @@ void mj_kinematics2(const mjModel* m, mjData* d) {
   for (int b=0; b < nbody; b++) {
     int i = sleep_filter ? d->body_awake_ind[b] : b;
 
-    // skip geom in sleeping or static body
-    if (sleep_filter && d->body_awake[i] != mjS_AWAKE) continue;
+    // skip geoms in static body
+    if (sleep_enabled && d->body_awake[i] == mjS_STATIC) continue;
 
     int start = m->body_geomadr[i];
     int end = start + m->body_geomnum[i];
@@ -223,7 +227,7 @@ void mj_kinematics2(const mjModel* m, mjData* d) {
     int bodyid = m->site_bodyid[i];
 
     // skip site in sleeping or static body
-    if (sleep_filter && d->body_awake[bodyid] != mjS_AWAKE) continue;
+    if (sleep_enabled && d->body_awake[bodyid] != mjS_AWAKE) continue;
 
     mj_local2Global(d, d->site_xpos+3*i, d->site_xmat+9*i,
                     m->site_pos+3*i, m->site_quat+4*i,
@@ -353,7 +357,7 @@ void mj_comPos(const mjModel* m, mjData* d) {
 // compute camera and light positions and orientations
 void mj_camlight(const mjModel* m, mjData* d) {
   int ncam = m->ncam, nlight = m->nlight;
-  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
+  int sleep_filter = mjENABLED(mjENBL_SLEEP);
 
   // compute Cartesian positions and orientations of cameras
   for (int i=0; i < ncam; i++) {

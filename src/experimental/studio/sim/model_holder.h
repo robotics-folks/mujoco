@@ -60,6 +60,11 @@ class ModelHolder {
   // Returns the warning message(s), newline-separated.
   std::string_view warning() const { return warning_; }
 
+  // Attempts to recompile the model and data in-place from the current spec.
+  // If, unsuccessful, the model and data will be reset to nullptr and an error
+  // will be set.
+  void Recompile();
+
   // Releases ownership of the underlying MuJoCo structures. Callers are now
   // responsible for calling the appropriate `mj_delete*` function on these
   // objects.

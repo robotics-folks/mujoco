@@ -831,13 +831,16 @@ class mjCSite_ : public mjCBase {
  protected:
   // variable-size data
   std::string         material_;
+  std::string         meshname_;
   std::vector<double> userdata_;
   std::string         spec_material_;
+  std::string         spec_meshname_;
   std::vector<double> spec_userdata_;
 
   // variables computed by 'compile' and 'mjCBody::addSite'
   mjCBody* body;   // site's body
   int      matid;  // material id for rendering
+  mjCMesh* mesh;   // site's mesh
 };
 
 class mjCSite : public mjCSite_, private mjsSite {
@@ -859,13 +862,22 @@ class mjCSite : public mjCSite_, private mjsSite {
   void     SetParent(mjCBody* _body) { body = _body; }
   mjCBody* GetParent() const { return body; }
 
+  // site's mesh
+  mjCMesh* Mesh() const { return mesh; }
+  void     SetMesh(mjCMesh* _mesh) { mesh = _mesh; }
+
   // use strings from mjCBase rather than mjStrings from mjsSite
   using mjCBase::info;
 
   // used by mjXWriter and mjCModel
   const std::vector<double>& get_userdata() const { return userdata_; }
-  const std::string&         get_material() const { return material_; }
-  void                       del_material() { material_.clear(); }
+  const std::string&         get_material() const;
+  void                       del_material() {
+    spec_material_.clear();
+    material_.clear();
+  }
+  const std::string& get_meshname() const { return spec_meshname_; }
+  void               del_meshname() { spec_meshname_.clear(); }
 
  private:
   void Compile(void);   // compiler

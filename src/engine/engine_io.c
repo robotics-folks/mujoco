@@ -2008,6 +2008,13 @@ const char* mj_validateReferences(const mjModel* m) {
       }
     }
   }
+  for (int i=0; i < m->nsite; i++) {
+    if (m->site_type[i] == mjGEOM_MESH) {
+      if (m->site_dataid[i] >= m->nmesh || m->site_dataid[i] < -1) {
+        return "Invalid model: site_dataid out of bounds.";
+      }
+    }
+  }
   for (int i=0; i < m->nhfield; i++) {
     mjtSize hfield_adr = m->hfield_adr[i] + ((mjtSize) m->hfield_nrow[i]) * m->hfield_ncol[i];
     if (hfield_adr > m->nhfielddata || m->hfield_adr[i] < 0) {

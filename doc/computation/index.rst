@@ -674,8 +674,20 @@ Discrete-time (``discrete``)
    :ref:`solver<soAlgorithms>` minimizes the same convex Gauss-principle objective, but in the effective metric
    :math:`\widehat{M} = M + hD + h^2K`, where :math:`D` and :math:`K` denote *positive* damping and stiffness matrices:
    the negated derivatives of the smooth forces, restricted to terms which keep :math:`\widehat{M}` positive definite.
-   Constraint forces are therefore computed against the same effective inertia which performs the velocity update, and
-   the damping ratio specified by :at:`solref` is honored even at coarse timesteps.
+   Constraint forces are therefore computed against the same effective inertia which performs the velocity update.
+
+   The constraint rows are treated implicitly in the same way: each row's :at:`solref` spring--damper is evaluated at
+   the end of the step and folded into the row's impedance and reference. Constraint rows are then stable for any
+   :at:`solref` at any timestep. A contact or limit row whose spring is stiffer than the timestep can resolve
+   (:at:`timeconst` :math:`\times` :at:`dampratio` :math:`< h`) would however rebound on impact, so under this
+   integrator the :ref:`refsafe<option-flag-refsafe>` flag replaces such rows by the resolved row: the stiffest
+   zero-restitution spring for the timestep at the authored damping ratio.
+   Rows with :at:`timeconst` :math:`\times` :at:`dampratio` :math:`\ge h` and equality rows are left as authored; with
+   :at:`refsafe` disabled, every row is honored and :at:`timeconst` :math:`\to 0` approaches the rigid-constraint limit
+   (the violation is removed in one step) rather than an instability. The row's effective impedance is capped at the
+   maximum impedance ``mjMAXIMP``, which keeps the constraint weights well-conditioned. The cost is extra damping of the
+   constraint response, growing with :math:`h/\mathtt{timeconst}`; the specified damping ratio is recovered as
+   :math:`h \to 0`.
 
    The :math:`h^2K` term makes ``discrete`` the only integrator which is implicit in *position*: joint, tendon and flex
    stiffness and actuator position feedback are stable at timesteps far beyond the explicit stability limit
@@ -726,8 +738,6 @@ Discrete-time (``discrete``)
       - Under ``PGS``, tendon and actuator metric terms are excluded and their forces integrate explicitly.
       - Under primal solvers (``CG``, ``Newton``), ``noslip`` post-processing approximates the Delassus operator
         from the backbone metric factor alone, omitting tendon and actuator couplings.
-      - Muscle force-length and DC-motor position-loop stiffness are not yet in the metric and integrate explicitly
-        (their velocity damping derivatives are included).
       - Models with flex currently fall back to a monolithic solve across islands.
 
 4th-order Runge-Kutta (``RK4``)
@@ -1070,7 +1080,7 @@ as defined later. The ``condim`` parameter determines the contact type, and has 
    rolling friction, which can be used for example to stop a ball from rolling indefinitely on a plane. Rolling friction
    in the real world results from energy dissipated by local deformations near the contact point. It can be
    used to model rolling friction between tires and a road, and in general to stabilize contacts. Rolling friction
-   coefficients also have **units of length** which can be interperted as the depth of the local deformation within
+   coefficients also have **units of length** which can be interpreted as the depth of the local deformation within
    which energy is dissipated.
 
 Note that condim cannot be 2 or 5. This is because the two tangential directions and the two rolling directions are
@@ -1507,6 +1517,8 @@ representations of the constraint Jacobian and related matrices.
    and involves small matrices. Overall this algorithm has similar behavior to PGS for pyramidal cones, but it can
    handle elliptic cones without approximating them. It does more work per contact, however the contact dimensionality
    is smaller, and these two factors roughly balance each other.
+
+.. _soNoSlip:
 
 **NoSlip** : post-processing pass
    This is not a standalone solver but a post-processing step, enabled by setting ``noslip_iterations`` to a positive

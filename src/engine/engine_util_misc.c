@@ -25,7 +25,7 @@
 #include <mujoco/mjmacro.h>
 #include <mujoco/mjtype.h>
 #include "engine/engine_array_safety.h"
-#include "engine/engine_macro.h"
+#include "engine/engine_crossplatform.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
 #include "engine/engine_util_spatial.h"
@@ -449,8 +449,8 @@ void mju_geomSemiAxes(mjtNum semiaxes[3], const mjtNum size[3], mjtGeom type) {
 
 
 // return 1 if point is inside a primitive geom, 0 otherwise
-int mju_insideGeom(const mjtNum pos[3], const mjtNum mat[9], const mjtNum size[3], mjtGeom type,
-                   const mjtNum point[3]) {
+int mju_insidePrimitive(const mjtNum pos[3], const mjtNum mat[9], const mjtNum size[3], mjtGeom type,
+                        const mjtNum point[3]) {
   // vector from geom to point
   mjtNum vec[3];
   mju_sub3(vec, point, pos);
@@ -1617,9 +1617,14 @@ mjtNum mju_springDamper(mjtNum pos0, mjtNum vel0, mjtNum k, mjtNum b, mjtNum t) 
     // compute w = sqrt(det)/2
     w = mju_sqrt(det)/2;
 
-    // compute r1,r2
-    r1 = -b/2 + w;
-    r2 = -b/2 - w;
+    // avoid cancellation: compute the root of larger magnitude, then use r1*r2 = k
+    if (b >= 0) {
+      r2 = -b/2 - w;
+      r1 = k/r2;
+    } else {
+      r1 = -b/2 + w;
+      r2 = k/r1;
+    }
 
     // compute coefficients
     c1 = (pos0*r2-vel0) / (r2-r1);

@@ -5,61 +5,85 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Engine
+^^^^^^
+- The :ref:`mjWARN_INERTIA <mjtWarning>` warning is now also raised by the modified-inertia factorizations of the
+  :at:`implicitfast` and damped-:at:`Euler` integrators (previously silent) and of the :at:`implicit` integrator
+  (previously a fatal error).
+
+Version 3.13.0 (September 8, 2026)
+----------------------------------
+
 General
 ^^^^^^^
-- The :ref:`.mjz <MJZArchives>` encoder now writes the root file as ``model.xml`` in the archive as this is less
-  susceptible to breakage due to file renaming.
-- Added support for Python 3.15 (GIL and Free-Threading).
+1. :commit:`eb18d77ca` The :ref:`.mjz <MJZArchives>` encoder now writes the root file as ``model.xml`` in the archive as
+   this is less susceptible to breakage due to file renaming.
+2. :commit:`4affbb64a` Site geometries can now also be associated with meshes (:ref:`type="mesh"<body-site-type>` with
+   :ref:`mesh="name"<body-site-mesh>`), supporting visualization, the :ref:`insidesite<sensor-insidesite>`
+   sensor, and the new :ref:`mj_insideSite` function.
+3. :commit:`b59b07fae` Added support for Python 3.15 (GIL and Free-Threading).
 
 Engine
 ^^^^^^
-- Added a new integrator ``discrete``: the constraint solve and the implicit velocity update merge into one
-  operation, performed in the effective metric :math:`\widehat{M} = M + hD + h^2K`, which incorporates both
-  implicit damping :math:`hD` and implicit position stiffness :math:`h^2 K`.
-  Under this integrator ``mjData.qacc`` is the discrete step map :math:`(v^+ - v)/h`, and joint,
-  tendon and actuator stiffness and damping join the solver's metric, making joint and tendon springs and stiff
-  position servos stable at timesteps far beyond the explicit stability limit. The actuator-gain treatment
-  resolves the stiff-servo timestep limitation of :issue:`3443` (analysis contributed by
-  :github:user:`qiayuanl`). See the :ref:`integrator documentation<geIntegrators>` for semantics and current
-  limitations.
+4. :commit:`5660353ec` Added a new integrator ``discrete``: the constraint solve and the implicit velocity update merge
+   into one operation, performed in the effective metric :math:`\widehat{M} = M + hD + h^2K`, which incorporates both
+   implicit damping :math:`hD` and implicit position stiffness :math:`h^2 K`. Under this integrator ``mjData.qacc`` is
+   the discrete step map :math:`(v^+ - v)/h`, and joint, tendon and actuator stiffness and damping join the solver's
+   metric, making passive springs and actuator position gains stable at timesteps far beyond the explicit stability
+   limit. Constraint rows are treated implicitly as well: :at:`solref` spring--dampers are evaluated at the end of the
+   step, so constraints are stable at any ``timeconst``; under this integrator the :ref:`refsafe<option-flag-refsafe>`
+   flag replaces contact and limit rows stiffer than the timestep can resolve by the stiffest zero-restitution row
+   instead of clamping ``timeconst``. The actuator-gain treatment resolves the stiff-servo timestep limitation of
+   :issue:`3443` (analysis contributed by :github:user:`qiayuanl`). See the
+   :ref:`integrator documentation<geIntegrators>` for semantics and current limitations.
 
-  .. admonition:: Breaking API changes
-     :class: attention
+   .. admonition:: Breaking API changes
+      :class: attention
 
-     Removed the implicit flex effective-metric special case under ``implicit``/``implicitfast`` with the ``CG``
-     solver, introduced in 3.11.0. This behavior now requires ``integrator="discrete"`` (with a primal solver:
-     ``CG`` or ``Newton``), which additionally treats joint damping and stiffness implicitly inside the solve. Models
-     relying on the old behavior should set :ref:`integrator<option-integrator>` to ``discrete``; models with flex
-     elasticity or passive flex contact under ``implicit``/``implicitfast`` now raise a runtime error carrying this
-     migration note.
+      Removed the implicit flex effective-metric special case under ``implicit``/``implicitfast`` with the ``CG``
+      solver, introduced in 3.11.0. This behavior now requires ``integrator="discrete"`` (with a primal solver:
+      ``CG`` or ``Newton``), which additionally treats joint damping and stiffness implicitly inside the solve. Models
+      relying on the old behavior should set :ref:`integrator<option-integrator>` to ``discrete``; models with flex
+      elasticity or passive flex contact under ``implicit``/``implicitfast`` now raise a runtime error carrying this
+      migration note.
 
-- Restored clamping of non-positive pivots in the sparse inertia factorization, along with the associated
-  ``mjWARN_INERTIA`` warning. The guard was inadvertently dropped in the 3.3.0 conversion of ``qLD`` to CSR format;
-  since then, models with singular mass matrices silently produced non-finite accelerations, typically surfacing as
-  divergence warnings and automatic resets.
-- Added single-shot :ref:`multicontact<coMultiCCD>` for collisions with cylinder geoms.
-- The Newton solver with :ref:`elliptic cones<option-cone>` now rebuilds the cone-augmented Hessian factor with a
-  single refactorization instead of per-contact rank-1 updates when a flop-count model predicts this is faster.
-  Scenes with many simultaneously sliding contacts speed up by 1.4-2x on average and 3-4x on the slowest steps.
-  Contribution by :github:user:`kevinzakka`.
+5. :commit:`0b4e17747` Restored clamping of non-positive pivots in the sparse inertia factorization, along with the
+   associated ``mjWARN_INERTIA`` warning. The guard was inadvertently dropped in the 3.3.0 conversion of ``qLD`` to CSR
+   format; since then, models with singular mass matrices silently produced non-finite accelerations, typically
+   surfacing as divergence warnings and automatic resets.
+6. :commit:`c9d997610` Added single-shot :ref:`multicontact<coMultiCCD>` for collisions with cylinder geoms.
+7. :commit:`10eeb8289` The Newton solver with :ref:`elliptic cones<option-cone>` now rebuilds the cone-augmented Hessian
+   factor with a single refactorization instead of per-contact rank-1 updates when a flop-count model predicts this is
+   faster. Scenes with many simultaneously sliding contacts speed up by 1.4-2x on average and 3-4x on the slowest steps.
+   Contribution by :github:user:`kevinzakka`.
 
 Compiler
 ^^^^^^^^
-- Custom text fields (:ref:`custom/text<custom-text>`) in MJCF now accept their values inside a ``<![CDATA[ ... ]]>``
-  block in addition to the ``data`` attribute. When saving a model via :ref:`mj_saveXML`, custom text containing
-  newlines or XML characters is exported as CDATA.
-- Added :ref:`cutoff<sensor-tactile-cutoff>` attribute to :ref:`sensor/tactile<sensor-tactile>`.
+8. :commit:`2a3957558` Custom text fields (:ref:`custom/text<custom-text>`) in MJCF now accept their values inside a
+   ``<![CDATA[ ... ]]>`` block in addition to the ``data`` attribute. When saving a model via :ref:`mj_saveXML`, custom
+   text containing newlines or XML characters is exported as CDATA.
+9. :commit:`47ebfe48a` Added :ref:`cutoff<sensor-tactile-cutoff>` attribute to :ref:`sensor/tactile<sensor-tactile>`.
 
 Samples
 ^^^^^^^
-- Added :ref:`render.cc<saRender>`: a headless offscreen rendering sample that saves an image to a PNG image.
-  Supports both the Filament and classic OpenGL backends, with command-line options for camera, resolution, keyframe,
-  simulation steps, geom/site groups, visualization and rendering flags, labels, and frames.
+10. :commit:`834983fbb` Added :ref:`render.cc<saRender>`: a headless offscreen rendering sample that saves an image to a
+    PNG image. Supports both the Filament and classic OpenGL backends, with command-line options for camera, resolution,
+    keyframe, simulation steps, geom/site groups, visualization and rendering flags, labels, and frames.
 
 Bug fixes
 ^^^^^^^^^
+11. :commit:`67562d95f` Rewrote the Plane-Mesh collider to fix bugs and improve performance. Fixes :issue:`3524`.
 
-- Rewrote the Plane-Mesh collider to fix bugs and improve performance. Fixes :issue:`3524`.
+.. youtube:: MNQsV_etq24
+   :aspect: 16:7
+   :align: right
+   :width: 35%
+
+Models
+^^^^^^
+12. :commit:`f6c1004b7` Added `house of cards <https://github.com/google-deepmind/mujoco/tree/main/model/cards/>`__
+    example model and three `free-standing arch <https://github.com/google-deepmind/mujoco/tree/main/model/arch/>`__
+    models: roman, gothic, and hyperbolic. Inspired by `Song et al <https://www.cs.ubc.ca/research/fbf-friction/>`__.
 
 Rendering
 ^^^^^^^^^
@@ -67,9 +91,9 @@ Rendering
 .. admonition:: Breaking API changes
    :class: attention
 
-   - For materials with physically-based rendering parameters that do *not* provide a metallic texture the fallback is
-     now white. Previously the fallback was black, which caused scalar metallic values to be discarded when multiplied
-     in the PBR shader.
+   13. :commit:`cb57b526f` For materials with physically-based rendering parameters that do *not* provide a metallic
+       texture the fallback is now white. Previously the fallback was black, which caused scalar metallic values to be
+       discarded when multiplied in the PBR shader.
 
 Version 3.12.0 (August 20, 2026)
 --------------------------------

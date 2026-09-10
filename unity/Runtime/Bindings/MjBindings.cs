@@ -36,8 +36,6 @@ public const bool MJAPI = true;
 public const bool MJLOCAL = true;
 public const bool THIRD_PARTY_MUJOCO_MJMACRO_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_MJMODEL_H_ = true;
-public const double mjPI = 3.141592653589793;
-public const double mjMAXVAL = 10000000000.0;
 public const double mjMINMU = 1e-05;
 public const double mjMINIMP = 0.0001;
 public const double mjMAXIMP = 0.9999;
@@ -71,6 +69,8 @@ public const bool THIRD_PARTY_MUJOCO_INCLUDE_MJSPEC_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_MJSPECMACRO_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_INCLUDE_MJTYPE_H_ = true;
 public const double mjMINVAL = 1e-15;
+public const double mjMAXVAL = 10000000000.0;
+public const double mjPI = 3.141592653589793;
 public const bool THIRD_PARTY_MUJOCO_MJUI_H_ = true;
 public const int mjMAXUISECT = 10;
 public const int mjMAXUIITEM = 200;
@@ -118,7 +118,7 @@ public const int mjMAXLINEPNT = 1001;
 public const int mjMAXPLANEGRID = 200;
 public const bool THIRD_PARTY_MUJOCO_MJXMACRO_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_MUJOCO_H_ = true;
-public const int mjVERSION_HEADER = 3012001;
+public const int mjVERSION_HEADER = 3013001;
 
 
 // ------------------------------------Enums------------------------------------
@@ -1249,6 +1249,7 @@ public unsafe struct mjModel_ {
   public float* geom_rgba;
   public int* site_type;
   public int* site_bodyid;
+  public int* site_dataid;
   public int* site_matid;
   public int* site_group;
   public byte* site_sameframe;
@@ -7149,6 +7150,9 @@ public static unsafe extern void mj_objectAcceleration(mjModel_* m, mjData_* d, 
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern double mj_geomDistance(mjModel_* m, mjData_* d, int geom1, int geom2, double distmax, double* fromto);
+
+[DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
+public static unsafe extern int mj_insideSite(mjModel_* m, mjData_* d, int siteid, double* point);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern void mj_contactForce(mjModel_* m, mjData_* d, int id, double* result);

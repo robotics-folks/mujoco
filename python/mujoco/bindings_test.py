@@ -2033,6 +2033,123 @@ Euler integrator, semi-implicit in velocity.
             )
         )
 
+  def test_mj_inside_site_sphere(self):
+    xml = r"""
+    <mujoco>
+      <worldbody>
+        <site name="sphere_site" type="sphere" size="0.5" pos="1 0 0"/>
+      </worldbody>
+    </mujoco>
+    """
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'sphere_site')
+
+    # Point at the center of the site: should be inside
+    self.assertEqual(mujoco.mj_insideSite(model, data, site_id, [1, 0, 0]), 1)
+
+    # Point just inside the site boundary
+    self.assertEqual(
+        mujoco.mj_insideSite(model, data, site_id, [1.4, 0, 0]), 1
+    )
+
+    # Point outside the site
+    self.assertEqual(mujoco.mj_insideSite(model, data, site_id, [2, 0, 0]), 0)
+
+    # Point far away
+    self.assertEqual(
+        mujoco.mj_insideSite(model, data, site_id, [10, 10, 10]), 0
+    )
+
+  def test_mj_inside_site_box(self):
+    xml = r"""
+    <mujoco>
+      <worldbody>
+        <site name="box_site" type="box" size="0.5 0.5 0.5" pos="0 0 0"/>
+      </worldbody>
+    </mujoco>
+    """
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'box_site')
+
+    # Point at origin: inside
+    self.assertEqual(mujoco.mj_insideSite(model, data, site_id, [0, 0, 0]), 1)
+
+    # Point at corner (just inside): inside
+    self.assertEqual(
+        mujoco.mj_insideSite(model, data, site_id, [0.4, 0.4, 0.4]), 1
+    )
+
+    # Point outside along x
+    self.assertEqual(
+        mujoco.mj_insideSite(model, data, site_id, [1.0, 0, 0]), 0
+    )
+
+  def test_mj_inside_site_mesh(self):
+    xml = r"""
+    <mujoco>
+      <asset>
+        <mesh name="box_mesh"
+              vertex="-0.1 -0.1 -0.1
+                       0.1 -0.1 -0.1
+                       0.1  0.1 -0.1
+                      -0.1  0.1 -0.1
+                      -0.1 -0.1  0.1
+                       0.1 -0.1  0.1
+                       0.1  0.1  0.1
+                      -0.1  0.1  0.1"/>
+      </asset>
+      <worldbody>
+        <site name="mesh_site" type="mesh" mesh="box_mesh" pos="1 0 0"/>
+      </worldbody>
+    </mujoco>
+    """
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'mesh_site')
+
+    # Point at the center of the mesh site: inside
+    self.assertEqual(mujoco.mj_insideSite(model, data, site_id, [1, 0, 0]), 1)
+
+    # Point outside mesh site (to the left)
+    self.assertEqual(mujoco.mj_insideSite(model, data, site_id, [0, 0, 0]), 0)
+
+    # Point outside mesh site (to the right)
+    self.assertEqual(mujoco.mj_insideSite(model, data, site_id, [2, 0, 0]), 0)
+
+  def test_mj_inside_site_kwargs(self):
+    xml = r"""
+    <mujoco>
+      <worldbody>
+        <site name="sphere_site" type="sphere" size="1.0" pos="0 0 0"/>
+      </worldbody>
+    </mujoco>
+    """
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    # Test that keyword arguments work
+    result = mujoco.mj_insideSite(
+        m=model,
+        d=data,
+        siteid=0,
+        point=[0, 0, 0],
+    )
+    self.assertEqual(result, 1)
+
+    # Test with numpy array
+    point = np.array([0.5, 0.5, 0.5], dtype=DTYPE)
+    result = mujoco.mj_insideSite(model, data, 0, point)
+    self.assertEqual(result, 1)
+
 
 if __name__ == '__main__':
   absltest.main()
