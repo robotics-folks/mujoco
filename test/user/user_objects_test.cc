@@ -1153,6 +1153,106 @@ TEST_F(MjCGeomTest, BadMeshZeroMassDensityDoesntError) {
   EXPECT_EQ(model->body_mass[2], 0);
 }
 
+using MjCSiteTest = MujocoTest;
+
+TEST_F(MjCSiteTest, MeshSiteValid) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="box_mesh" vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  0.1 0.1 -0.1  -0.1 0.1 -0.1  -0.1 -0.1 0.1  0.1 -0.1 0.1  0.1 0.1 0.1  -0.1 0.1 0.1"/>
+    </asset>
+    <worldbody>
+      <body>
+        <site name="mesh_site" type="mesh" mesh="box_mesh" pos="1 2 3"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_EQ(model->site_type[0], mjGEOM_MESH);
+  EXPECT_EQ(model->site_dataid[0], 0);
+}
+
+TEST_F(MjCSiteTest, MeshSiteMissingMesh) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <site name="mesh_site" type="mesh" mesh="nonexistent_mesh"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("not found in site"));
+}
+
+TEST_F(MjCSiteTest, MeshSiteFromtoDisallowed) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="box_mesh" vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  0.1 0.1 -0.1  -0.1 0.1 -0.1  -0.1 -0.1 0.1  0.1 -0.1 0.1  0.1 0.1 0.1  -0.1 0.1 0.1"/>
+    </asset>
+    <worldbody>
+      <body>
+        <site name="mesh_site" type="mesh" mesh="box_mesh" fromto="0 0 0 1 1 1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(),
+              HasSubstr("fromto requires capsule, cylinder, box or ellipsoid"));
+}
+
+TEST_F(MjCSiteTest, NonMeshSiteWithMeshDisallowed) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="box_mesh"
+            vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  0.1 0.1 -0.1  -0.1 0.1 -0.1  -0.1 -0.1 0.1  0.1 -0.1 0.1  0.1 0.1 0.1  -0.1 0.1 0.1"/>
+    </asset>
+    <worldbody>
+      <body>
+        <site name="sphere_site" type="sphere" mesh="box_mesh" size="0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(),
+              HasSubstr("mesh can only be specified for mesh sites"));
+}
+
+TEST_F(MjCSiteTest, MeshSiteMaterialInheritance) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <material name="mat" rgba="1 0 0 1"/>
+      <mesh name="box_mesh" material="mat"
+            vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  0.1 0.1 -0.1  -0.1 0.1 -0.1  -0.1 -0.1 0.1  0.1 -0.1 0.1  0.1 0.1 0.1  -0.1 0.1 0.1"/>
+    </asset>
+    <worldbody>
+      <body>
+        <site name="mesh_site" type="mesh" mesh="box_mesh"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_EQ(model->site_matid[0], 0);
+}
+
 // ------------- test joints --------------------------------------------------
 
 using MjCJointTest = MujocoTest;

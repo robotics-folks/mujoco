@@ -29,6 +29,7 @@
 #include "engine/engine_core_util.h"
 #include "engine/engine_derivative.h"
 #include "engine/engine_inverse.h"
+#include "engine/engine_io.h"
 #include "engine/engine_island.h"
 #include "engine/engine_macro.h"
 #include "engine/engine_memory.h"
@@ -297,7 +298,7 @@ static void expmap2Quat(mjtNum quat[4], const mjtNum v[3]) {
     quat[1] = quat[2] = quat[3] = 0;
   } else {
     mjtNum axis[3] = {v[0]/angle, v[1]/angle, v[2]/angle};
-    mju_axisAngle2Quat(quat, axis, angle);
+    mji_axisAngle2Quat(quat, axis, angle);
   }
 }
 
@@ -670,7 +671,7 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       // so no wrapping is required; act is re-anchored at integration time in mj_advance
       mjtNum q_cur[4], e[3];
       expmap2Quat(q_cur, d->actuator_length + oadr);
-      mju_subQuat(e, q_tgt, q_cur);
+      mji_subQuat(e, q_tgt, q_cur);
 
       // output force: kp * error + constant - kv * velocity
       mjtNum kp = m->actuator_gainprm[mjNGAIN*i];
@@ -1525,8 +1526,12 @@ void mj_EulerSkip(const mjModel* m, mjData* d, int skipfactor) {
         d->qH[m->M_rowadr[i] + m->M_rownnz[i] - 1] += m->opt.timestep * damp_deriv;
       }
 
-      // factorize in-place
-      mj_factorI(d->qH, d->qHDiagInv, nv, m->M_rownnz, m->M_rowadr, m->M_colind, dof_awake_ind);
+      // factorize in-place; warn if a near-singular pivot was clamped
+      int clamped = mj_factorI(d->qH, d->qHDiagInv, nv,
+                               m->M_rownnz, m->M_rowadr, m->M_colind, dof_awake_ind);
+      if (clamped >= 0) {
+        mj_warning(d, mjWARN_INERTIA, clamped);
+      }
     }
 
     // solve
@@ -1783,11 +1788,19 @@ void mj_implicitSkip(const mjModel* m, mjData* d, int skipfactor) {
     }
 
     // standard factorization (implicit / implicitfast)
+    int clamped;
     if (m->opt.integrator == mjINT_IMPLICIT) {
       int* scratch = mjSTACKALLOC(d, nv, int);
-      mju_factorLUSparse(d->qLU, nv, scratch, m->D_rownnz, m->D_rowadr, m->D_colind, dof_awake_ind);
+      clamped = mju_factorLUSparse(d->qLU, nv, scratch,
+                                   m->D_rownnz, m->D_rowadr, m->D_colind, dof_awake_ind);
     } else {
-      mj_factorI(d->qH, d->qHDiagInv, nv, m->M_rownnz, m->M_rowadr, m->M_colind, dof_awake_ind);
+      clamped = mj_factorI(d->qH, d->qHDiagInv, nv,
+                           m->M_rownnz, m->M_rowadr, m->M_colind, dof_awake_ind);
+    }
+
+    // warn if a near-singular pivot was clamped
+    if (clamped >= 0) {
+      mj_warning(d, mjWARN_INERTIA, clamped);
     }
   }
 

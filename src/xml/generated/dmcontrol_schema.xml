@@ -356,6 +356,7 @@
                 <attribute name="zaxis" type="array" array_type="float" array_size="3"/>
                 <attribute name="euler" type="array" array_type="float" array_size="3"/>
                 <attribute name="material" type="reference" reference_namespace="material"/>
+                <attribute name="mesh" type="reference" reference_namespace="mesh"/>
                 <attribute name="size" type="array" array_type="float" array_size="3" default="0.005 0.005 0.005"/>
                 <attribute name="fromto" type="array" array_type="float" array_size="6"/>
                 <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
@@ -752,6 +753,7 @@
             <attribute name="zaxis" type="array" array_type="float" array_size="3"/>
             <attribute name="euler" type="array" array_type="float" array_size="3"/>
             <attribute name="material" type="reference" reference_namespace="material"/>
+            <attribute name="mesh" type="reference" reference_namespace="mesh"/>
             <attribute name="size" type="array" array_type="float" array_size="3" default="0.005 0.005 0.005"/>
             <attribute name="fromto" type="array" array_type="float" array_size="6"/>
             <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
@@ -1332,6 +1334,7 @@
                 <attribute name="zaxis" type="array" array_type="float" array_size="3"/>
                 <attribute name="euler" type="array" array_type="float" array_size="3"/>
                 <attribute name="material" type="reference" reference_namespace="material"/>
+                <attribute name="mesh" type="reference" reference_namespace="mesh"/>
                 <attribute name="size" type="array" array_type="float" array_size="3" default="0.005 0.005 0.005"/>
                 <attribute name="fromto" type="array" array_type="float" array_size="6"/>
                 <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
@@ -1475,6 +1478,7 @@
                     <attribute name="size" type="array" array_type="float" array_size="3"/>
                     <attribute name="material" type="reference" reference_namespace="material"/>
                     <attribute name="rgba" type="array" array_type="float" array_size="4"/>
+                    <attribute name="mesh" type="reference" reference_namespace="mesh"/>
                   </attributes>
                 </element>
                 <element name="plugin" repeated="true">
@@ -1654,6 +1658,7 @@
             <attribute name="zaxis" type="array" array_type="float" array_size="3"/>
             <attribute name="euler" type="array" array_type="float" array_size="3"/>
             <attribute name="material" type="reference" reference_namespace="material"/>
+            <attribute name="mesh" type="reference" reference_namespace="mesh"/>
             <attribute name="size" type="array" array_type="float" array_size="3" default="0.005 0.005 0.005"/>
             <attribute name="fromto" type="array" array_type="float" array_size="6"/>
             <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
@@ -1783,6 +1788,7 @@
                 <attribute name="size" type="array" array_type="float" array_size="3"/>
                 <attribute name="material" type="reference" reference_namespace="material"/>
                 <attribute name="rgba" type="array" array_type="float" array_size="4"/>
+                <attribute name="mesh" type="reference" reference_namespace="mesh"/>
               </attributes>
             </element>
             <element name="plugin" repeated="true">

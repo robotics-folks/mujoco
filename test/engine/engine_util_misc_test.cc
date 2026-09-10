@@ -118,6 +118,37 @@ TEST_F(UtilMiscTest, SpringDamperInvariantToTimeUnits) {
   }
 }
 
+TEST_F(UtilMiscTest, SpringDamperStrongOverdamping) {
+  constexpr mjtNum damping = 1e9;
+  const mjtNum tol = MjTol(1e-14, 1e-6);
+
+  // At t = damping with k = 1, the fast mode has decayed and the slow mode
+  // contributes exp(-1) to within O(1/damping^2) for either initial condition.
+  EXPECT_NEAR(mju_springDamper(1, 0, 1, damping, damping), mju_exp(-1), tol);
+  EXPECT_NEAR(mju_springDamper(0, damping, 1, damping, damping), mju_exp(-1),
+              tol);
+}
+
+TEST_F(UtilMiscTest, SpringDamperZeroStiffness) {
+  constexpr mjtNum pos0 = 1;
+  constexpr mjtNum vel0 = 0.5;
+  constexpr mjtNum dt = 0.5;
+
+  for (mjtNum damping : {-3, 3}) {
+    mjtNum expected = pos0 + vel0 * (1 - mju_exp(-damping * dt)) / damping;
+    EXPECT_NEAR(mju_springDamper(pos0, vel0, 0, damping, dt), expected,
+                MjTol(1e-14, 1e-6));
+  }
+}
+
+TEST_F(UtilMiscTest, SpringDamperNonpositiveDamping) {
+  // Roots 1 and 2: x(0) = x'(0) = 1 selects exp(t).
+  EXPECT_NEAR(mju_springDamper(1, 1, 2, -3, 1), mju_exp(1), MjTol(1e-14, 1e-6));
+
+  // Roots -1 and 1: the same initial conditions select exp(t).
+  EXPECT_NEAR(mju_springDamper(1, 1, -1, 0, 1), mju_exp(1), MjTol(1e-14, 1e-6));
+}
+
 TEST_F(UtilMiscTest, SphereWrap) {
   static constexpr char xml[] = R"(
   <mujoco>

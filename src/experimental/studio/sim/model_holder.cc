@@ -144,6 +144,18 @@ void ModelHolder::InitFromBuffer(std::span<const std::byte> buffer,
   }
 }
 
+void ModelHolder::Recompile() {
+  if (!spec_) {
+    return;
+  }
+
+  if (mj_recompile(spec(), vfs(), model(), data()) != 0) {
+    model_ = nullptr;
+    data_ = nullptr;
+    SetLoadError(mjs_getError(spec()));
+  }
+}
+
 void ModelHolder::SetLoadError(std::string_view error) {
   strncpy(error_, error.data(), sizeof(error_) - 1);
   error_[sizeof(error_) - 1] = 0;

@@ -117,8 +117,7 @@ class Renderable : public mjrfRenderable {
   // Binds the material instance for the given render request.
   void BindMaterialInstance(const mjrfRenderRequest& request);
 
-  MaterialManager::MaterialKey SetMaterialInstance(
-      MaterialManager::MaterialKey key);
+  void SetMaterialInstance(MaterialManager::MaterialKey key);
 
   static Renderable* downcast(mjrfRenderable* renderable) {
     return static_cast<Renderable*>(renderable);

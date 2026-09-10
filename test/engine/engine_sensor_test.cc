@@ -1196,6 +1196,49 @@ TEST_F(SensorTest, InsideSite) {
   }
 }
 
+TEST_F(SensorTest, InsideSiteMesh) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="box_mesh" vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  0.1 0.1 -0.1  -0.1 0.1 -0.1  -0.1 -0.1 0.1  0.1 -0.1 0.1  0.1 0.1 0.1  -0.1 0.1 0.1"/>
+    </asset>
+
+    <worldbody>
+      <body pos="0 0 0">
+        <joint type="slide" axis="1 0 0"/>
+        <geom name="query" type="sphere" size=".001"/>
+      </body>
+
+      <site name="mesh_site" type="mesh" mesh="box_mesh" pos="1.0 0 0"/>
+    </worldbody>
+
+    <sensor>
+      <insidesite name="inside" site="mesh_site" objtype="geom" objname="query"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  ASSERT_EQ(model->nsensordata, 1);
+  MjDataPtr data = MakeData(model);
+
+  // Position query inside mesh site
+  data->qpos[0] = 1.0;
+  mj_forward(model.get(), data.get());
+  EXPECT_EQ(data->sensordata[0], 1.0);
+
+  // Position query outside mesh site (to the left)
+  data->qpos[0] = 0.0;
+  mj_forward(model.get(), data.get());
+  EXPECT_EQ(data->sensordata[0], 0.0);
+
+  // Position query outside mesh site (to the right)
+  data->qpos[0] = 2.0;
+  mj_forward(model.get(), data.get());
+  EXPECT_EQ(data->sensordata[0], 0.0);
+}
+
 TEST_F(SensorTest, RangefinderCamera) {
   constexpr char xml[] = R"(
   <mujoco>

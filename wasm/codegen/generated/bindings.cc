@@ -1655,6 +1655,11 @@ void mj_initSensorHistory_wrapper(const MjModel& m, MjData& d, int id, const Num
   mj_initSensorHistory(m.get(), d.get(), id, times_.data(), values_.data(), phase);
 }
 
+int mj_insideSite_wrapper(const MjModel& m, const MjData& d, int siteid, const NumberArray& point) {
+  UNPACK_ARRAY(mjtNum, point);
+  return mj_insideSite(m.get(), d.get(), siteid, point_.data());
+}
+
 void mj_integratePos_wrapper(const MjModel& m, const val& qpos, const NumberArray& qvel, mjtNum dt) {
   UNPACK_VALUE(mjtNum, qpos);
   UNPACK_ARRAY(mjtNum, qvel);
@@ -5343,6 +5348,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("sensor_user", &MjModel::sensor_user)
     .property("signature", &MjModel::signature, &MjModel::set_signature)
     .property("site_bodyid", &MjModel::site_bodyid)
+    .property("site_dataid", &MjModel::site_dataid)
     .property("site_group", &MjModel::site_group)
     .property("site_matid", &MjModel::site_matid)
     .property("site_pos", &MjModel::site_pos)
@@ -6010,6 +6016,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("group", &MjsSite::group, &MjsSite::set_group)
     .property("info", &MjsSite::info, &MjsSite::set_info, reference())
     .property("material", &MjsSite::material, &MjsSite::set_material, reference())
+    .property("meshname", &MjsSite::meshname, &MjsSite::set_meshname, reference())
     .property("pos", &MjsSite::pos)
     .property("quat", &MjsSite::quat)
     .property("rgba", &MjsSite::rgba)
@@ -6350,6 +6357,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
   function("mj_implicit", &mj_implicit_wrapper);
   function("mj_initCtrlHistory", &mj_initCtrlHistory_wrapper);
   function("mj_initSensorHistory", &mj_initSensorHistory_wrapper);
+  function("mj_insideSite", &mj_insideSite_wrapper);
   function("mj_integratePos", &mj_integratePos_wrapper);
   function("mj_invConstraint", &mj_invConstraint_wrapper);
   function("mj_invPosition", &mj_invPosition_wrapper);

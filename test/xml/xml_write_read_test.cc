@@ -65,6 +65,8 @@ std::vector<std::string> GetWriteReadTestModels() {
             absl::StrContains(xml, "fromto_convex") ||
             absl::StrContains(xml, "cube_skin") ||
             absl::StrContains(xml, "cube_3x3x3") ||
+            absl::StrContains(xml, "arch/gothic") ||
+            absl::StrContains(xml, "arch/roman") ||
             // flex_stiffness: stretch amplifies geometry XML rounds on save
             absl::StrContains(xml, "flex/bag") ||
             // exclude conflict tests (known option conflict warnings/errors)

@@ -394,6 +394,7 @@
 #define MJMODEL_POINTERS_SITE                                                   \
     X   ( int,     site_type,             nsite,         1                    ) \
     X   ( int,     site_bodyid,           nsite,         1                    ) \
+    X   ( int,     site_dataid,           nsite,         1                    ) \
     X   ( int,     site_matid,            nsite,         1                    ) \
     X   ( int,     site_group,            nsite,         1                    ) \
     X   ( mjtByte, site_sameframe,        nsite,         1                    ) \
@@ -1019,9 +1020,9 @@
     X  ( int,      efm_tid,           MJ_M(ntendon),     1 ) \
     X  ( mjtNum,   efm_ts,            MJ_M(ntendon),     1 ) \
     X  ( mjtNum,   efm_tk,            MJ_M(ntendon),     1 ) \
-    X  ( int,      efm_aid,           MJ_M(nu),          1 ) \
-    X  ( mjtNum,   efm_as,            MJ_M(nu),          1 ) \
-    X  ( mjtNum,   efm_ak,            MJ_M(nu),          1 ) \
+    X  ( int,      efm_aid,           MJ_M(nactuator),   1 ) \
+    X  ( mjtNum,   efm_as,            MJ_M(nactuator),   1 ) \
+    X  ( mjtNum,   efm_ak,            MJ_M(nactuator),   1 ) \
     X  ( mjtNum,   efm_ca,            MJ_M(nv),          1 ) \
     X  ( int,      efm_K_rownnz,      MJ_M(nv),          1 ) \
     X  ( int,      efm_K_rowadr,      MJ_M(nv),          1 ) \

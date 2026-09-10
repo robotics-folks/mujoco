@@ -481,7 +481,7 @@ static const char* unionConstraintTrees(const mjModel* m, const mjData* d, int* 
 
     // actuator gains couple every tree their transmission touches (mj_effActuatorPossible);
     // static transmission targets, mirroring the sleep-policy sweep in mj_setConst
-    for (int i=0; i < m->nu; i++) {
+    for (int i=0; i < m->nactuator; i++) {
       if (!mj_effActuatorPossible(m, i)) {
         continue;
       }

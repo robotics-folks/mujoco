@@ -227,14 +227,14 @@ void Renderable::RemoveFromScene(filament::Scene* scene) {
 }
 
 void Renderable::UpdateMaterial(const mjrfMaterial& material) {
-  uint8_t layer_mask_ = kLayerMask_Object;
+  uint8_t layer_mask = kLayerMask_Object;
   if (material.decor_ux) {
-    layer_mask_ = kLayerMask_Decor;
+    layer_mask = kLayerMask_Decor;
   }
   if (material.selected) {
-    layer_mask_ |= kLayerMask_Outline;
+    layer_mask |= kLayerMask_Outline;
   }
-  SetLayerMask(layer_mask_);
+  SetLayerMask(layer_mask);
   material_ = material;
 }
 
@@ -249,7 +249,6 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
   // the same order. As such, we'll just store the draw state in a deque rather
   // than trying to perform any kind of matching with the requests.
   draw_queue_.clear();
-  curr_state_ = DrawState();
 
   for (const mjrfRenderRequest* request : requests) {
     DrawState draw_state;
@@ -370,10 +369,9 @@ void Renderable::BindMaterialInstance(const mjrfRenderRequest& request) {
   draw_queue_.pop_front();
 }
 
-MaterialManager::MaterialKey Renderable::SetMaterialInstance(
-    MaterialManager::MaterialKey key) {
-  MaterialManager::MaterialKey prev = curr_state_.material_key;
+void Renderable::SetMaterialInstance(MaterialManager::MaterialKey key) {
   if (key != curr_state_.material_key) {
+    curr_state_.material_key = key;
     const filament::MaterialInstance* instance =
         material_mgr_->GetInstance(key);
     filament::RenderableManager& rm = GetEngine()->getRenderableManager();
@@ -382,7 +380,6 @@ MaterialManager::MaterialKey Renderable::SetMaterialInstance(
       rm.setMaterialInstanceAt(ri, 0, instance);
     }
   }
-  return prev;
 }
 
 std::uint8_t Renderable::SetLayerMask(std::uint8_t mask) {

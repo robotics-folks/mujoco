@@ -1434,13 +1434,18 @@
   <xs:complexType name="default_site">
     <xs:attribute name="type" type="kw_geomtype" default="sphere"/>
     <xs:attribute name="group" type="xs:int"/>
-    <xs:attribute name="pos" type="double3" default="0 0 0"/>
+    <xs:attribute name="pos" type="double3" default="0 0 0">
+      <xs:annotation>
+        <xs:documentation>saved in the mesh-corrected frame</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
     <xs:attribute name="quat" type="double4" default="1 0 0 0"/>
     <xs:attribute name="axisangle" type="double4"/>
     <xs:attribute name="xyaxes" type="double6"/>
     <xs:attribute name="zaxis" type="double3"/>
     <xs:attribute name="euler" type="double3"/>
     <xs:attribute name="material" type="xs:string"/>
+    <xs:attribute name="mesh" type="xs:string"/>
     <xs:attribute name="size" type="double1to3" default="0.005 0.005 0.005">
       <xs:annotation>
         <xs:documentation>saved length is type-dependent</xs:documentation>
@@ -2212,13 +2217,18 @@
     <xs:attribute name="class" type="xs:string"/>
     <xs:attribute name="type" type="kw_geomtype" default="sphere"/>
     <xs:attribute name="group" type="xs:int"/>
-    <xs:attribute name="pos" type="double3" default="0 0 0"/>
+    <xs:attribute name="pos" type="double3" default="0 0 0">
+      <xs:annotation>
+        <xs:documentation>saved in the mesh-corrected frame</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
     <xs:attribute name="quat" type="double4" default="1 0 0 0"/>
     <xs:attribute name="axisangle" type="double4"/>
     <xs:attribute name="xyaxes" type="double6"/>
     <xs:attribute name="zaxis" type="double3"/>
     <xs:attribute name="euler" type="double3"/>
     <xs:attribute name="material" type="xs:string"/>
+    <xs:attribute name="mesh" type="xs:string"/>
     <xs:attribute name="size" type="double1to3" default="0.005 0.005 0.005">
       <xs:annotation>
         <xs:documentation>saved length is type-dependent</xs:documentation>
@@ -4021,6 +4031,7 @@
     <xs:attribute name="size" type="double1to3"/>
     <xs:attribute name="material" type="xs:string"/>
     <xs:attribute name="rgba" type="float4"/>
+    <xs:attribute name="mesh" type="xs:string"/>
   </xs:complexType>
 
   <xs:complexType name="flexcomp_edge">

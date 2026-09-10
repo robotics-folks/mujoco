@@ -501,9 +501,33 @@ void mjXWriter::OneSite(XMLElement* elem, const mjCSite* site, mjCDef* def, stri
     if (classname != site->classname && site->classname != "main") {
       WriteAttrTxt(elem, "class", site->classname);
     }
-    WriteAttr(elem, "quat", 4, site->quat, unitq);
     if (mjGEOMINFO[site->type]) {
       WriteAttr(elem, "size", mjGEOMINFO[site->type], site->size, def->Site().size);
+    }
+
+    // mesh site
+    if (site->type == mjGEOM_MESH) {
+      mjCMesh* mesh = site->mesh;
+
+      // write pos/quat if there is a difference
+      if (!SameVector(site->pos, mesh->GetPosPtr(), 3) ||
+          !SameVector(site->quat, mesh->GetQuatPtr(), 4)) {
+        // recover site pos/quat before mesh frame transformation
+        double p[3], q[4];
+        mjuu_copyvec(p, site->pos, 3);
+        mjuu_copyvec(q, site->quat, 4);
+        mjuu_frameaccuminv(p, q, mesh->GetPosPtr(), mesh->GetQuatPtr());
+
+        // write
+        WriteAttr(elem, "pos", 3, p, unitq + 1);
+        WriteAttr(elem, "quat", 4, q, unitq);
+      }
+    }
+
+    // non-mesh site
+    else {
+      WriteAttr(elem, "pos", 3, site->pos, unitq + 1);
+      WriteAttr(elem, "quat", 4, site->quat, unitq);
     }
   } else {
     WriteAttr(elem, "size", 3, site->size, def->Site().size);
@@ -518,6 +542,10 @@ void mjXWriter::OneSite(XMLElement* elem, const mjCSite* site, mjCDef* def, stri
   if (site->get_material() != def->Site().get_material()) {
     WriteAttrTxt(elem, "material", site->get_material());
   }
+  if (site->type == mjGEOM_MESH && site->get_meshname() != def->Site().get_meshname()) {
+    WriteAttrTxt(elem, "mesh", site->get_meshname());
+  }
+  WriteAttr(elem, "rgba", 4, site->rgba, def->Site().rgba);
 
   // userdata
   if (writingdefaults) {

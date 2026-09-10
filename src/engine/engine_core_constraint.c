@@ -477,18 +477,6 @@ static void mj_addConstraint(const mjModel* m, mjData* d,
         mju_copy(J + adr[nefc+i], jac + i*NV, NV);
       }
     }
-
-    // set J row supernodes; 1: next row has same pattern, 0: different pattern
-
-    // cross-boundary: does previous row have same pattern?
-    if (nefc > 0 && NV == nnz[nefc-1] &&
-        (NV == 0 || mju_compare(ind + adr[nefc], ind + adr[nefc-1], NV))) {
-      d->efc_J_rowsuper[nefc-1] = 1;
-    }
-
-    // within-constraint: consecutive rows always share same pattern
-    mju_fillInt(d->efc_J_rowsuper + nefc, 1, size-1);
-    d->efc_J_rowsuper[nefc+size-1] = 0;
   }
 
   // all rows empty: skip constraint
@@ -2023,8 +2011,11 @@ static void getsolparam(const mjModel* m, const mjData* d, int i,
     mj_defaultSolRefImp(solref, NULL);
   }
 
-  // integrator safety: impose ref[0]>=2*timestep for standard format
-  if (!mjDISABLED(mjDSBL_REFSAFE) && solref[0] > 0) {
+  // integrator safety: impose ref[0]>=2*timestep for standard format. Not applied under
+  // the discrete integrator: implicitly treated rows (mj_makeImpedance) are stable at
+  // any timeconst, and timeconst -> 0 is their rigid limit
+  int metric = mj_isMetric(m);
+  if (!mjDISABLED(mjDSBL_REFSAFE) && solref[0] > 0 && !metric) {
     solref[0] = mju_max(solref[0], 2*m->opt.timestep);
   }
 
@@ -2035,7 +2026,7 @@ static void getsolparam(const mjModel* m, const mjData* d, int i,
   }
 
   // integrator safety: impose ref[0]>=2*timestep for standard format
-  if (!mjDISABLED(mjDSBL_REFSAFE) && solreffriction[0] > 0) {
+  if (!mjDISABLED(mjDSBL_REFSAFE) && solreffriction[0] > 0 && !metric) {
     solreffriction[0] = mju_max(solreffriction[0], 2*m->opt.timestep);
   }
 
@@ -2147,11 +2138,19 @@ static void getimpedance(const mjtNum* solimp, mjtNum pos, mjtNum margin,
 }
 
 
+// implicit-row factor f = 1 + h*B + h^2*K*I of a constraint row (kbip = its efc_KBIP)
+static inline mjtNum implicitFactor(const mjtNum* kbip, mjtNum h) {
+  return 1 + h*kbip[1] + h*h*kbip[0]*kbip[2];
+}
+
+
 // compute efc_R, efc_D, efc_KBIP, adjust efc_diagA
 void mj_makeImpedance(const mjModel* m, mjData* d) {
   int dim, nefc = d->nefc;
   mjtNum *R = d->efc_R, *KBIP = d->efc_KBIP;
   mjtNum pos, imp, impP, Rpy, solref[mjNREF], solreffriction[mjNREF], solimp[mjNIMP];
+  int metric = mj_isMetric(m);
+  mjtNum h = m->opt.timestep;
 
   // set efc_R, efc_KBIP
   for (int i=0; i < nefc; i++) {
@@ -2204,6 +2203,35 @@ void mj_makeImpedance(const mjModel* m, mjData* d) {
       // I = imp, P = imp'
       KBIP[4*(i+j)+2] = imp;
       KBIP[4*(i+j)+3] = impP;
+
+      // discrete: implicit row factor R <- R/f (matching reference in mj_referenceConstraint).
+      // Floor at mjMAXIMP ceiling to keep weights well-conditioned as timeconst -> 0
+      if (metric) {
+        mjtNum* kbip = KBIP + 4*(i+j);
+
+        // refsafe: a contact or limit row whose spring the step cannot resolve
+        // (h^2*K*I > 1) rebounds on impact with restitution (h^2*K*I - 1)/f. Replace it
+        // by the resolved row: timeconst shortened to the stiffest zero-restitution
+        // value, damping ratio kept (K /= excess, B /= sqrt(excess)), damping bounded by
+        // the impedance ceiling so that the statics stay exact
+        if (!mjDISABLED(mjDSBL_REFSAFE) && ref[0] > 0 && kbip[0] > 0 &&
+            (tp == mjCNSTR_LIMIT_JOINT          ||
+             tp == mjCNSTR_LIMIT_TENDON         ||
+             tp == mjCNSTR_CONTACT_FRICTIONLESS ||
+             tp == mjCNSTR_CONTACT_PYRAMIDAL    ||
+             tp == mjCNSTR_CONTACT_ELLIPTIC)) {
+          mjtNum excess = (h*h)*kbip[0]*kbip[2];
+          if (excess > 1) {
+            mjtNum fmax = mjMAXIMP*(1-kbip[2]) / mju_max(mjMINVAL, kbip[2]*(1-mjMAXIMP));
+            kbip[0] = 1 / (h*h*kbip[2]);
+            kbip[1] = mju_min(kbip[1]/mju_sqrt(excess), mju_max(0, fmax-2)/h);
+          }
+        }
+
+        mjtNum f = implicitFactor(kbip, h);
+        mjtNum Rmin = mju_max(mjMINVAL, (1-mjMAXIMP)*d->efc_diagA[i+j]/mjMAXIMP);
+        R[i+j] = mju_max(R[i+j]/f, Rmin);
+      }
     }
 
     // skip the rest of this constraint
@@ -2714,7 +2742,7 @@ static int mj_nc(const mjModel* m, mjData* d, int* nnz) {
 
               if (m->flex_interp[f]) {
                 nw = mj_elemBodyWeight(m, d, con->flex[side], con->elem[side],
-                                      con->vert[1-side], con->pos, vid, vweight);
+                                       con->vert[1-side], con->pos, vid, vweight);
               }
             }
 
@@ -2808,7 +2836,8 @@ static int computeY_precount(int* Y_rownnz, int* Y_rowadr, int nefc, int nv,
 }
 
 
-// fill Y column indices and values from J, chaining up the kinematic tree
+// fill Y column indices and values from J, chaining up the kinematic tree;
+// with Y == NULL, fill only the column indices (pattern-only)
 static void computeY_fill(mjtNum* Y, int* Y_colind,
                           const int* Y_rownnz, const int* Y_rowadr, int nefc,
                           const mjtNum* J, const int* J_rownnz, const int* J_rowadr,
@@ -2836,14 +2865,18 @@ static void computeY_fill(mjtNum* Y, int* Y_colind,
         nnzY++;
         remainJ--;
         Y_colind[end - nnzY] = prev_src;
-        Y[end - nnzY] = J[adrJ + remainJ];
+        if (Y) {
+          Y[end - nnzY] = J[adrJ + remainJ];
+        }
       }
 
       // add dst
       else {
         nnzY++;
         Y_colind[end - nnzY] = prev_dst;
-        Y[end - nnzY] = 0;
+        if (Y) {
+          Y[end - nnzY] = 0;
+        }
       }
     }
 
@@ -2952,8 +2985,7 @@ void mj_makeConstraint(const mjModel* m, mjData* d) {
       }
     }
   } else if (d->nefc > nefc_allocated) {
-    mjERROR("nefc under-allocation: found nefc=%d but allocated only %d",
-            d->nefc, nefc_allocated);
+    mjERROR("nefc under-allocation: found nefc=%d but allocated only %d", d->nefc, nefc_allocated);
   }
 
   // collect memory use statistics
@@ -2965,13 +2997,9 @@ void mj_makeConstraint(const mjModel* m, mjData* d) {
     return;
   }
 
-  // accumulate J row supernodes (reverse cumsum of 0/1 flags set at assembly time)
-  if (mj_isSparse(m) && d->nefc) {
-    for (int r=d->nefc-2; r >= 0; r--) {
-      if (d->efc_J_rowsuper[r]) {
-        d->efc_J_rowsuper[r] += d->efc_J_rowsuper[r+1];
-      }
-    }
+  // compute supernodes of J
+  if (mj_isSparse(m)) {
+    mju_superSparse(d->nefc, d->efc_J_rowsuper, d->efc_J_rownnz, d->efc_J_rowadr, d->efc_J_colind);
   }
 
   // compute regularization; under the discrete integrator this happens at the
@@ -3020,6 +3048,15 @@ static void mj_makeYSymbolic(const mjModel* m, mjData* d) {
       mj_clearEfc(d);
       d->parena = d->ncon * sizeof(mjContact);
       return;
+    }
+
+    // under discrete the numeric phase is deferred to the actuation stage, but
+    // mj_makeARSymbolic consumes the column indices now: fill the pattern here.
+    // Classic integrators fill it in the numeric phase which follows immediately
+    if (mj_isMetric(m)) {
+      computeY_fill(NULL, d->efc_Y_colind, d->efc_Y_rownnz, d->efc_Y_rowadr, nefc,
+                    NULL, d->efc_J_rownnz, d->efc_J_rowadr, d->efc_J_colind,
+                    m->dof_parentid);
     }
   }
 
@@ -3417,24 +3454,39 @@ void mj_velocityConstraint(const mjModel* m, mjData* d) {
 // compute efc_vel, efc_aref
 void mj_referenceConstraint(const mjModel* m, mjData* d) {
   int nefc = d->nefc;
-  mjtNum* KBIP = d->efc_KBIP;
+  const mjtNum* KBIP = d->efc_KBIP;
+  int metric = mj_isMetric(m);
+  mjtNum h = m->opt.timestep;
 
   // compute efc_vel
   mj_velocityConstraint(m, d);
 
-  // compute aref = -B*vel - K*I*(pos-margin)
+  // compute aref = -B*vel - K*I*(pos-margin). Under the discrete integrator the row's spring-damper
+  // is treated implicitly (backward Euler on the row): evaluated at the end-of-step state,
+  // the position transported by h*vel
+  mjtNum shift = metric ? h : 0;
   for (int i=0; i < nefc; i++) {
-    d->efc_aref[i] = -KBIP[4*i+1]*d->efc_vel[i]
-                     -KBIP[4*i]*KBIP[4*i+2]*(d->efc_pos[i]-d->efc_margin[i]);
+    const mjtNum* kbip = KBIP + 4*i;
+    d->efc_aref[i] = -kbip[1]*d->efc_vel[i]
+                     -kbip[0]*kbip[2]*(d->efc_pos[i]-d->efc_margin[i] + shift*d->efc_vel[i]);
   }
-
-  // bias adhesive contact rows
-  mj_adhesionRef(m, d);
 
   // subtract Jdot*v correction for connect/weld equality constraints
   if (d->ne > 0) {
     mj_Jdotv(m, d, d->efc_aref);
   }
+
+  // implicit rows: divide by the factor which scaled the row weight in mj_makeImpedance;
+  // weight and reference are one identity, neither is valid alone
+  if (metric) {
+    for (int i=0; i < nefc; i++) {
+      d->efc_aref[i] /= implicitFactor(KBIP + 4*i, h);
+    }
+  }
+
+  // bias adhesive contact rows: a force offset (D*R*edge = edge), independent of the row factor,
+  // so it is added after the division
+  mj_adhesionRef(m, d);
 }
 
 

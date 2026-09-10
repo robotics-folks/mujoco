@@ -82,6 +82,7 @@ class FilamentRenderer : public Renderer {
   void Deinit();
 
   void BuildMainRenderRequest(mjrfRenderRequest* request,
+                              const mjvOption* vis_option,
                               const mjrRect& viewport, const mjrCamera& camera);
   void BuildUxRenderRequest(mjrfRenderRequest* request,
                             const mjrRect& viewport);

@@ -22,6 +22,7 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjspec.h>
 #include <mujoco/mjtype.h>
+#include <mujoco/mujoco.h>
 #include "user/user_api.h"
 #include "user/user_util.h"
 #include "xml/xml_native_reader.h"
@@ -68,6 +69,7 @@ void mjXURDF::Clear(void) {
   urMat.clear();
   urRGBA.clear();
   urGeomNames.clear();
+  urMimic.clear();
 }
 
 std::string mjXURDF::GetPrefixedName(const std::string& name) {
@@ -185,6 +187,30 @@ void mjXURDF::Parse(XMLElement*        root,
 
     // advance to next element
     elem = elem->NextSiblingElement();
+  }
+
+  // <mimic> -> joint equality: q_follower - q0 = offset + multiplier*(q_driver - q0)
+  auto hinge_or_slide = [&](const std::string& jnt_name) {
+    mjsElement* el  = mjs_findElement(spec, mjOBJ_JOINT, jnt_name.c_str());
+    mjsJoint*   jnt = el ? mjs_asJoint(el) : nullptr;
+    return jnt && (jnt->type == mjJNT_HINGE || jnt->type == mjJNT_SLIDE);
+  };
+  for (const auto& [follower, driver, multiplier, offset] : urMimic) {
+    // mjEQ_JOINT couples two 1-dof joints; skip the mimic rather than fail the
+    // load when the target is fixed, planar, floating or missing
+    if (!hinge_or_slide(follower) || !hinge_or_slide(driver)) {
+      mju_warning(
+          "<mimic> on joint '%s' ignored; mimic requires revolute, continuous, or prismatic"
+          " joints",
+          follower.c_str());
+      continue;
+    }
+    mjsEquality* eq = mjs_addEquality(spec, nullptr);
+    eq->type        = mjEQ_JOINT;
+    mjs_setString(eq->name1, follower.c_str());
+    mjs_setString(eq->name2, driver.c_str());
+    eq->data[0] = offset;
+    eq->data[1] = multiplier;
   }
 
   // override the pose for the base link and add a free joint
@@ -489,6 +515,17 @@ void mjXURDF::Joint(XMLElement* joint_elem) {
       pjoint->actfrcrange[0] = -effort;
       pjoint->actfrcrange[1] = effort;
     }
+  }
+
+  // mimic: q = multiplier*q_target + offset; deferred to a joint equality since
+  // the target joint may be declared later
+  if ((elem = FindSubElem(joint_elem, "mimic"))) {
+    std::string target;
+    ReadAttrTxt(elem, "joint", target, true);
+    double multiplier = 1, offset = 0;
+    ReadAttr(elem, "multiplier", 1, &multiplier, text);
+    ReadAttr(elem, "offset", 1, &offset, text);
+    urMimic.emplace_back(jntname, GetPrefixedName(target), multiplier, offset);
   }
 }
 
