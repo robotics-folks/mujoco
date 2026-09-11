@@ -13,10 +13,16 @@ if [ ! -d "${ROOT_DIR}/install" ]; then
     mkdir install
 fi
 
+CCACHE_ARGS=""
+if command -v ccache >/dev/null 2>&1; then
+    CCACHE_ARGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+fi
+
 SHOW_HELP=false
 build_filament=OFF
 build_studio=OFF
 build_simulate=ON
+fresh=false
 py_version="py310"
 njobs=4
 
@@ -26,11 +32,14 @@ while [[ $# -gt 0 ]]; do
         --debug) build_type="Debug"; shift ;;
         --filament) build_filament=ON; shift ;;
         --studio) build_studio=ON; shift ;;
+        --fresh) fresh=true; shift ;;
         --py-version) py_version="$2"; shift 2 ;;
         --njobs) njobs="$2"; shift 2 ;;
         *) echo "Unkown option: $1"; exit 1 ;;
     esac
 done
+
+[ "$fresh" == "true" ] && FRESH_CMD="--fresh" || FRESH_CMD=""
 
 if [[ "${build_filament}" == "ON" ]]; then
     export CC=/usr/bin/clang
@@ -49,28 +58,28 @@ case $py_version in
 esac
 
 echo "Configuring ..."
-CMAKE_CONFIG_ARGS=(
-    "-DCMAKE_BUILD_TYPE=${build_type}"
-    "-DUSE_STATIC_LIBCXX=OFF"
-    "-DBUILD_SHARED_LIBS=OFF"
-    "-DMUJOCO_BUILD_EXAMPLES=OFF"
-    "-DMUJOCO_BUILD_SIMULATE=${build_simulate}"
-    "-DMUJOCO_BUILD_TESTS=OFF"
-    "-DMUJOCO_WITH_USD=OFF"
-    "-DMUJOCO_USE_FILAMENT=${build_filament}"
-    "-DMUJOCO_USE_FILAMENT_MJR_COMPAT=${build_filament}"
-    "-DMUJOCO_BUILD_STUDIO=${build_studio}"
-    "-DCMAKE_INSTALL_PREFIX=install"
-    "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF"
-    "-DCMAKE_INSTALL_LIBDIR=lib"
-)
 
-if [[ -n "${CMAKE_ARGS}" ]]; then
-    read -a cmake_args_arr <<<"$CMAKE_ARGS"
-    CMAKE_CONFIG_ARGS+=("${cmake_args_arr[@]}")
-fi
-
-cmake -B build "${CMAKE_CONFIG_ARGS[@]}"
+cmake $FRESH_CMD -S . -B build \
+    -DCMAKE_BUILD_TYPE=${build_type} \
+    -DUSE_STATIC_LIBCXX=OFF \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DMUJOCO_BUILD_EXAMPLES=OFF \
+    -DMUJOCO_BUILD_DEV_EXAMPLES=OFF \
+    -DMUJOCO_BUILD_SIMULATE=${build_simulate} \
+    -DMUJOCO_BUILD_TESTS=OFF \
+    -DMUJOCO_TEST_PYTHON_UTIL=OFF \
+    -DMUJOCO_WITH_USD=OFF \
+    -DMUJOCO_USE_FILAMENT=${build_filament} \
+    -DMUJOCO_BUILD_STUDIO=${build_studio} \
+    -DFILAMENT_SUPPORTS_VULKAN=ON \
+    -DFILAMENT_SKIP_SAMPLES=ON \
+    -DCMAKE_INSTALL_PREFIX=install \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DCMAKE_CXX_FLAGS=\"-Wno-error=deprecated-declarations\" \
+    -DFILAMENT_SHORTEN_MSVC_COMPILATION=OFF \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    ${CCACHE_ARGS} \
+    ${CMAKE_ARGS}
 
 echo "Building ..."
 
@@ -83,6 +92,7 @@ cmake --install build
 echo "Copy plugins to install directory"
 
 mkdir -p install/mujoco_plugin
+cp ${ROOT_DIR}/build/lib/lib*.a ${ROOT_DIR}/install/lib
 cp ${ROOT_DIR}/build/lib/libactuator.* ${ROOT_DIR}/install/mujoco_plugin
 cp ${ROOT_DIR}/build/lib/libelasticity.* ${ROOT_DIR}/install/mujoco_plugin
 cp ${ROOT_DIR}/build/lib/libsensor.* ${ROOT_DIR}/install/mujoco_plugin
@@ -94,8 +104,11 @@ bash ${ROOT_DIR}/python/make_sdist_manylinux.sh --py-version $py_version
 
 echo "Build python wheel"
 
+export CCACHE_BASEDIR="${ROOT_DIR}/build"
+export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
 export MUJOCO_PATH="${ROOT_DIR}/install"
 export MUJOCO_PLUGIN_PATH="${ROOT_DIR}/install/mujoco_plugin"
+export MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS}"
 
 ${py_bin} -m pip wheel --use-pep517 -vvv ${ROOT_DIR}/python/dist/mujoco-*.tar.gz --wheel-dir ${ROOT_DIR}/python/dist
 

@@ -1,0 +1,34 @@
+# Exclude git history
+.git/
+.github/
+
+# Folder-exclusions
+build/
+build-*/
+deps/
+dist/
+tmp/
+venv/
+venv-*/
+.venv/
+Testing/
+.cache/
+.ruff_cache/
+uv.lock
+
+# Exclude settings from editors|IDEs
+.vscode
+
+# Exclude temporary python folders
+*.egg-info/
+*.ipynb_checkpoints/
+__pycache__/
+
+# Exclude generated typings from pybind11-stubgen
+/typings
+
+*.zip
+*.gz
+
+/install
+/assets
