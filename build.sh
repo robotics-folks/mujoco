@@ -27,6 +27,7 @@ build_vulkan=OFF
 build_studio=OFF
 build_simulate=ON
 build_samples=OFF
+build_python=OFF
 deps_dir=""
 install_dir=""
 njobs=4
@@ -41,6 +42,7 @@ while [[ $# -gt 0 ]]; do
         --vulkan) build_vulkan=ON; shift ;;
         --studio) build_studio=ON; shift ;;
         --samples) build_samples=ON; shift ;;
+        --python) build_python=ON; shift ;;
         --njobs) njobs="$2"; shift 2 ;;
         --fresh) fresh=true; shift ;;
         --build-dir) build_dir="$2"; shift 2 ;;
@@ -81,7 +83,6 @@ cmake $FRESH_CMD -S . -B build \
     -DMUJOCO_WITH_USD=OFF \
     -DMUJOCO_USE_FILAMENT=${build_filament} \
     -DMUJOCO_BUILD_STUDIO=${build_studio} \
-    -DMUJOCO_USE_FILAMENT_MJR_COMPAT=${build_filament} \
     -DFILAMENT_SUPPORTS_VULKAN=${build_vulkan} \
     -DFILAMENT_SKIP_SAMPLES=ON \
     -DFETCHCONTENT_BASE_DIR=${DEPENDENCIES_DIR} \
@@ -111,3 +112,21 @@ cp ${ROOT_DIR}/build/lib/libactuator.* ${USER_INSTALL_DIR}/mujoco_plugin
 cp ${ROOT_DIR}/build/lib/libelasticity.* ${USER_INSTALL_DIR}/mujoco_plugin
 cp ${ROOT_DIR}/build/lib/libsensor.* ${USER_INSTALL_DIR}/mujoco_plugin
 cp ${ROOT_DIR}/build/lib/libsdf_plugin.* ${USER_INSTALL_DIR}/mujoco_plugin
+
+if [[ "${build_python}" == "ON" ]]; then
+    echo "Make source distribution"
+
+    bash ${ROOT_DIR}/python/make_sdist.sh
+
+    echo "Build python wheel"
+
+    export CCACHE_BASEDIR="${ROOT_DIR}/build"
+    export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
+    export MUJOCO_PATH="${USER_INSTALL_DIR}"
+    export MUJOCO_PLUGIN_PATH="${USER_INSTALL_DIR}/mujoco_plugin"
+    export MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS}"
+
+    uv build -v --wheel --force-pep517 ${ROOT_DIR}/python/dist/mujoco-*.tar.gz --out-dir ${ROOT_DIR}/python/dist
+fi
+
+

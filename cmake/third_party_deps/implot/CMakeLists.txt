@@ -13,6 +13,7 @@
 # limitations under the License.
 
 add_library(implot STATIC)
+set(MUJOCO_IMPLOT_SOURCE_DIR "${implot_SOURCE_DIR}" CACHE INTERNAL "")
 
 target_include_directories(implot
   PUBLIC

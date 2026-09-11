@@ -26,3 +26,6 @@ fetchpackage(
     GIT_REPO      https://github.com/libsdl-org/SDL.git
     GIT_TAG       ${MUJOCO_DEP_VERSION_sdl2}
 )
+
+get_filename_component(sdl2_DEP_SOURCE_DIR "${sdl2_SOURCE_DIR}" DIRECTORY)
+set(MUJOCO_SDL2_SOURCE_DIR "${sdl2_DEP_SOURCE_DIR}" CACHE INTERNAL "")

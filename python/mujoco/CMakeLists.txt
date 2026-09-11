@@ -241,6 +241,8 @@ if(NOT TARGET mujoco::platform)
     list(APPEND PLATFORM_DEPS ${platform_system_libs})
 
     set_target_properties(mujoco_studio_platform PROPERTIES INTERFACE_LINK_LIBRARIES "${PLATFORM_DEPS}")
+  else()
+    message(FATAL_ERROR "Couldn't find [mujoco_studio_platform] library")
   endif()
 endif()
 
