@@ -66,7 +66,7 @@ cp "${package_dir}"/../LICENSE .
 
 # Copy over CMake scripts.
 mkdir mujoco/cmake
-cp "${package_dir}"/../cmake/*.cmake mujoco/cmake
+cp  -r "${package_dir}"/../cmake/*.cmake mujoco/cmake
 
 # Copy over Simulate source code.
 cp -r "${package_dir}"/../simulate mujoco

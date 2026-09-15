@@ -35,20 +35,22 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help) SHOW_HELP=true; shift ;;
         --debug) build_type="Debug"; shift ;;
+        --rel-with-deb) build_type="RelWithDebInfo"; shift ;;
         --filament) build_filament=ON; shift ;;
         --vulkan) build_vulkan=ON; shift ;;
         --studio) build_studio=ON; shift ;;
         --njobs) njobs="$2"; shift 2 ;;
         --fresh) fresh=true; shift ;;
+        --build-dir) build_dir="$2"; shift 2 ;;
         --deps-dir) deps_dir="$2"; shift 2 ;;
         --install-dir) install_dir="$2"; shift 2 ;;
         *) echo "Unkown option: $1"; exit 1 ;;
     esac
 done
 
-if [[ "${build_filament}" == "ON" ]]; then
-    build_simulate=OFF
-fi
+# if [[ "${build_filament}" == "ON" ]]; then
+#     build_simulate=OFF
+# fi
 
 [[ -n $deps_dir ]] && DEPENDENCIES_DIR="${deps_dir}" || DEPENDENCIES_DIR="${ROOT_DIR}/deps"
 [[ -n $install_dir ]] && USER_INSTALL_DIR="${install_dir}" || USER_INSTALL_DIR="${ROOT_DIR}/install"
@@ -70,6 +72,7 @@ cmake $FRESH_CMD -S . -B build \
     -DUSE_STATIC_LIBCXX=OFF \
     -DBUILD_SHARED_LIBS=ON \
     -DMUJOCO_BUILD_EXAMPLES=OFF \
+    -DMUJOCO_BUILD_DEV_EXAMPLES=OFF \
     -DMUJOCO_BUILD_SIMULATE=${build_simulate} \
     -DMUJOCO_BUILD_TESTS=OFF \
     -DMUJOCO_TEST_PYTHON_UTIL=OFF \
@@ -77,10 +80,8 @@ cmake $FRESH_CMD -S . -B build \
     -DMUJOCO_USE_FILAMENT=${build_filament} \
     -DMUJOCO_USE_FILAMENT_VULKAN=OFF \
     -DFILAMENT_SUPPORTS_VULKAN=OFF \
-    -DFILAMENT_SUPPORTS_METAL=OFF \
     -DFILAMENT_SKIP_SAMPLES=ON \
     -DMUJOCO_BUILD_STUDIO=${build_studio} \
-    -DMUJOCO_USE_FILAMENT_MJR_COMPAT=${build_filament} \
     -DFETCHCONTENT_BASE_DIR=${DEPENDENCIES_DIR} \
     -DCMAKE_INSTALL_PREFIX=${USER_INSTALL_DIR} \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
