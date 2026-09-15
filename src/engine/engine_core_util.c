@@ -1219,6 +1219,26 @@ mjtNum mj_actuatorArmature(const mjModel* m, mjtObj type, int id) {
 }
 
 
+// return DC motor winding resistance at the current temperature
+mjtNum mj_dcmotorResistance(const mjModel* m, const mjData* d, int id) {
+  const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*id;
+  const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*id;
+  mjtNum R = gainprm[0];
+  mjDCMotorSlots slots = mj_dcmotorSlots(dynprm, gainprm);
+
+  // account for temperature if thermal model is enabled
+  if (slots.temperature >= 0) {
+    mjtNum T = d->act[m->actuator_actadr[id]+slots.temperature];
+    mjtNum alpha = gainprm[2];  // temperature coefficient
+    mjtNum T0 = gainprm[3];     // reference temperature
+    mjtNum Ta = dynprm[4];      // ambient temperature
+    R *= 1 + alpha * (T + Ta - T0);
+  }
+
+  return mju_max(mjMINVAL, R);
+}
+
+
 // count warnings, print only the first time
 void mj_warning(mjData* d, int warning, int info) {
   // check type
@@ -1275,11 +1295,12 @@ int mj_tendonHasDamping(const mjModel* m, int i) {
 }
 
 
-// does flex f use the passive contact path: metric-carried contacts require a standard
-// (non-interpolated) deformable flex of dim >= 2. This predicate is the single authority,
-// shared by the integrator validation and the constraint-exclusion path
+// does flex f use the penalty form of passive contact: a standard deformable flex of dim >= 2
+// that asks for it, and not under the ipc flag, which solves the same law for every supported
+// flex itself (running both would apply each pair's force twice)
 int mj_effFlexContactPossible(const mjModel* m, int f) {
-  return m->flex_passive[f] && !m->flex_rigid[f] && !m->flex_interp[f] && m->flex_dim[f] >= 2;
+  return m->flex_passive[f] && !m->flex_rigid[f] && !m->flex_interp[f] && m->flex_dim[f] >= 2 &&
+         !mjENABLED(mjENBL_IPC);
 }
 
 
