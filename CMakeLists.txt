@@ -328,65 +328,6 @@ if(NOT EMSCRIPTEN AND NOT (APPLE AND MUJOCO_BUILD_MACOS_FRAMEWORKS))
     PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/mujoco" COMPONENT dev
   )
 
-  if(TARGET mujoco::platform)
-    install(
-        TARGETS mujoco_studio_platform
-        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT runtime
-        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT runtime
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT dev
-    )
-
-    install(
-        DIRECTORY "${PROJECT_SOURCE_DIR}/src/experimental"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/mujoco"
-        FILES_MATCHING
-        PATTERN "*.h"
-        PATTERN "*.hpp"
-    )
-
-    install(
-        DIRECTORY "${PROJECT_SOURCE_DIR}/src/render"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/mujoco"
-        FILES_MATCHING
-        PATTERN "*.h"
-        PATTERN "*.hpp"
-    )
-
-    if(TARGET dear_imgui_SDL2)
-      file(GLOB dear_imgui_SDL2_headers "${MUJOCO_DEAR_IMGUI_SOURCE_DIR}/*.h")
-      install(
-        FILES ${dear_imgui_SDL2_headers}
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" COMPONENT dev
-      )
-    endif()
-
-    if(TARGET implot)
-      file(GLOB implot_headers "${MUJOCO_IMPLOT_SOURCE_DIR}/*.h")
-      install(
-        FILES ${implot_headers}
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" COMPONENT dev
-      )
-    endif()
-
-    file(GLOB sdl2_headers "${MUJOCO_SDL2_SOURCE_DIR}/include/*.h")
-    install(
-      FILES ${sdl2_headers}
-      DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/SDL2" COMPONENT dev
-    )
-
-    file(GLOB filament_math_headers "${MUJOCO_FILAMENT_SOURCE_DIR}/libs/math/include/math/*.h")
-    install(
-      FILES ${filament_math_headers}
-      DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/math" COMPONENT dev
-    )
-
-    file(GLOB filament_misc_headers "${MUJOCO_FILAMENT_SOURCE_DIR}/third_party/imgui/misc/cpp/*.h")
-    install(
-      FILES ${filament_misc_headers}
-      DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/misc/cpp" COMPONENT dev
-    )
-  endif()
-
   set(CONFIG_PACKAGE_LOCATION "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}")
 
   # Generate and install the mujocoTargets.cmake file. This defines the targets as

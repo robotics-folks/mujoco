@@ -72,9 +72,10 @@ fi
 echo "Configuring ..."
 
 cmake $FRESH_CMD -S . -B build \
-    -DCMAKE_BUILD_TYPE=${build_type} \
+    -DCMAKE_BUILD_TYPE:STRING=${build_type} \
+    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
     -DUSE_STATIC_LIBCXX=OFF \
-    -DBUILD_SHARED_LIBS=OFF \
+    -DBUILD_SHARED_LIBIS=OFF \
     -DMUJOCO_BUILD_EXAMPLES=${build_samples} \
     -DMUJOCO_BUILD_DEV_EXAMPLES=${build_samples} \
     -DMUJOCO_BUILD_SIMULATE=${build_simulate} \
@@ -95,7 +96,10 @@ cmake $FRESH_CMD -S . -B build \
 
 echo "Building ..."
 
-cmake --build build --config="${build_type}" --parallel ${njobs}
+cmake --build build \
+    --config="${build_type}" \
+    --target mujoco_studio \
+    --parallel ${njobs}
 
 echo "Copy compile_commands.json to the root of the project"
 cp build/compile_commands.json .
