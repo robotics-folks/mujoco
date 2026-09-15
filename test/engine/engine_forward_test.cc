@@ -501,8 +501,47 @@ TEST_F(ImplicitIntegratorTest, FreeBodyMatchesImplicit) {
   </mujoco>
   )";
 
+  // free rigid subtree with rotated, offset inertias and multiple levels
+  static constexpr char xml3[] = R"(
+  <mujoco>
+    <option timestep="0.005"/>
+    <default><geom contype="0" conaffinity="0"/></default>
+    <worldbody>
+      <body pos="0.1 -0.2 0.5" euler="20 -30 40">
+        <joint type="free" damping="0.1"/>
+        <geom type="box" size=".1 .2 .3" mass="2" pos=".04 -.02 .03" euler="10 20 30"/>
+        <body pos=".2 -.1 .3" euler="30 20 -10">
+          <geom type="box" size=".2 .1 .1" mass="1" pos=".03 .01 -.02"/>
+          <body pos="-.1 .2 .1" euler="10 -20 30">
+            <geom type="box" size=".1 .1 .2" mass=".5"/>
+          </body>
+        </body>
+      </body>
+      <body pos="3 0 1">
+        <freejoint/>
+        <geom type="box" size=".1 .2 .3"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // fluid forces on a fixed child must retain asymmetric lift derivatives
+  static constexpr char xml4[] = R"(
+  <mujoco>
+    <option timestep="0.005" density="1.2" viscosity="0.002" wind="1 2 3"/>
+    <worldbody>
+      <body pos="0.1 -0.2 0.5" euler="20 -30 40">
+        <freejoint/>
+        <body pos=".04 -.02 .03" euler="10 20 30">
+          <geom type="ellipsoid" size=".1 .2 .3" mass="2" fluidshape="ellipsoid"/>
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
   int xml_idx = 1;
-  for (auto xml : {xml1, xml2}) {
+  for (auto xml : {xml1, xml2, xml3, xml4}) {
     SCOPED_TRACE(testing::Message() << "XML case " << xml_idx++);
     char error[1024];
     MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
@@ -576,6 +615,48 @@ TEST_F(ImplicitIntegratorTest, FreeBodyGyroStable) {
       mj_step(m, d);
       ASSERT_LT(d->energy[1], 1.01 * initial_energy)
           << "energy gain at step " << i;
+    }
+  }
+}
+
+// a massless free root with a fixed inertial child must not disable gyroscopic
+// stabilization
+TEST_F(ImplicitIntegratorTest, FreeRigidSubtreeGyroStable) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="implicitfast" timestep="0.001" gravity="0 0 0">
+      <flag energy="enable"/>
+    </option>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <body>
+          <inertial pos="0 0 0" mass="0.12"
+                    diaginertia="0.00017231 0.00000658 0.00017243"/>
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  ASSERT_EQ(model->nbody, 3);
+  MjDataPtr data = MakeData(model);
+  for (mjtIntegrator integrator : {mjINT_IMPLICITFAST, mjINT_DISCRETE}) {
+    SCOPED_TRACE(testing::Message() << "integrator " << integrator);
+    model->opt.integrator = integrator;
+    mj_resetData(model.get(), data.get());
+    data->qvel[3] = 100;
+    data->qvel[4] = 30;
+    data->qvel[5] = 100;
+    mj_forward(model.get(), data.get());
+    mjtNum initial_energy = data->energy[1];
+
+    for (int i = 0; i < 10000; i++) {
+      mj_step(model.get(), data.get());
+      ASSERT_EQ(data->warning[mjWARN_BADQACC].number, 0) << "step " << i;
+      ASSERT_LT(data->energy[1], 1.01 * initial_energy) << "step " << i;
     }
   }
 }
@@ -3852,6 +3933,57 @@ TEST_F(ImplicitIntegratorTest, PassiveFlexContactInMetric) {
   EXPECT_GT(lo[1], lo[0] - 0.01)
       << "upper sheet passed through: lowest z " << lo[1]
       << " against the lower sheet's " << lo[0];
+}
+
+// A dense Jacobian gets no chain from mj_contactJacobian: it returns every dof
+// in order and leaves the chain untouched, so the published rows are compacted
+// on their nonzeros instead. Reading the chain regardless indexed uninitialized
+// memory and crashed in the velocity shift.
+TEST_F(ImplicitIntegratorTest, PassiveFlexContactDenseJacobian) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.002" integrator="discrete" solver="CG" iterations="400"
+            jacobian="dense"/>
+    <worldbody>
+      <flexcomp name="lower" type="grid" dim="2" count="9 9 1" spacing=".04 .04 1"
+                radius=".004" mass=".3" pos="0 0 .2">
+        <contact selfcollide="auto" passive="true"/>
+        <elasticity young="1e5" poisson=".2" thickness="2e-3" elastic2d="both" damping="1e-4"/>
+        <pin id="0 8 72 80"/>
+      </flexcomp>
+      <flexcomp name="upper" type="grid" dim="2" count="5 5 1" spacing=".04 .04 1"
+                radius=".004" mass=".1" pos="0 0 .27">
+        <contact selfcollide="auto" passive="true"/>
+        <elasticity young="1e5" poisson=".2" thickness="2e-3" elastic2d="both" damping="1e-4"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m, NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  const mjModel* model = m.get();
+  mjData* data = d.get();
+  ASSERT_FALSE(mj_isSparse(model)) << "the scene must exercise the dense path";
+
+  for (int i = 0; i < 300; i++) {
+    mj_step(model, data);
+    ASSERT_FALSE(data->warning[mjWARN_BADQACC].number)
+        << "diverged at step " << i;
+    // every published column index addresses a real dof
+    for (int adr = 0; adr < data->nefmcon;) {
+      int nnz = data->efm_con_ind[adr];
+      ASSERT_GE(nnz, 0);
+      ASSERT_LE(adr + 2 + nnz, data->nefmcon);
+      for (int j = 0; j < nnz; j++) {
+        int c = data->efm_con_ind[adr + 2 + j];
+        ASSERT_GE(c, 0);
+        ASSERT_LT(c, model->nv);
+      }
+      adr += 2 + nnz;
+    }
+  }
 }
 
 // The contact rows carry the full Jacobian chain: with the lower sheet pinned
