@@ -8,26 +8,44 @@ Upcoming version (not yet released)
 General
 ^^^^^^^
 
-1. Added the ``ipc`` :ref:`flag<option-flag-ipc>`, an experimental contact mode of the ``discrete`` integrator for
-   penetration-free flex contact. Each step minimizes an incremental potential subject to linearized contact
-   constraints, using a barrier-free augmented Lagrangian whose subproblems are the discrete solve. Every committed
-   position update is verified intersection-free by continuous collision detection, so flex contact cannot tunnel.
-   Supported for dim-2 flexes: a flex with edge equality constraints keeps its elasticity in the constraint solver,
-   while ``elastic2d`` elasticity is integrated implicitly through the effective metric. The contacts the mode resolves
-   are frictionless. The mode keeps contact multipliers across steps that no state specification covers, so
-   ``mj_getState``/``mj_setState`` do not capture its full state and exact replay is not supported.
+- Added the ``ipc`` :ref:`flag<option-flag-ipc>`, an experimental contact mode of the ``discrete`` integrator for
+  penetration-free flex contact. Each step minimizes an incremental potential subject to linearized contact
+  constraints, using a barrier-free augmented Lagrangian whose subproblems are the discrete solve. Every committed
+  position update is verified intersection-free by continuous collision detection, so flex contact cannot tunnel.
+  Supported for dim-2 flexes: a flex with edge equality constraints keeps its elasticity in the constraint solver,
+  while ``elastic2d`` elasticity is integrated implicitly through the effective metric. The contacts the mode resolves
+  are frictionless. The mode keeps contact multipliers across steps that no state specification covers, so
+  ``mj_getState``/``mj_setState`` do not capture its full state and exact replay is not supported.
+- Introduced :ref:`archive resource providers<mjp_registerArchiveResourceProvider>`
+  (``mjp_registerArchiveResourceProvider``). Archive providers use the
+  :ref:`mjpResourceProvider` interface to mount and read archive containers (such as
+  ``.mjz``/``.zip``), decoupling container handling from format decoders and enabling
+  on-demand asset extraction without requiring a pre-allocated :ref:`VFS<Virtualfilesystem>`.
+
 
 Engine
 ^^^^^^
 - The :ref:`mjWARN_INERTIA <mjtWarning>` warning is now also raised by the modified-inertia factorizations of the
   :at:`implicitfast` and damped-:at:`Euler` integrators (previously silent) and of the :at:`implicit` integrator
   (previously a fatal error).
+- The sparse Newton solver no longer aborts with a "rank-deficient sparse Hessian" error when rounding loses a pivot of
+  its Hessian, as can happen in single precision with ill-conditioned inertia. The pivot is now clamped and its row
+  decoupled, as in the dense factorization.
 
 Bug fixes
 ^^^^^^^^^
 - Tendon :ref:`actuatorfrclimited<tendon-spatial-actuatorfrclimited>` now defaults to "auto" as documented.
   Previously the default was "false" and :at:`actuatorfrcrange` was silently ignored unless :at:`actuatorfrclimited`
   was set explicitly.
+- Fixed the torque applied by :ref:`weld<equality-weld>` constraints in :ref:`mj_rnePostConstraint`. The rotational
+  constraint force was used directly as a world-frame torque, missing the scaling by ``0.5 * torquescale`` and the
+  rotation into the world frame. :ref:`Force<sensor-force>` and :ref:`torque<sensor-torque>` sensors on bodies held
+  by a weld that carries torque were wrong (:issue:`2533`).
+- :ref:`mj_rnePostConstraint` now accounts for the forces of spatial tendons (spring, damper, actuator, limit,
+  friction loss, equality and armature), so :ref:`force<sensor-force>` and :ref:`torque<sensor-torque>` sensors
+  register the forces that tendons apply to bodies (:issue:`832`).
+- :ref:`mjd_transitionFD` and :ref:`mjd_inverseFD` now raise an error when :ref:`sleeping<Sleeping>` is enabled.
+  Previously, their repeated evaluations changed the sleep state, leading to internal errors or wrong derivatives.
 
 Version 3.13.0 (September 8, 2026)
 ----------------------------------
