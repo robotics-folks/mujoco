@@ -86,7 +86,6 @@ cmake $FRESH_CMD -S . -B build \
     -DMUJOCO_BUILD_STUDIO=${build_studio} \
     -DFILAMENT_SUPPORTS_VULKAN=${build_vulkan} \
     -DFILAMENT_SKIP_SAMPLES=ON \
-    -DFETCHCONTENT_BASE_DIR=${DEPENDENCIES_DIR} \
     -DCMAKE_INSTALL_PREFIX=${USER_INSTALL_DIR} \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DCMAKE_CXX_FLAGS=\"-Wno-error=deprecated-declarations\" \
@@ -98,7 +97,6 @@ echo "Building ..."
 
 cmake --build build \
     --config="${build_type}" \
-    --target mujoco_studio \
     --parallel ${njobs}
 
 echo "Copy compile_commands.json to the root of the project"
