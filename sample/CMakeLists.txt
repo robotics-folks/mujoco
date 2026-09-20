@@ -92,12 +92,6 @@ target_link_libraries(compile mujoco::mujoco)
 target_link_libraries(dependencies mujoco::mujoco)
 target_link_libraries(testspeed mujoco::mujoco)
 
-if(TARGET mujoco::platform)
-  target_link_libraries(compile mujoco::platform)
-  target_link_libraries(dependencies mujoco::platform)
-  target_link_libraries(testspeed mujoco::platform)
-endif()
-
 # Build samples that require GLFW.
 
 add_executable(basic basic.cc)

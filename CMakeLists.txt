@@ -276,9 +276,9 @@ if(MUJOCO_BUILD_STUDIO)
   add_subdirectory(src/experimental/studio)
 endif()
 
-# if(MUJOCO_BUILD_EXAMPLES)
-#   add_subdirectory(sample)
-# endif()
+if(MUJOCO_BUILD_EXAMPLES)
+  add_subdirectory(sample)
+endif()
 
 if(MUJOCO_BUILD_DEV_EXAMPLES)
   add_subdirectory(dev/cpp)

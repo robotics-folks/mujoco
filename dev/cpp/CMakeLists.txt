@@ -79,6 +79,27 @@ if(NOT TARGET mujoco::mujoco)
     return()
 endif()
 
+if(NOT TARGET mujoco::filament)
+    message(WARNING "Target mujoco::filament must be defined")
+    return()
+endif()
+
+set(MUJOCO_DEV_SAMPLE_COMPILE_OPTIONS "${AVX_COMPILE_OPTIONS}" "${EXTRA_COMPILE_OPTIONS}")
+set(MUJOCO_DEV_SAMPLE_LINK_OPTIONS "${EXTRA_LINK_OPTIONS}")
+
+if(MUJOCO_HARDEN)
+  if(WIN32)
+    set(MUJOCO_SAMPLE_LINK_OPTIONS "${MUJOCO_SAMPLE_LINK_OPTIONS}" -Wl,/DYNAMICBASE)
+  else()
+    set(MUJOCO_SAMPLE_COMPILE_OPTIONS "${MUJOCO_SAMPLE_COMPILE_OPTIONS}" -fPIE)
+    if(APPLE)
+      set(MUJOCO_SAMPLE_LINK_OPTIONS "${MUJOCO_SAMPLE_LINK_OPTIONS}" -Wl,-pie)
+    else()
+      set(MUJOCO_SAMPLE_LINK_OPTIONS "${MUJOCO_SAMPLE_LINK_OPTIONS}" -pie)
+    endif()
+  endif()
+endif()
+
 FetchContent_Declare(
   cli11
   GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
@@ -91,5 +112,23 @@ set(TESTS_DEV_LIST
 )
 
 foreach(ex_filepath IN LISTS TESTS_DEV_LIST)
-  wp_setup_single_file_example(${ex_filepath} TARGET_DEPENDENCIES mujoco::mujoco mujoco::platform CLI11::CLI11)
+  wp_setup_single_file_example(${ex_filepath} TARGET_DEPENDENCIES mujoco::mujoco mujoco::platform CLI11::CLI11 Threads::Threads lodepng)
+  get_filename_component(ex_target_name ${ex_filepath} NAME_WLE)
+  target_compile_options(${ex_target_name} PUBLIC ${MUJOCO_DEV_SAMPLE_COMPILE_OPTIONS})
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${ex_target_name} PRIVATE -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-implicit-fallthrough)
+  endif()
+  target_link_options(${ex_target_name} PRIVATE ${MUJOCO_DEV_SAMPLE_LINK_OPTIONS})
 endforeach()
+
+if(TARGET test_render_filament)
+  add_dependencies(test_render_filament mujoco_filament_assets)
+  # add_custom_command(
+  #   TARGET test_render_filament POST_BUILD
+  #   COMMAND ${CMAKE_COMMAND} -E copy_directory
+  #     ${CMAKE_BINARY_DIR}/src/render/filament/assets
+  #     $<TARGET_FILE_DIR:test_render_filament>/assets
+  #   COMMENT "Deploying Filament assets for render sample")
+endif()
+
+
