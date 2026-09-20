@@ -28,15 +28,12 @@ add_library(${MUJOCO_STUDIO_PLATFORM_TARGET_NAME} STATIC)
 
 target_sources(${MUJOCO_STUDIO_PLATFORM_TARGET_NAME}
     PRIVATE
-        hal/classic_renderer.cc
-        hal/classic_renderer.h
         hal/egl_utils.cc
         hal/egl_utils.h
         hal/filament_renderer.cc
         hal/filament_renderer.h
         hal/graphics_mode.cc
         hal/graphics_mode.h
-        hal/renderer.h
         hal/window.cc
         hal/window.h
         io/resources.cc
@@ -182,7 +179,7 @@ function(configure_studio_target TARGET_NAME)
             "-Wl,-force_load,$<TARGET_FILE:mujoco_studio_platform>")
     elseif(NOT MSVC)
         target_link_options(${TARGET_NAME} PRIVATE
-            "-Wl,--whole-archive" "$<TARGET_FILE:mujoco_studio_platform>" "-Wl,--no-whole-archive")
+            "-Wl,--whole-archive,$<TARGET_FILE:mujoco_studio_platform>,--no-whole-archive")
     else()
         target_link_options(${TARGET_NAME} PRIVATE
             "/WHOLEARCHIVE:$<TARGET_FILE:mujoco_studio_platform>")
@@ -276,6 +273,17 @@ endif()
 
 # WASM Live target.
 if(EMSCRIPTEN)
+    set(
+      MUJOCO_STUDIO_WASM_INITIAL_MEMORY
+      "1024mb"
+      CACHE STRING "Initial WebAssembly memory for MuJoCo Live"
+    )
+    set(
+      MUJOCO_STUDIO_WASM_MAXIMUM_MEMORY
+      "4gb"
+      CACHE STRING "Maximum WebAssembly memory for MuJoCo Live"
+    )
+
     add_executable(mujoco_studio)
     target_sources(mujoco_studio PRIVATE emscripten.cc)
     target_compile_options(mujoco_studio PRIVATE -g)
@@ -284,7 +292,7 @@ if(EMSCRIPTEN)
 
     # Ensure resource decoder plugins are linked into the WASM binary.
     target_link_options(mujoco_studio PRIVATE
-        -Wl,--whole-archive $<TARGET_FILE:mujoco> -Wl,--no-whole-archive
+        "-Wl,--whole-archive,$<TARGET_FILE:mujoco>,--no-whole-archive"
     )
 
     # Filament's OpenGL backend requires WebGL2 / full ES3 bindings.
@@ -299,8 +307,8 @@ if(EMSCRIPTEN)
         -sFETCH=1
         -sGL_PREINITIALIZED_CONTEXT=1
         -sSTACK_SIZE=32mb
-        -sINITIAL_MEMORY=1024mb
-        -sMAXIMUM_MEMORY=4gb
+        -sINITIAL_MEMORY=${MUJOCO_STUDIO_WASM_INITIAL_MEMORY}
+        -sMAXIMUM_MEMORY=${MUJOCO_STUDIO_WASM_MAXIMUM_MEMORY}
         -sASSERTIONS=1
         -fexceptions
         -g

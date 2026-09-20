@@ -510,7 +510,7 @@ adjust it properly through the XML.
 
 .. _option-ccd_iterations:
 
-:at:`ccd_iterations`: :at-val:`int, "50"`
+:at:`ccd_iterations`: :at-val:`int, "35"`
    Maximum number of iterations of the algorithm used for convex collisions. This rarely needs to be adjusted,
    except in situations where some geoms have very large aspect ratios.
 
@@ -591,7 +591,7 @@ from its default.
 .. _option-flag-spring:
 
 :at:`spring`: :at-val:`[disable, enable], "enable"`
-   This flag disables passive joint and tendon springs. If passive :ref:`damper <option-flag-damper>` forces are
+   This flag disables passive joint, tendon and flex springs. If passive :ref:`damper <option-flag-damper>` forces are
    also disabled, **all** passive forces are disabled, including gravity compensation, fluid forces, forces computed by
    the :ref:`mjcb_passive` callback, and forces computed by :ref:`plugins <exPlugin>` when passed the
    :ref:`mjPLUGIN_PASSIVE<mjtPluginCapabilityBit>` capability flag.
@@ -599,9 +599,9 @@ from its default.
 .. _option-flag-damper:
 
 :at:`damper`: :at-val:`[disable, enable], "enable"`
-   This flag disables passive joint and tendon dampers. If passive :ref:`spring <option-flag-spring>` forces are also
-   disabled, **all** passive forces are disabled, including gravity compensation, fluid forces, forces computed by the
-   :ref:`mjcb_passive` callback, and forces computed by :ref:`plugins <exPlugin>` when passed the
+   This flag disables passive joint, tendon and flex dampers. If passive :ref:`spring <option-flag-spring>` forces are
+   also disabled, **all** passive forces are disabled, including gravity compensation, fluid forces, forces computed by
+   the :ref:`mjcb_passive` callback, and forces computed by :ref:`plugins <exPlugin>` when passed the
    :ref:`mjPLUGIN_PASSIVE<mjtPluginCapabilityBit>` capability flag.
 
 .. _option-flag-gravity:
@@ -4654,9 +4654,10 @@ extensions specific to flexes.
    The force is a penalty on penetration depth whose stiffness is chosen as a natural frequency scaled by the
    participating vertex mass, so a single value is appropriate across model scales; it is not user-specified. That
    stiffness is integrated implicitly, its curvature being carried by the effective metric, and is therefore far
-   stiffer than an explicit force at the same timestep could be. It follows that the feature requires an integrator
-   whose constraint solve runs in that metric: :at:`implicit` or :at:`implicitfast` with the CG solver, pyramidal
-   friction cones and sleep disabled. A model requesting passive flex collisions otherwise is rejected with an error.
+   stiffer than an explicit force at the same timestep could be. It follows that the feature requires the ``discrete``
+   :ref:`integrator<option-integrator>`, with the ``CG`` or ``Newton`` :ref:`solver<option-solver>`, no
+   :ref:`noslip<option-noslip_iterations>` iterations and the :ref:`sleep<option-flag-sleep>` flag disabled. A model
+   requesting passive flex collisions otherwise is rejected with an error.
 
    Being a penalty force, it does not guarantee non-penetration: a thin flex moving fast enough to cross another
    within one step will pass through it. This is an experimental feature.
@@ -5675,7 +5676,7 @@ specify them independently.
    Armature inertia (or mass for slider joints) contributed by the actuator to its transmission target (joint or tendon
    only). This is the actual inertia of the spinning element inside the actuator (e.g., a rotor). The contributed value
    is scaled by :ref:`gear<actuator-general-gear>` squared, because the gear ratio scales both forces and velocities,
-   leading to `reflected inertia <https://en.wikipedia.org/wiki/Reflective_inertia>`__. See
+   leading to reflected inertia. See
    :ref:`joint<body-joint-armature>` and :ref:`tendon<tendon-fixed-armature>` armature for more details.
 
    See also the note in :ref:`damping<actuator-general-damping>` regarding multiple actuators acting on the same

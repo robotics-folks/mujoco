@@ -40,6 +40,7 @@ using ::std::vector;
 using ::testing::DoubleNear;
 using ::testing::Each;
 using ::testing::Eq;
+using ::testing::HasSubstr;
 using ::testing::NotNull;
 using ::testing::Pointwise;
 using DerivativeTest = MujocoTest;
@@ -89,6 +90,8 @@ static const char* const kLinearPath = "engine/testdata/derivative/linear.xml";
 static const char* const kDCMotorPath =
     "engine/testdata/derivative/dcmotor.xml";
 static const char* const kModelPath = "testdata/model.xml";
+static const char* const kSleepEqualityPath =
+    "engine/testdata/sleep/equality.xml";
 
 // compare analytic and finite-difference d_smooth/d_qvel
 TEST_F(DerivativeTest, SmoothDvel) {
@@ -953,6 +956,39 @@ TEST_F(DerivativeTest, NoStateMutation) {
   mj_deleteData(data0);
   mj_deleteData(data);
   mj_deleteModel(model);
+}
+
+// finite differencing is not supported with sleeping enabled
+TEST_F(DerivativeTest, FiniteDifferenceRejectsSleep) {
+  const std::string xml_path = GetTestDataFilePath(kSleepEqualityPath);
+  MjModelPtr model(mj_loadXML(xml_path.c_str(), nullptr, nullptr, 0));
+  ASSERT_THAT(model.get(), NotNull());
+  MjDataPtr data = MakeData(model);
+  int nv = model->nv, ndx = 2 * nv + model->na;
+  vector<mjtNum> A(ndx * ndx);
+  vector<mjtNum> DfDq(nv * nv);
+  mjtNum eps = 1e-6;
+
+  // all trees are awake, but the evaluations would change the sleep state
+  auto transition_error = MjuErrorMessageFrom(mjd_transitionFD);
+  EXPECT_THAT(transition_error(model.get(), data.get(), eps, /*centered=*/1,
+                               A.data(), nullptr, nullptr, nullptr),
+              HasSubstr("sleeping is not supported"));
+  auto inverse_error = MjuErrorMessageFrom(mjd_inverseFD);
+  EXPECT_THAT(inverse_error(model.get(), data.get(), eps, /*flg_actuation=*/0,
+                            DfDq.data(), nullptr, nullptr, nullptr, nullptr,
+                            nullptr, nullptr),
+              HasSubstr("sleeping is not supported"));
+
+  // disabling sleep allows finite differencing
+  model->opt.enableflags &= ~mjENBL_SLEEP;
+  EXPECT_EQ(transition_error(model.get(), data.get(), eps, /*centered=*/1,
+                             A.data(), nullptr, nullptr, nullptr),
+            "");
+  EXPECT_EQ(inverse_error(model.get(), data.get(), eps, /*flg_actuation=*/0,
+                          DfDq.data(), nullptr, nullptr, nullptr, nullptr,
+                          nullptr, nullptr),
+            "");
 }
 
 // compare dense and sparse derivatives of qfrc_bias (RNE)
@@ -2295,11 +2331,11 @@ TEST_F(DerivativeTest, FlexStretchDerivativesTensile) {
       << "mjd_flexStretch_mul is not the Jacobian of the flex stretch force";
 }
 
-// verify mjd_flexStretch_mul (Gauss-Newton Hessian of the standard-flex
-// stretch force) against finite differences of qfrc_passive, plus symmetry,
-// positive semi-definiteness and (s1, s2) scale linearity. The model covers
-// both element edge tables (dim=2 triangles and dim=3 tets) and a pinned
-// vertex (zero-dof body guard).
+// verify mjd_flexStretch_mul (stiffness of the standard-flex stretch force)
+// against finite differences of qfrc_passive, plus symmetry, positive
+// semi-definiteness and (s1, s2) scale linearity. The model covers both
+// element edge tables (dim=2 triangles and dim=3 tets) and a pinned vertex
+// (zero-dof body guard).
 TEST_F(DerivativeTest, FlexStretchDerivatives) {
   static const char* const kXml = R"(
   <mujoco>
@@ -2331,8 +2367,9 @@ TEST_F(DerivativeTest, FlexStretchDerivatives) {
 
   // deform both flexes deterministically, at small strain.
   // FlexStretchDerivativesTensile covers finite strain, where the geometric
-  // term of K_stretch is what carries the accuracy; the solid (dim=3) flex
-  // below has no such term, so the tolerance stays loose here.
+  // term of K_stretch is what carries the accuracy; here some edges are
+  // compressed and the operator drops their geometric term to stay PSD, so the
+  // tolerance stays loose.
   for (int i = 0; i < nv; i++) {
     data->qpos[i] += 5e-4 * (mju_Halton(i, 2) - 0.5);
   }
@@ -2354,8 +2391,8 @@ TEST_F(DerivativeTest, FlexStretchDerivatives) {
 
     // qfrc_passive = -dV/dq  =>  -(qfrc_new - qfrc)/eps ~= K * vec.
     // Compare max error against the force scale rather than entrywise:
-    // individual near-zero entries are not meaningful, and the dim=3 flex still
-    // carries a Gauss-Newton residual.
+    // individual near-zero entries are not meaningful, and the dropped
+    // compressive geometric term leaves a residual in both flexes.
     mjtNum max_err = 0, scale = 0;
     for (int i = 0; i < nv; ++i) {
       mjtNum fd =

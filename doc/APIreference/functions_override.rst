@@ -178,8 +178,12 @@ This function is triggered automatically if the following sensors are present in
 :ref:`framelinacc<sensor-framelinacc>`, :ref:`frameangacc<sensor-frameangacc>`.
 It is also triggered for :ref:`user sensors<sensor-user>` of :ref:`stage<sensor-user-needstage>` "acc".
 
-The computed force arrays ``cfrc_int`` and ``cfrc_ext`` currently suffer from a know bug, they do not take into account
-the effect of spatial tendons, see :issue:`832`.
+``cfrc_ext`` collects the forces that are not transmitted through the joints: applied Cartesian forces
+(``xfrc_applied``), contacts, connect and weld constraints, and spatial tendons (spring, damper, actuator, constraint
+and armature forces along the tendon path). ``cfrc_int`` is then the wrench transmitted through the joint, and its
+projection on the joint axes is the total joint-space force. Forces of actuators with site, slider-crank and body
+transmissions, gravity compensation, fluid forces, flex forces and custom passive forces are not yet collected and are
+attributed to the joints.
 
 .. _mj_constraintUpdate:
 
@@ -830,6 +834,8 @@ These matrices and their dimensions are:
 - ``eps`` is the finite-differencing epsilon.
 - ``flg_centered`` denotes whether to use forward (0) or centered (1) differences.
 - The Runge-Kutta integrator (:ref:`mjINT_RK4<mjtIntegrator>`) is not supported.
+- :ref:`Sleeping<Sleeping>` is not supported. Disable the :ref:`sleep<option-flag-sleep>` flag before calling.
+- :ref:`Delays<CDelay>` are not supported.
 
 .. admonition:: Improving speed and accuracy
    :class: tip
@@ -889,6 +895,7 @@ using finite-differencing. These matrices and their dimensions are:
 .. attention::
    - The Runge-Kutta 4th-order integrator (``mjINT_RK4``) is not supported.
    - The noslip solver is not supported.
+   - :ref:`Sleeping<Sleeping>` is not supported. Disable the :ref:`sleep<option-flag-sleep>` flag before calling.
 
 *Nullable:* ``DfDq``, ``DfDv``, ``DfDa``, ``DsDq``, ``DsDv``, ``DsDa``, ``DmDq``
 

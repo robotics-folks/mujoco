@@ -2118,7 +2118,7 @@ static int meshFace(mjtNum* res, mjCCDObj* obj, int idx) {
 
 // find two normals that are facing each other within a tolerance, return 1 if found
 static inline int alignedFaces(int res[2], const mjtNum* v, int nv,
-                                 const mjtNum* w, int nw) {
+                               const mjtNum* w, int nw) {
   for (int i = 0; i < nv; i++) {
     for (int j = 0; j < nw; j++) {
       if (dot3(v + 3*i, w + 3*j) < -mjFACE_TOL) {

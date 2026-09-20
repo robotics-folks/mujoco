@@ -387,15 +387,11 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
   mj_markStack(d);
   mjtNum *ctrl = mjSTACKALLOC(d, nu, mjtNum);
 
-  // read from ctrl or history buffer for delayed actuators
+  // copy controls, overwrite delayed actuators from history buffer
+  mju_copy(ctrl, d->ctrl, nu);
   for (int i = 0; i < nactuator; i++) {
-    int adr = m->actuator_ctrladr[i];
     if (m->actuator_delay[i]) {
-      // delayed: read from history buffer (scalar input)
-      int interp = m->actuator_history[2*i+1];
-      ctrl[adr] = mj_readCtrl(m, d, i, d->time, interp);
-    } else {
-      mju_copy(ctrl + adr, d->ctrl + adr, m->actuator_ctrlnum[i]);
+      ctrl[m->actuator_ctrladr[i]] = mj_readCtrl(m, d, i, d->time, -1);
     }
   }
 
@@ -1210,13 +1206,6 @@ static void mj_discreteGyro(const mjModel* m, mjData* d) {
 }
 
 
-// contact rows the IPC mode published into the metric's contact class for its inner solve
-// (engine_ipc.c): the primal solve must run for them even when nefc==0
-static int ipcRows(const mjModel* m, const mjData* d) {
-  return mjENABLED(mjENBL_IPC) && d->nefmcon > 0;
-}
-
-
 // compute efc_b, efc_force, qfrc_constraint; update qacc
 static void fwdConstraint(const mjModel* m, mjData* d, mjtSolver solver, int flg_island) {
   TM_START;
@@ -1225,9 +1214,9 @@ static void fwdConstraint(const mjModel* m, mjData* d, mjtSolver solver, int flg
   // always clear qfrc_constraint
   mju_zero(d->qfrc_constraint, nv);
 
-  // no constraints and no IPC contact rows: copy unconstrained acc, clear forces, return
+  // no constraints: copy unconstrained acc, clear forces, return
   // (with the effective metric active, qacc_smooth is already the implicit answer)
-  if (!nefc && !ipcRows(m, d)) {
+  if (!nefc) {
     mju_copy(d->qacc, d->qacc_smooth, nv);
     mju_zeroInt(d->solver_niter, mjNISLAND);
     mj_discreteGyro(m, d);
@@ -1323,7 +1312,7 @@ static void fwdConstraint(const mjModel* m, mjData* d, mjtSolver solver, int flg
 void mj_fwdConstraint(const mjModel* m, mjData* d) {
   // check for invalid solver type, on the entry callers invoke (mj_fwdConstraintCG pins a valid
   // one); the condition mirrors fwdConstraint's early-out
-  if ((d->nefc || ipcRows(m, d)) && m->opt.solver != mjSOL_PGS &&
+  if (d->nefc && m->opt.solver != mjSOL_PGS &&
       m->opt.solver != mjSOL_CG && m->opt.solver != mjSOL_NEWTON) {
     mjERROR("unknown solver type %d", m->opt.solver);
   }
