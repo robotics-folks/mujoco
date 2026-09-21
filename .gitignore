@@ -53,6 +53,7 @@ compile_commands.json
 /references
 /typings
 /deps
+/tmp
 /*.jpg
 /*.png
 

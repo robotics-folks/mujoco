@@ -1,5 +1,7 @@
 #include <array>
 #include <string>
+#include <fstream>
+#include <vector>
 
 #include <mujoco/mujoco.h>
 
@@ -22,6 +24,37 @@ struct Context {
   mjvOption option;
   mjrContext render_ctx;
 };
+
+class FileResource {
+ public:
+  explicit FileResource(const std::string& path) : file_(path, std::ios::binary | std::ios::ate) {
+    if (file_.is_open()) {
+      size_ = file_.tellg();
+      file_.seekg(0, std::ios::beg);
+    }
+  }
+  int Size() const { return size_; }
+  int Read(const void** buffer) {
+    buffer_.resize(size_);
+    if (!file_.read(buffer_.data(), size_)) { return 0; }
+    *buffer = buffer_.data();
+    return size_;
+  }
+
+ private:
+  std::ifstream     file_;
+  std::vector<char> buffer_;
+  int               size_ = 0;
+};
+
+// auto register_filament_assets_provider() -> void {
+//     mjpResourceProvider provider;
+//     mjp_defaultResourceProvider(&provider);
+//
+//     provider.open = [](mjResource* resource) {
+//
+//     };
+// }
 
 auto main(int argc, char **argv) -> int {
   CLI::App app("Simple test for mujoco's filament renderer");

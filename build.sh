@@ -34,12 +34,14 @@ fresh=false
 
 opt_should_configure=false
 opt_should_build=false
+opt_should_install=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help) SHOW_HELP=true; shift ;;
         --configure) opt_should_configure=true; shift ;;
         --build) opt_should_build=true; shift ;;
+        --install) opt_should_install=true; shift ;;
         --debug) build_type="Debug"; shift ;;
         --rel-with-deb) build_type="RelWithDebInfo"; shift ;;
         --filament) build_filament=ON; shift ;;
@@ -75,7 +77,7 @@ if [ "$opt_should_configure" == "true" ]; then
         -DCMAKE_BUILD_TYPE:STRING=${build_type} \
         -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
         -DUSE_STATIC_LIBCXX=OFF \
-        -DBUILD_SHARED_LIBIS=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
         -DMUJOCO_BUILD_EXAMPLES=${build_samples} \
         -DMUJOCO_BUILD_DEV_EXAMPLES=${build_samples} \
         -DMUJOCO_BUILD_SIMULATE=${build_simulate} \
@@ -96,27 +98,20 @@ if [ "$opt_should_configure" == "true" ]; then
 fi
 
 if [ "$opt_should_build" == "true" ]; then
-
     echo "Building ..."
 
     cmake --build build --config=${build_type} --parallel ${njobs}
 
     echo "Copy compile_commands.json to the root of the project"
     cp build/compile_commands.json .
+fi
 
+if [ "$opt_should_install" == "true" ]; then
     echo "Installing to target dir ..."
 
-    cmake --install build
+    source build_common.sh
 
-    echo "Copy plugins to install directory"
-
-    mkdir -p ${USER_INSTALL_DIR}/mujoco_plugin
-    cp ${ROOT_DIR}/build/lib/lib*.a ${USER_INSTALL_DIR}/lib
-    cp ${ROOT_DIR}/build/lib/libactuator.* ${USER_INSTALL_DIR}/mujoco_plugin
-    cp ${ROOT_DIR}/build/lib/libelasticity.* ${USER_INSTALL_DIR}/mujoco_plugin
-    cp ${ROOT_DIR}/build/lib/libsensor.* ${USER_INSTALL_DIR}/mujoco_plugin
-    cp ${ROOT_DIR}/build/lib/libsdf_plugin.* ${USER_INSTALL_DIR}/mujoco_plugin
-
+    install_studio_platform ${ROOT_DIR}/build ${USER_INSTALL_DIR}
 fi
 
 
