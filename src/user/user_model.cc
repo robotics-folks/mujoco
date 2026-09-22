@@ -189,6 +189,7 @@ mjCModel::mjCModel() {
   world->classname = "main";
   def_map["main"]  = Default();
   bodies_.push_back(world);
+  names_[mjOBJ_BODY].insert("world");
 
   // create mjCBase lists from children lists
   CreateObjectLists();
@@ -207,6 +208,9 @@ mjCModel::mjCModel(const mjCModel& other) {
 mjCModel& mjCModel::operator=(const mjCModel& other) {
   deepcopy_ = true;
   if (this != &other) {
+    // the copies below go through AddObject, which clears the signature
+    uint64_t signature = other.spec.element->signature;
+
     this->spec = other.spec;
 
     *static_cast<mjCModel_*>(this) = static_cast<const mjCModel_&>(other);
@@ -241,9 +245,10 @@ mjCModel& mjCModel::operator=(const mjCModel& other) {
 
     // copy name maps
     for (int i = 0; i < mjNOBJECT; i++) { ids[i] = other.ids[i]; }
+    names_ = other.names_;
 
-    // update signature after we updated everything
-    spec.element->signature = Signature();
+    // the copy has the same structure as the original
+    spec.element->signature = signature;
   }
   deepcopy_ = other.deepcopy_;
   return *this;
@@ -328,7 +333,9 @@ void mjCModel::SaveDofOffsets(bool computesize) {
   }
 
   for (auto actuator : actuators_) {
-    if (actuator->spec.actdim > 0) {
+    if (actuator->actdim > 0) {
+      actuator->actdim_ = actuator->actdim;
+    } else if (actuator->spec.actdim > 0) {
       actuator->actdim_ = actuator->spec.actdim;
     } else {
       actuator->actdim_ = (actuator->spec.dyntype != mjDYN_NONE);
@@ -336,20 +343,24 @@ void mjCModel::SaveDofOffsets(bool computesize) {
     actuator->actadr_  = actuator->actdim_ ? actadr : -1;
     actadr            += actuator->actdim_;
 
-    // input and output blocks; all actuator types are currently 1x1
-    actuator->ctrladr_  = ctrladr;
+    // input and output blocks
+    actuator->ctrladr_  = actuator->ctrlnum_ ? ctrladr : -1;
     ctrladr            += actuator->ctrlnum_;
     actuator->outadr_   = outadr;
     outadr             += actuator->outnum_;
   }
 
-  for (mjCBody* body : bodies_) {
+  for (int i = 0; i < (int)bodies_.size(); i++) {
+    mjCBody* body  = bodies_[i];
+    body->bodyadr_ = i;
     if (body->spec.mocap) {
       body->mocapid = mocapadr++;
     } else {
       body->mocapid = -1;
     }
   }
+
+  for (int i = 0; i < (int)equalities_.size(); i++) { equalities_[i]->eqadr_ = i; }
 
   if (computesize) {
     nq        = qposadr;
@@ -482,8 +493,8 @@ mjCModel& mjCModel::operator+=(const mjCModel& other) {
   // reprocess lists to ensure ordering matches compiled model after attach
   ProcessLists(/*checkrepeat=*/false);
 
-  // update signature after we updated the tree lists and we updated the pointers
-  spec.element->signature = Signature();
+  // structure changed, the signature is no longer valid
+  InvalidateSignature();
   return *this;
 }
 
@@ -508,6 +519,8 @@ void mjCModel::RemoveFromList(std::vector<T*>& list, const mjCModel& other) {
       element->ResolveReferences(this);
     } catch (mjCError err) {
       ids[element->elemtype].erase(element->name);
+      names_[element->elemtype].erase(element->name);
+      element->id = -1;
       element->Release();
       list.erase(list.begin() + i);
       nlist--;
@@ -526,6 +539,7 @@ template <>
 void mjCModel::DeleteAll<mjCKey>(std::vector<mjCKey*>& elements) {
   for (mjCKey* element : elements) { element->Release(); }
   elements.clear();
+  names_[mjOBJ_KEY].clear();
 }
 
 
@@ -554,6 +568,8 @@ void mjCModel::RemovePlugins() {
     if (plugins_[i]->name.empty()) { continue; }
     if (instances.find(plugins_[i]->name) == instances.end()) {
       ids[plugins_[i]->elemtype].erase(plugins_[i]->name);
+      names_[plugins_[i]->elemtype].erase(plugins_[i]->name);
+      plugins_[i]->id = -1;
       plugins_[i]->Release();
       plugins_.erase(plugins_.begin() + i);
       nlist--;
@@ -600,8 +616,8 @@ mjCModel& mjCModel::operator-=(const mjCBody& subtree) {
   RemoveFromList(sensors_, oldmodel);
   RemovePlugins();
 
-  // update signature before we reset the tree lists
-  spec.element->signature = Signature();
+  // structure changed, the signature is no longer valid
+  InvalidateSignature();
 
   return *this;
 }
@@ -659,7 +675,8 @@ mjCModel& mjCModel::operator-=(const mjCDef& subtree) {
   std::sort(default_ids_to_remove.begin(), default_ids_to_remove.end(), std::greater<int>());
 
   for (int id : default_ids_to_remove) {
-    delete defaults_[id];
+    defaults_[id]->id = -1;
+    defaults_[id]->Release();
     defaults_.erase(defaults_.begin() + id);
   }
 
@@ -693,14 +710,6 @@ void mjCModel::DeleteSubtreePlugin(mjCBody* subtree) {
 
 // remove the element from the model
 void mjCModel::operator-=(mjsElement* el) {
-  if (el->elemtype == mjOBJ_BODY) {
-    mjCBody* body  = static_cast<mjCBody*>(el);
-    *this         -= *body;
-  }
-
-  detached_.push_back(static_cast<mjCBase*>(el));
-  ResetTreeLists();
-
   if (el->elemtype != mjOBJ_DEFAULT) {
     if (static_cast<mjCBase*>(el)->model != this) {
       throw mjCError(nullptr, "element is not in this model");
@@ -710,6 +719,13 @@ void mjCModel::operator-=(mjsElement* el) {
       throw mjCError(nullptr, "default is not in this model");
     }
   }
+
+  if (el->elemtype == mjOBJ_BODY) {
+    mjCBody* body  = static_cast<mjCBody*>(el);
+    *this         -= *body;
+  }
+
+  ResetTreeLists();
 
   switch (el->elemtype) {
     case mjOBJ_BODY: {
@@ -781,8 +797,10 @@ void mjCModel::operator-=(mjsElement* el) {
   MakeTreeLists();
   ProcessLists(/*checkrepeat=*/false);
 
-  // update signature after we updated everything
-  spec.element->signature = Signature();
+  // structure changed, the signature is no longer valid
+  InvalidateSignature();
+
+  static_cast<mjCBase*>(el)->Release();
 }
 
 
@@ -1071,10 +1089,9 @@ mjCModel::~mjCModel() {
   for (int i = 0; i < texts_.size(); i++) texts_[i]->Release();
   for (int i = 0; i < tuples_.size(); i++) tuples_[i]->Release();
   for (int i = 0; i < keys_.size(); i++) keys_[i]->Release();
-  for (int i = 0; i < defaults_.size(); i++) delete defaults_[i];
+  for (int i = 0; i < defaults_.size(); i++) defaults_[i]->Release();
   for (int i = 0; i < specs_.size(); i++) mj_deleteSpec(specs_[i]);
   for (int i = 0; i < plugins_.size(); i++) plugins_[i]->Release();
-  for (int i = 0; i < detached_.size(); i++) detached_[i]->Release();
 
   // clear sizes and pointer lists created in Compile
   Clear();
@@ -1181,7 +1198,7 @@ T* mjCModel::AddObject(vector<T*>& list, string type) {
   T* obj  = new T(this);
   obj->id = (int)list.size();
   list.push_back(obj);
-  spec.element->signature = Signature();
+  InvalidateSignature();
   return obj;
 }
 
@@ -1193,7 +1210,7 @@ T* mjCModel::AddObjectDefault(vector<T*>& list, string type, mjCDef* def) {
   obj->id        = (int)list.size();
   obj->classname = def ? def->name : "main";
   list.push_back(obj);
-  spec.element->signature = Signature();
+  InvalidateSignature();
   return obj;
 }
 
@@ -1926,6 +1943,7 @@ void mjCModel::IndexAssets(bool discard) {
           body->explicitinertial      = true;  // for XML writer
           body->spec.explicitinertial = true;
           body->spec.mass             = body->mass;
+          body->iframe                = nullptr;  // inertial frame in body coordinates
           mjuu_copyvec(body->spec.ipos, body->ipos, 3);
           mjuu_copyvec(body->spec.iquat, body->iquat, 4);
           mjuu_copyvec(body->spec.inertia, body->inertia, 3);
@@ -3087,10 +3105,12 @@ void mjCModel::CopyPlugins(mjModel* m) {
     for (int i = 0; i < nplugin; ++i) {
       const mjpPlugin* plugin = mjp_getPluginAtSlot(m->plugin[i]);
       if (!plugin->nstate) { mju_error("`nstate` is null for plugin at slot %d", m->plugin[i]); }
-      int nstate             = plugin->nstate(m, i);
-      m->plugin_stateadr[i]  = stateadr;
-      m->plugin_statenum[i]  = nstate;
-      stateadr              += nstate;
+      int nstate              = plugin->nstate(m, i);
+      m->plugin_stateadr[i]   = stateadr;
+      m->plugin_statenum[i]   = nstate;
+      plugins_[i]->stateadr_  = nstate > 0 ? stateadr : -1;
+      plugins_[i]->statenum_  = nstate;
+      stateadr               += nstate;
       if (plugin->capabilityflags & mjPLUGIN_SENSOR) {
         for (int sensor_id : plugin_to_sensors[i]) {
           if (!plugin->nsensordata) {
@@ -3855,7 +3875,7 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->actuator_ctrladr[i]   = ctrladr;
     m->actuator_ctrlnum[i]   = pac->ctrlnum_;
     m->actuator_ctrlspec[i]  = pac->ctrlspec_;
-    pac->ctrladr_            = ctrladr;
+    pac->ctrladr_            = pac->ctrlnum_ ? ctrladr : -1;
     ctrladr                 += pac->ctrlnum_;
     m->actuator_outadr[i]    = outadr;
     m->actuator_outnum[i]    = pac->outnum_;
@@ -3868,10 +3888,14 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->actuator_history[2 * i + 1] = pac->interp;
     if (pac->nsample > 0) {
       m->actuator_historyadr[i] = delay_adr;
+      pac->historyadr_          = delay_adr;
+      pac->historynum_          = 2 + pac->nsample + pac->nsample * pac->ctrlnum_;
       delay_adr +=
           2 + pac->nsample + pac->nsample * pac->ctrlnum_;  // [user, cursor, times, values]
     } else {
       m->actuator_historyadr[i] = -1;
+      pac->historyadr_          = -1;
+      pac->historynum_          = 0;
     }
 
     m->actuator_actlimited[i]  = (mjtBool)pac->is_actlimited();
@@ -3930,10 +3954,14 @@ void mjCModel::CopyObjects(mjModel* m) {
     if (psen->nsample > 0) {
       m->sensor_historyadr[i] = delay_adr;
       int dim                 = psen->dim;
+      psen->historyadr_       = delay_adr;
+      psen->historynum_       = 2 + psen->nsample + psen->nsample * dim;
       delay_adr +=
           2 + psen->nsample + psen->nsample * dim;  // [user, cursor, times(n), values(n*dim)]
     } else {
       m->sensor_historyadr[i] = -1;
+      psen->historyadr_       = -1;
+      psen->historynum_       = 0;
     }
 
     mjuu_copyvec(m->sensor_user + nuser_sensor * i, psen->get_userdata().data(), nuser_sensor);
@@ -4085,31 +4113,136 @@ void mjCModel::SaveState(const std::string& state_name,
                          const T*           ctrl,
                          const T*           mpos,
                          const T*           mquat) {
+  // save qpos and qvel
   for (auto joint : joints_) {
     if (joint->qposadr_ < -1 || joint->dofadr_ < -1) {
       throw mjCError(nullptr, "SaveState: joint %s has invalid address", joint->name.c_str());
     }
     if (qpos && joint->qposadr_ != -1) {
       mjuu_copyvec(joint->qpos(state_name), qpos + joint->qposadr_, joint->nq());
+    } else {
+      joint->qpos(state_name)[0] = mjNAN;
     }
     if (qvel && joint->dofadr_ != -1) {
       mjuu_copyvec(joint->qvel(state_name), qvel + joint->dofadr_, joint->nv());
+    } else {
+      joint->qvel(state_name)[0] = mjNAN;
     }
   }
 
+  // save act and ctrl
   for (unsigned int i = 0; i < actuators_.size(); i++) {
     auto actuator = actuators_[i];
-    if (actuator->actadr_ != -1 && actuator->actdim_ != -1 && act) {
+    if (actuator->actadr_ != -1 && actuator->actdim_ > 0 && act) {
       actuator->act(state_name).assign(actuator->actdim_, 0);
       mjuu_copyvec(actuator->act(state_name).data(), act + actuator->actadr_, actuator->actdim_);
+    } else {
+      actuator->act(state_name).clear();
     }
-    if (ctrl) { actuator->ctrl(state_name) = ctrl[i]; }
+    if (actuator->ctrladr_ != -1 && actuator->ctrlnum_ > 0 && ctrl) {
+      actuator->ctrl(state_name).assign(actuator->ctrlnum_, 0);
+      mjuu_copyvec(actuator->ctrl(state_name).data(),
+                   ctrl + actuator->ctrladr_,
+                   actuator->ctrlnum_);
+    } else {
+      actuator->ctrl(state_name).clear();
+    }
   }
 
+  // save mocap pos and quat
   for (auto body : bodies_) {
-    if (!body->spec.mocap || body->mocapid == -1) { continue; }
+    if (!body->spec.mocap || body->mocapid == -1) {
+      body->mpos(state_name)[0]  = mjNAN;
+      body->mquat(state_name)[0] = mjNAN;
+      continue;
+    }
     if (mpos) { mjuu_copyvec(body->mpos(state_name), mpos + 3 * body->mocapid, 3); }
     if (mquat) { mjuu_copyvec(body->mquat(state_name), mquat + 4 * body->mocapid, 4); }
+  }
+}
+
+
+// save full integration state for mj_recompile
+void mjCModel::SaveState(const std::string& state_name,
+                         const mjModel*     m,
+                         const mjData*      d,
+                         mjRecompileState*  state) {
+  // invalidate addresses of joints whose type changed
+  for (auto joint : joints_) {
+    if (joint->type != joint->spec.type) {
+      joint->qposadr_ = -1;
+      joint->dofadr_  = -1;
+    }
+  }
+
+  // save standard state components
+  SaveState(state_name, d->qpos, d->qvel, d->act, d->ctrl, d->mocap_pos, d->mocap_quat);
+
+  // save time and userdata
+  state->time = d->time;
+  state->userdata.clear();
+  if (nuserdata > 0 && d->userdata) {
+    state->userdata.assign(d->userdata, d->userdata + nuserdata);
+  }
+
+  // save qfrc_applied and qacc_warmstart
+  state->qfrc_applied.clear();
+  state->qacc_warmstart.clear();
+  for (auto joint : joints_) {
+    if (joint->dofadr_ != -1 && joint->nv() > 0) {
+      if (d->qfrc_applied) {
+        state->qfrc_applied[joint].assign(d->qfrc_applied + joint->dofadr_,
+                                          d->qfrc_applied + joint->dofadr_ + joint->nv());
+      }
+      if (d->qacc_warmstart) {
+        state->qacc_warmstart[joint].assign(d->qacc_warmstart + joint->dofadr_,
+                                            d->qacc_warmstart + joint->dofadr_ + joint->nv());
+      }
+    }
+  }
+
+  // save xfrc_applied
+  state->xfrc_applied.clear();
+  for (auto body : bodies_) {
+    if (body->bodyadr_ != -1 && d->xfrc_applied) {
+      mjuu_copyvec(state->xfrc_applied[body].data(), d->xfrc_applied + 6 * body->bodyadr_, 6);
+    }
+  }
+
+  // save eq_active
+  state->eq_active.clear();
+  for (auto equality : equalities_) {
+    if (equality->eqadr_ != -1 && d->eq_active) {
+      state->eq_active[equality] = d->eq_active[equality->eqadr_];
+    }
+  }
+
+  // save actuator history
+  state->actuator_history.clear();
+  for (auto actuator : actuators_) {
+    if (actuator->historyadr_ != -1 && actuator->historynum_ > 0 && d->history) {
+      state->actuator_history[actuator].assign(
+          d->history + actuator->historyadr_,
+          d->history + actuator->historyadr_ + actuator->historynum_);
+    }
+  }
+
+  // save sensor history
+  state->sensor_history.clear();
+  for (auto sensor : sensors_) {
+    if (sensor->historyadr_ != -1 && sensor->historynum_ > 0 && d->history) {
+      state->sensor_history[sensor].assign(d->history + sensor->historyadr_,
+                                           d->history + sensor->historyadr_ + sensor->historynum_);
+    }
+  }
+
+  // save plugin state
+  state->plugin_state.clear();
+  for (auto plugin : plugins_) {
+    if (plugin->stateadr_ != -1 && plugin->statenum_ > 0 && d->plugin_state) {
+      state->plugin_state[plugin].assign(d->plugin_state + plugin->stateadr_,
+                                         d->plugin_state + plugin->stateadr_ + plugin->statenum_);
+    }
   }
 }
 
@@ -4137,6 +4270,7 @@ void mjCModel::RestoreState(const std::string& state_name,
                             T*                 ctrl,
                             T*                 mpos,
                             T*                 mquat) {
+  // restore qpos and qvel
   for (auto joint : joints_) {
     if (qpos) {
       if (mjuu_defined(joint->qpos(state_name)[0])) {
@@ -4150,17 +4284,33 @@ void mjCModel::RestoreState(const std::string& state_name,
     }
   }
 
-  // restore act
+  // restore act and ctrl
   for (unsigned int i = 0; i < actuators_.size(); i++) {
     auto actuator = actuators_[i];
-    if (!actuator->act(state_name).empty() && mjuu_defined(actuator->act(state_name)[0]) && act) {
-      mjuu_copyvec(act + actuator->actadr_, actuator->act(state_name).data(), actuator->actdim_);
+
+    // restore act
+    if (!actuator->act(state_name).empty() &&
+        mjuu_defined(actuator->act(state_name)[0]) &&
+        actuator->actadr_ != -1 &&
+        actuator->actdim_ > 0 &&
+        act) {
+      int n = std::min((int)actuator->act(state_name).size(), actuator->actdim_);
+      mjuu_copyvec(act + actuator->actadr_, actuator->act(state_name).data(), n);
     }
-    if (ctrl) {
-      ctrl[i] = mjuu_defined(actuator->ctrl(state_name)) ? actuator->ctrl(state_name) : 0;
+
+    // restore ctrl
+    if (actuator->ctrladr_ != -1 && actuator->ctrlnum_ > 0 && ctrl) {
+      if (!actuator->ctrl(state_name).empty() && mjuu_defined(actuator->ctrl(state_name)[0])) {
+        int n = std::min((int)actuator->ctrl(state_name).size(), actuator->ctrlnum_);
+        mjuu_copyvec(ctrl + actuator->ctrladr_, actuator->ctrl(state_name).data(), n);
+        for (int j = n; j < actuator->ctrlnum_; j++) { ctrl[actuator->ctrladr_ + j] = 0; }
+      } else {
+        for (int j = 0; j < actuator->ctrlnum_; j++) { ctrl[actuator->ctrladr_ + j] = 0; }
+      }
     }
   }
 
+  // restore mocap pos and quat
   for (unsigned int i = 0; i < bodies_.size(); i++) {
     auto body = bodies_[i];
     if (!body->spec.mocap) { continue; }
@@ -4176,6 +4326,98 @@ void mjCModel::RestoreState(const std::string& state_name,
         mjuu_copyvec(mquat + 4 * body->mocapid, body->mquat(state_name), 4);
       } else {
         mjuu_copyvec(mquat + 4 * body->mocapid, mquat0 + 4 * i, 4);
+      }
+    }
+  }
+}
+
+
+// restore full integration state for mj_recompile
+void mjCModel::RestoreState(const std::string&      state_name,
+                            const mjModel*          m,
+                            mjData*                 d,
+                            const mjRecompileState* state) {
+  // restore standard state components
+  RestoreState(state_name,
+               m->qpos0,
+               m->body_pos,
+               m->body_quat,
+               d->qpos,
+               d->qvel,
+               d->act,
+               d->ctrl,
+               d->mocap_pos,
+               d->mocap_quat);
+
+  // restore time and userdata
+  d->time = state->time;
+  if (!state->userdata.empty() && m->nuserdata > 0 && d->userdata) {
+    mjtSize n = std::min((mjtSize)state->userdata.size(), m->nuserdata);
+    mjuu_copyvec(d->userdata, state->userdata.data(), n);
+  }
+
+  // restore qfrc_applied and qacc_warmstart
+  for (auto joint : joints_) {
+    if (joint->dofadr_ != -1 && joint->nv() > 0) {
+      auto it_qfrc = state->qfrc_applied.find(joint);
+      if (it_qfrc != state->qfrc_applied.end() &&
+          (int)it_qfrc->second.size() == joint->nv() &&
+          d->qfrc_applied) {
+        mjuu_copyvec(d->qfrc_applied + joint->dofadr_, it_qfrc->second.data(), joint->nv());
+      }
+      auto it_warm = state->qacc_warmstart.find(joint);
+      if (it_warm != state->qacc_warmstart.end() &&
+          (int)it_warm->second.size() == joint->nv() &&
+          d->qacc_warmstart) {
+        mjuu_copyvec(d->qacc_warmstart + joint->dofadr_, it_warm->second.data(), joint->nv());
+      }
+    }
+  }
+
+  // restore xfrc_applied
+  for (auto body : bodies_) {
+    if (body->bodyadr_ != -1 && d->xfrc_applied) {
+      auto it = state->xfrc_applied.find(body);
+      if (it != state->xfrc_applied.end()) {
+        mjuu_copyvec(d->xfrc_applied + 6 * body->bodyadr_, it->second.data(), 6);
+      }
+    }
+  }
+
+  // restore eq_active
+  for (auto equality : equalities_) {
+    if (equality->eqadr_ != -1 && d->eq_active) {
+      auto it = state->eq_active.find(equality);
+      if (it != state->eq_active.end()) { d->eq_active[equality->eqadr_] = it->second; }
+    }
+  }
+
+  // restore actuator history
+  for (auto actuator : actuators_) {
+    if (actuator->historyadr_ != -1 && actuator->historynum_ > 0 && d->history) {
+      auto it = state->actuator_history.find(actuator);
+      if (it != state->actuator_history.end() && (int)it->second.size() == actuator->historynum_) {
+        mjuu_copyvec(d->history + actuator->historyadr_, it->second.data(), actuator->historynum_);
+      }
+    }
+  }
+
+  // restore sensor history
+  for (auto sensor : sensors_) {
+    if (sensor->historyadr_ != -1 && sensor->historynum_ > 0 && d->history) {
+      auto it = state->sensor_history.find(sensor);
+      if (it != state->sensor_history.end() && (int)it->second.size() == sensor->historynum_) {
+        mjuu_copyvec(d->history + sensor->historyadr_, it->second.data(), sensor->historynum_);
+      }
+    }
+  }
+
+  // restore plugin state
+  for (auto plugin : plugins_) {
+    if (plugin->stateadr_ != -1 && plugin->statenum_ > 0 && d->plugin_state) {
+      auto it = state->plugin_state.find(plugin);
+      if (it != state->plugin_state.end() && (int)it->second.size() == plugin->statenum_) {
+        mjuu_copyvec(d->plugin_state + plugin->stateadr_, it->second.data(), plugin->statenum_);
       }
     }
   }
@@ -4556,6 +4798,12 @@ void mjCModel::ProcessLists(bool checkrepeat) {
 // set ids, check for repeated names
 template <class T>
 void mjCModel::ProcessList_(mjListKeyMap& ids, vector<T*>& list, mjtObj type, bool checkrepeat) {
+  int slot = (type == mjOBJ_FRAME) ? mjNOBJECT : type;
+  names_[slot].clear();
+  for (size_t i = 0; i < list.size(); i++) {
+    if (!list[i]->name.empty()) { names_[slot].insert(list[i]->name); }
+  }
+
   // assign ids for regular elements
   if (type < mjNOBJECT) {
     for (size_t i = 0; i < list.size(); i++) {
@@ -4603,6 +4851,26 @@ void mjCModel::CheckRepeat(mjtObj type) {
   }
 }
 
+
+// check that newname is not used by another element of the same type
+void mjCModel::CheckNameChange(mjtObj             type,
+                               const std::string& oldname,
+                               const std::string& newname) {
+  int slot;
+  if (type == mjOBJ_FRAME) {
+    slot = mjNOBJECT;
+  } else if (type < mjNOBJECT && type != mjOBJ_XBODY && object_lists_[type]) {
+    slot = type;
+  } else {
+    return;
+  }
+  if (!newname.empty() && newname != oldname && names_[slot].count(newname)) {
+    string msg = "repeated name '" + newname + "' in " + mju_type2Str(type);
+    throw mjCError(nullptr, "%s", msg.c_str());
+  }
+  if (!oldname.empty()) { names_[slot].erase(oldname); }
+  if (!newname.empty()) { names_[slot].insert(newname); }
+}
 
 // error handler for low-level engine
 constexpr int                    kErrorBufferSize = 500;
@@ -5014,9 +5282,6 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   // clear subtreedofs
   for (int i = 0; i < bodies_.size(); i++) { bodies_[i]->subtreedofs = 0; }
 
-  // initialize spec signature (needed if the user changed sensor or joint types)
-  spec.element->signature = Signature();
-
   // fill missing names and check that they are all filled
   for (const auto& asset : meshes_) asset->CopyFromSpec();
   for (const auto& asset : skins_) asset->CopyFromSpec();
@@ -5090,6 +5355,9 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
     CompileMeshesAndTextures(vfs);
     timer[mjCTIMER_ASSETS] = Seconds(Clock::now() - t0).count();
   }
+
+  // frames cache their accumulated pose, recompute it in every compile
+  for (mjCFrame* frame : frames_) { frame->compiled = false; }
 
   // compile objects in kinematic tree
   for (int i = 0; i < bodies_.size(); i++) {
@@ -5474,21 +5742,13 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   m->opt.enableflags  = enableflags;
   d                   = nullptr;
 
-
-  // save signature
-  m->signature = Signature();
+  // save signature; the spec may have changed structurally during compilation,
+  // and compilation itself may modify topology (fusestatic, discardvisual,
+  // pairs, excludes)
+  m->signature            = Signature();
+  spec.element->signature = m->signature;
 
   timer[mjCTIMER_TOTAL] = Seconds(Clock::now() - timer_start).count();
-
-  // special cases that are not caused by user edits
-  if (compiler.fusestatic || compiler.discardvisual || !pairs_.empty() || !excludes_.empty()) {
-    spec.element->signature = m->signature;
-  }
-
-  // check that the signature matches the spec
-  if (m->signature != spec.element->signature) {
-    throw mjCError(0, "signature mismatch");  // SHOULD NOT OCCUR
-  }
 }
 
 static void PrintIndent(std::stringstream& ss, int depth) {
