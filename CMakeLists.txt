@@ -50,6 +50,8 @@ if(NOT EMSCRIPTEN)
   # Allows filament renderer to be used with mjr API; disables src/render to prevent conflicts.
   option(MUJOCO_USE_FILAMENT_MJR_COMPAT "Use filament mjr compatibility layer" OFF)
   option(MUJOCO_BUILD_DEV_EXAMPLES "Build custom samples from this fork's /dev folder" OFF)
+
+  set(MUJOCO_BUILD_DEV_MACOSX_VERSION_MIN 11 CACHE STRING "Minimum MacOSX version to link to")
 endif()
 
 if(EMSCRIPTEN)

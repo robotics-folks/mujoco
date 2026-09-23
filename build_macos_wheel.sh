@@ -26,7 +26,6 @@ build_filament=OFF
 build_vulkan=OFF
 build_studio=OFF
 build_simulate=ON
-deps_dir=""
 install_dir=""
 njobs=4
 fresh=false
@@ -42,35 +41,31 @@ while [[ $# -gt 0 ]]; do
         --njobs) njobs="$2"; shift 2 ;;
         --fresh) fresh=true; shift ;;
         --build-dir) build_dir="$2"; shift 2 ;;
-        --deps-dir) deps_dir="$2"; shift 2 ;;
         --install-dir) install_dir="$2"; shift 2 ;;
         *) echo "Unkown option: $1"; exit 1 ;;
     esac
 done
 
-# if [[ "${build_filament}" == "ON" ]]; then
-#     build_simulate=OFF
-# fi
+if [[ "${build_filament}" == "ON" ]]; then
+    build_simulate=OFF
+fi
 
-[[ -n $deps_dir ]] && DEPENDENCIES_DIR="${deps_dir}" || DEPENDENCIES_DIR="${ROOT_DIR}/deps"
 [[ -n $install_dir ]] && USER_INSTALL_DIR="${install_dir}" || USER_INSTALL_DIR="${ROOT_DIR}/install"
 
 if [ ! -d "${USER_INSTALL_DIR}" ]; then
     mkdir -p $USER_INSTALL_DIR
 fi
 
-if [ ! -d "${DEPENDENCIES_DIR}" ]; then
-    mkdir -p $DEPENDENCIES_DIR
-fi
-
 [ "$fresh" == "true" ] && FRESH_CMD="--fresh" || FRESH_CMD=""
+
+# Configuration ---------------------------------------------------------
 
 echo "Configuring ..."
 
 cmake $FRESH_CMD -S . -B build \
     -DCMAKE_BUILD_TYPE=${build_type} \
     -DUSE_STATIC_LIBCXX=OFF \
-    -DBUILD_SHARED_LIBS=ON \
+    -DBUILD_SHARED_LIBS=OFF \
     -DMUJOCO_BUILD_EXAMPLES=OFF \
     -DMUJOCO_BUILD_DEV_EXAMPLES=OFF \
     -DMUJOCO_BUILD_SIMULATE=${build_simulate} \
@@ -78,17 +73,20 @@ cmake $FRESH_CMD -S . -B build \
     -DMUJOCO_TEST_PYTHON_UTIL=OFF \
     -DMUJOCO_WITH_USD=OFF \
     -DMUJOCO_USE_FILAMENT=${build_filament} \
-    -DMUJOCO_USE_FILAMENT_VULKAN=OFF \
-    -DFILAMENT_SUPPORTS_VULKAN=OFF \
-    -DFILAMENT_SKIP_SAMPLES=ON \
     -DMUJOCO_BUILD_STUDIO=${build_studio} \
-    -DFETCHCONTENT_BASE_DIR=${DEPENDENCIES_DIR} \
+    -DMUJOCO_USE_FILAMENT_VULKAN=${build_vulkan} \
+    -DFILAMENT_SUPPORTS_VULKAN=${build_vulkan} \
+    -DFILAMENT_SKIP_SAMPLES=ON \
     -DCMAKE_INSTALL_PREFIX=${USER_INSTALL_DIR} \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DCMAKE_CXX_FLAGS=\"-Wno-error=deprecated-declarations\" \
     -DFILAMENT_SHORTEN_MSVC_COMPILATION=OFF \
     ${CCACHE_ARGS} \
     ${CMAKE_ARGS}
+
+# -----------------------------------------------------------------------
+
+# Build -----------------------------------------------------------------
 
 echo "Building ..."
 
@@ -97,18 +95,19 @@ cmake --build build --config="${build_type}" --parallel ${njobs}
 echo "Copy compile_commands.json to the root of the project"
 cp build/compile_commands.json .
 
+# -----------------------------------------------------------------------
+
+# Install ---------------------------------------------------------------
+
 echo "Installing to target dir ..."
 
-cmake --install build
+source build_common.sh
 
-echo "Copy plugins to install directory"
+install_studio_platform ${ROOT_DIR}/build ${USER_INSTALL_DIR}
 
-mkdir -p ${USER_INSTALL_DIR}/mujoco_plugin
-cp ${ROOT_DIR}/build/lib/lib*.a ${USER_INSTALL_DIR}/lib
-cp ${ROOT_DIR}/build/lib/libactuator.* ${USER_INSTALL_DIR}/mujoco_plugin
-cp ${ROOT_DIR}/build/lib/libelasticity.* ${USER_INSTALL_DIR}/mujoco_plugin
-cp ${ROOT_DIR}/build/lib/libsensor.* ${USER_INSTALL_DIR}/mujoco_plugin
-cp ${ROOT_DIR}/build/lib/libsdf_plugin.* ${USER_INSTALL_DIR}/mujoco_plugin
+# -----------------------------------------------------------------------
+
+# Python bindings -------------------------------------------------------
 
 echo "Make source distribution"
 
@@ -123,6 +122,8 @@ export MUJOCO_PLUGIN_PATH="${USER_INSTALL_DIR}/mujoco_plugin"
 export MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS}"
 
 uv build -v --wheel --force-pep517 ${ROOT_DIR}/python/dist/mujoco-*.tar.gz --out-dir ${ROOT_DIR}/python/dist
+
+# -----------------------------------------------------------------------
 
 # Clean install dir afterwards, to avoid being used as default search path
 # rm -rf ${USER_INSTALL_DIR}
