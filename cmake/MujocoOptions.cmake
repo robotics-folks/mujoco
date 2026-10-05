@@ -104,6 +104,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang
     set(EXTRA_COMPILE_OPTIONS ${EXTRA_COMPILE_OPTIONS} -Wimplicit-fallthrough=5
                               -Wno-maybe-uninitialized
     )
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "15.0")
+      set(EXTRA_COMPILE_OPTIONS ${EXTRA_COMPILE_OPTIONS} -Wno-stringop-truncation)
+    endif()
   endif()
 endif()
 
