@@ -1605,9 +1605,6 @@
                   :ref:`gap<flexcomp-contact-gap>`
 
                .. grid-item::
-                  :ref:`internal<flexcomp-contact-internal>`
-
-               .. grid-item::
                   :ref:`selfcollide<flexcomp-contact-selfcollide>`
 
                .. grid-item::
@@ -1750,9 +1747,6 @@
 
                .. grid-item::
                   :ref:`gap<flex-contact-gap>`
-
-               .. grid-item::
-                  :ref:`internal<flex-contact-internal>`
 
                .. grid-item::
                   :ref:`selfcollide<flex-contact-selfcollide>`
@@ -4804,6 +4798,9 @@
 
             .. grid-item::
                :ref:`objname<sensor-insidesite-objname>`
+
+            .. grid-item::
+               :ref:`enclosed<sensor-insidesite-enclosed>`
 
 
       .. dropdown:: :ref:`distance<sensor-distance>` |*|

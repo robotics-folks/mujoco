@@ -170,8 +170,7 @@ class ViewerApp:
         print(f'Error reloading model from {self.model_path!r}: {ex}')
 
   def close(self) -> None:
-    ux.save_settings(self.theme)
-    self.viewer.close()
+    self.viewer.dispatch(messages.ExitEvent())
 
   def handle_keyboard_events(self) -> None:
     """Handles keyboard events."""
@@ -320,6 +319,10 @@ class ViewerApp:
 
   def build_gui(self) -> None:
     """Emit full Studio UI."""
+    # TODO(matijak): Consider adding a PreBuildGuiEvent and moving the theme and
+    # dockspace setup below into a handler for it. That would guarantee the
+    # dockspace exists before any plugin's BuildGuiEvent handler submits
+    # windows, instead of relying on ViewerApp's Priority.CRITICAL.
     ux.setup_theme(self.theme)
     ux.configure_docking_layout(
         show_toolbar=self.config.show_toolbar,
@@ -520,16 +523,14 @@ class ViewerApp:
       imgui.End()
       imgui.PopStyleVar(3)
 
-  @messages.handler(priority=messages.Priority.CRITICAL)
-  def _on_model(self, event: messages.ModelEvent) -> bool:
+  @messages.handler(priority=messages.Priority.INTERNAL)
+  def _on_post_model(self, event: messages.PostModelEvent) -> None:
     del event  # Model/data are owned by the Viewer.
     self._reset_app_state()
-    return False  # Do not consume to allow other handlers to receive the event.
 
   @messages.handler(priority=messages.Priority.INTERNAL)
-  def _on_exit(self, _: messages.ExitEvent) -> bool:
-    self.close()
-    return True
+  def _on_exit(self, _: messages.ExitEvent) -> None:
+    ux.save_settings(self.theme)
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_update(self, _: messages.UpdateEvent) -> None:

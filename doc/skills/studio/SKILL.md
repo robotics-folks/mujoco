@@ -3,9 +3,9 @@ name: mujoco-studio
 description: >-
   MuJoCo Studio viewer applications, interactive visualization, decoupled
   sim/viewer threads, message passing (Snapshot latest-wins vs Event FIFO queue),
-  lifecycle events (ViewerInitEvent, UpdateEvent, BuildGuiEvent, StepEvent),
-  @messages.handler priorities, launchers (launch_web, launch_native, launch_passive),
-  Python/C++ plugin registry (mjPLUGIN_LIB_INIT), NetImgui/WASM WebViewer streaming.
+  lifecycle events, @messages.handler priorities, blocking viewer runners and
+  non-blocking viewer launchers, Python/C++ plugin registry (mjPLUGIN_LIB_INIT),
+  NetImgui/WASM WebViewer streaming.
   Use for launching Studio viewers, authoring Studio plugins, simulation-viewer messaging.
   Do NOT use for ImGui widget layout (mujoco-gui) or physics simulation (mujoco-python).
 ---
@@ -91,11 +91,11 @@ message-driven plugin architecture:
     behaviors are decoupled into standalone plugin classes decorated with
     `@messages.handler(priority=...)`.
     -   **Simulation plugins (`sim_plugins`)**: Handle simulation-side events
-        (physics reset, step control, perturbations, policy changes,
-        `StepEvent`).
+        (e.g. physics reset, step control, perturbations, model reloading,
+        policy changes).
     -   **Viewer plugins (`viewer_plugins`)**: Handle rendering and UI lifecycle
-        events dispatched by `run_viewer_loop` (`ViewerInitEvent`,
-        `UpdateEvent`, `BuildGuiEvent`).
+        events (e.g. viewer initialization, model reloading, per-frame visual
+        updates, GUI construction).
 -   **Standard Samples (`python/mujoco/experimental/studio/`)**:
     -   `python/mujoco/experimental/studio/viewer.py` —
         Minimal baseline with standard GUI (`viewer_app.ViewerApp`).
@@ -129,24 +129,68 @@ channels. **Convention:** custom message classes derive from `Snapshot` or
 ### Lifecycle Events
 
 Lifecycle events are standard framework events dispatched by the runner loops to
-plugins to hook into rendering, UI layout, and physics execution:
+plugins to hook into rendering, UI layout, and physics execution. Each list
+below is ordered chronologically from startup through per-iteration execution to
+shutdown:
 
--   **Viewer Lifecycle Events** (sent from the viewer loop, `run_viewer_loop`,
-    to `viewer_plugins`):
-    -   `ViewerInitEvent` (`viewer_protocol.ViewerInitEvent`) — dispatched on
-        viewer initialization so stateful plugins can cache the viewer instance
-        (`event.viewer`).
-    -   `ViewerAppInitEvent` (`viewer_app.ViewerAppInitEvent`) — dispatched on
-        `ViewerApp` startup so plugins can cache application state and window
-        handles (`event.viewer_app`).
-    -   `BuildGuiEvent` — dispatched every frame to construct and lay out Dear
-        ImGui / ImPlot widgets.
-    -   `UpdateEvent` — dispatched every frame before building GUI to update
-        visuals, camera, perturbations, and transient geoms.
--   **Simulation Lifecycle Events** (dispatched by `ViewerHandle.sync` on the
-    sim side to `sim_plugins`):
-    -   `StepEvent` — dispatched on every `sync()` call so sim-side stepping
-        plugins (such as `StepControl`) can advance the physics.
+-   **Viewer Lifecycle Events** (dispatched on the viewer side by
+    `run_viewer_loop` to `viewer_plugins`):
+    1.  `ViewerInitEvent` (`viewer_protocol.ViewerInitEvent`) — dispatched once
+        on viewer initialization so stateful plugins can cache the viewer
+        instance (`event.viewer`).
+    2.  `ModelEvent` — received when a model is initially loaded or hot-swapped;
+        `Viewer` deep-copies `viewer.model`, creates `viewer.data`, and runs
+        `mj_forward`.
+    3.  `PostModelEvent` — dispatched locally by `Viewer` immediately after
+        `ModelEvent` has initialized `viewer.model` and `viewer.data`. Subscribe
+        to `PostModelEvent` (rather than `ModelEvent`) when resetting
+        viewer-plugin state on model changes so `viewer.model` and `viewer.data`
+        are already up to date.
+    4.  `UpdateEvent` — dispatched every frame (after incoming sim events and
+        snapshots are applied) to update visuals, camera, perturbations, and
+        transient geoms.
+    5.  `BuildGuiEvent` — dispatched every frame immediately after `UpdateEvent`
+        to construct and lay out Dear ImGui / ImPlot widgets.
+    6.  `ExitEvent` — dispatched once when the viewer shuts down, whether the
+        exit came from the sim side or from the window being closed. Handle it
+        to release resources (threads, pools, GPU handles).
+-   **Simulation Lifecycle Events** (dispatched on the sim side to
+    `sim_plugins`):
+    1.  `SimInitEvent` (`viewer_handle.SimInitEvent`) — dispatched once by
+        `ViewerHandle.__init__` so stateful plugins can cache the handle
+        (`event.handle`) instead of the launcher having to hand it to them.
+    2.  `ModelEvent` — dispatched when the initial model is set in
+        `ViewerHandle.__init__` or when a model is hot-swapped via
+        `handle.set_model()` (or received from the viewer); `ViewerHandle`
+        installs `handle.model` and `handle.data`, runs `mj_forward`, and
+        forwards the model to the viewer.
+    3.  `PostModelEvent` — dispatched locally by `ViewerHandle` immediately
+        after `ModelEvent` has installed `handle.model` and `handle.data` and
+        run `mj_forward`. Subscribe to `PostModelEvent` (rather than
+        `ModelEvent`) when resetting sim-plugin state on model changes.
+    4.  `PreStepEvent` — dispatched by `ViewerHandle.sync` on every call (after
+        incoming viewer events and snapshots are applied) so plugins can prepare
+        the simulation before physics advances (e.g. writing actuator controls,
+        applying forces, or hot-swapping models via `handle.set_model`).
+    5.  `StepEvent` — dispatched by `ViewerHandle.sync` immediately after
+        `PreStepEvent` so sim-side stepping plugins (such as `StepControl`) can
+        advance the physics.
+    6.  `PostStepEvent` — dispatched by `ViewerHandle.sync` immediately after
+        `StepEvent` (before `StateSnapshot` is broadcast) so observer/recorder
+        plugins can inspect or record the resulting simulation state.
+    7.  `ExitEvent` — dispatched once by `ViewerHandle.close()`, which the
+        `with` block calls on every exit path (normal exit, `KeyboardInterrupt`,
+        an exception, or the viewer dying). Handle it to release resources.
+
+> [!IMPORTANT]
+>
+> Do not return `True` from an `ExitEvent` handler: teardown must reach every
+> registered plugin, so no handler should consume the event.
+
+-   **Plugin-Dispatched Lifecycle Events**:
+    -   `ViewerAppInitEvent` (`viewer_app.ViewerAppInitEvent`) — dispatched by
+        the `ViewerApp` viewer plugin on startup so other viewer plugins can
+        cache application state and window handles (`event.viewer_app`).
 
 ### The `@messages.handler` Decorator
 
@@ -156,7 +200,7 @@ Plugins subscribe to messages by annotating methods with `@messages.handler`:
 from mujoco.experimental.studio import messages
 
 class MyPlugin:
-  @messages.handler(priority=messages.Priority.USER)
+  @messages.handler
   def on_build_gui(self, event: messages.BuildGuiEvent) -> bool | None:
     # Build Dear ImGui elements here
     return False  # Return True to consume and halt lower-priority handlers
@@ -164,10 +208,48 @@ class MyPlugin:
 
 #### Priorities (`messages.Priority`)
 
-1.  `CRITICAL` (1000) — System teardown, exit events, and emergency overrides.
+1.  `CRITICAL` (1000) — Core framework state synchronization and dockspace setup.
 2.  `USER` (100, default) — User plugins and custom UI tools.
 3.  `LIBRARY` (10) — Standard framework extensions and helpers.
 4.  `INTERNAL` (1) — Core framework operations and baseline fallbacks.
+
+##### Pre/Post Lifecycle Events vs. Handler Priorities
+
+There is an intentional distinction between **lifecycle phase events** (`Pre*` /
+`Post*`) and **handler priorities** (`messages.Priority`):
+
+-   **Why they can appear to overlap**: Because handlers for a single event run
+    in descending `Priority` order, it is tempting to sequence work before or
+    after a framework action by subscribing to the main action event and
+    fiddling with `priority=...` — for example, subscribing to `StepEvent` with
+    a priority higher or lower than `StepControl` (`Priority.INTERNAL`) to run
+    code before or after physics stepping, or subscribing to `ModelEvent` with a
+    custom priority to run before or after `ViewerHandle` / `Viewer` swaps the
+    model.
+-   **Why you should prefer `Pre*` / `Post*` events instead**: Using priorities
+    to order distinct lifecycle stages couples your plugin to internal priority
+    choices of other plugins and can expose stale references (for instance, a
+    high-priority `ModelEvent` handler runs *before* `ViewerHandle` or `Viewer`
+    has created the new `MjData` and run `mj_forward`, and a `StepEvent` handler
+    that calls `handle.set_model()` mid-dispatch leaves the in-flight
+    `StepEvent` holding the old `model` and `data`).
+-   **Rule of thumb**: Always choose the lifecycle event that matches the phase
+    you want and use a bare `@messages.handler` decorator:
+    -   **Reacting to a model load**: After `ModelEvent` installs the new model
+        and runs `mj_forward`, subscribe to `PostModelEvent` so `model` and
+        `data` are guaranteed to be initialized and forwarded.
+    -   **Before / during / after a physics step**: Subscribe to `PreStepEvent`
+        (to write controls, apply forces, or hot-swap models via
+        `handle.set_model`), `StepEvent` (only when your plugin is itself the
+        physics stepper), or `PostStepEvent` (to observe or record the stepped
+        state).
+    -   **Before / during GUI construction**: Subscribe to `UpdateEvent` for
+        per-frame state updates and `BuildGuiEvent` for Dear ImGui widget
+        submission.
+-   **When to use `messages.Priority`**: Reserve `priority=...` strictly for
+    cases where multiple handlers target the **exact same event and phase** and
+    one handler needs to override or consume (`return True`) the event before a
+    fallback handler runs.
 
 > [!IMPORTANT]
 >
@@ -175,59 +257,57 @@ class MyPlugin:
 > be delivered** to lower-priority handlers. Return `False` or `None` if
 > downstream plugins or default handlers also need the message.
 
-## 4. Python Launchers: `launch_web`, `launch_native` & `launch_passive`
+## 4. Python Runners: `launch_web`, `launch_native` & `launch_passive`
 
-Studio provides three launcher functions for running custom simulation loops:
+Studio provides three runner modules that launch the viewer and execute
+the simulation sync loop via `.run(...)`:
 
-1.  **`launch_web`**
+1.  **`launch_web.run`**
     (`python/mujoco/experimental/studio/launch_web.py`):
-    Spawns a WebViewer in a background daemon thread. **This is usually the most
-    practical choice.** Its major advantage is that the host Python simulation
-    script that launches the viewer has **no native graphics dependencies**
-    (e.g., no desktop display server, X11/Wayland, or Filament libraries
-    required on the host): the host executes physics and computes Dear ImGui
-    layout in a headless context, while streaming draw commands (via NetImgui)
-    and state snapshots over WebSockets to a WebAssembly client running in the
-    user's browser. This makes it ideal for headless servers, containers, and
-    remote development.
-2.  **`launch_native`**
+    Spawns a WebViewer in a background daemon thread and runs the simulation
+    loop. **This is usually the most practical choice.** Its major advantage is
+    that the host Python simulation script has **no native graphics
+    dependencies** (e.g., no desktop display server, X11/Wayland, or Filament
+    libraries required on the host): the host executes physics and computes Dear
+    ImGui layout in a headless context, while streaming draw commands (via
+    NetImgui) and state snapshots over WebSockets to a WebAssembly client
+    running in the user's browser. This makes it ideal for headless servers,
+    containers, and remote development.
+2.  **`launch_native.run`**
     (`python/mujoco/experimental/studio/launch_native.py`):
     Spawns a local desktop window with native Filament graphics (Vulkan or
-    OpenGL).
-3.  **`launch_passive`**
+    OpenGL) and runs the simulation loop.
+3.  **`launch_passive.run`**
     (`python/mujoco/experimental/studio/launch_passive.py`):
     A unified wrapper that inspects `config.gfx` and automatically delegates to
     `launch_web` (if `config.gfx in ('web', 'webgl')`) or `launch_native`.
 
 Unless you specifically need your application to switch dynamically between
 native desktop and web streaming, **use just one of these directly**. In most
-workflows, **`launch_web` is recommended**.
+workflows, **`launch_web.run` is recommended**.
 
 For a full reference implementation, see
 `python/mujoco/experimental/studio/viewer.py`.
 
-### Minimal Simulation Loop
+### Standard Blocking Runners
 
-All three launchers share the same identical runner interface and return a
-`ViewerHandle`:
+All three modules share the same `.run(...)` interface:
 
 ```python
 from mujoco.experimental.studio import launch_web  # Or launch_native / launch_passive
-from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import step_control
 from mujoco.experimental.studio import viewer_app
 from mujoco.experimental.studio import viewer_protocol
 
 config = viewer_protocol.ViewerConfig(title='Studio')
 
-with launch_web.launch_web(
+launch_web.run(
     config,
+    model=model,
+    data=data,
     viewer_plugins=[viewer_app.ViewerApp()],
     sim_plugins=[step_control.StepControl()],
-) as handle:
-  handle.send_to_viewer(messages.ModelEvent(model=model, path=model_path))
-  while handle.is_running():
-    model, data = handle.sync(model, data)
+)
 ```
 
 > [!WARNING]
@@ -236,8 +316,25 @@ with launch_web.launch_web(
 > `step_control.StepControl()` in `sim_plugins` provides standard
 > real-time-paced CPU stepping. If you omit `StepControl()` (for example, when
 > running GPU rollouts or custom RL loops), `handle.sync()` will **not advance
-> physics or sleep**, so your simulation loop must manage its own pacing to
+> physics or sleep**, so your stepping plugin must manage its own pacing to
 > avoid busy-spinning.
+
+### Advanced: Non-Blocking Launchers (`launch_web.launch`, `launch_native.launch`, `launch_passive.launch`)
+
+When attaching a viewer to an **external loop that you do not want to invert into
+a `StepEvent` plugin** (such as an existing RL training loop, trajectory replay
+script, or unit test), each module also provides a non-blocking `.launch(...)`
+context manager returning a `ViewerHandle`:
+
+```python
+with launch_web.launch(
+    config,
+    viewer_plugins=[viewer_app.ViewerApp()],
+    sim_plugins=[step_control.StepControl()],
+) as handle:
+  while handle.is_running():
+    model, data = handle.sync(model, data)
+```
 
 ## 5. Authoring Python Plugins
 

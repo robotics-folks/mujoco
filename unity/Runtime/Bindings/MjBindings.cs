@@ -118,7 +118,7 @@ public const int mjMAXLINEPNT = 1001;
 public const int mjMAXPLANEGRID = 200;
 public const bool THIRD_PARTY_MUJOCO_MJXMACRO_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_MUJOCO_H_ = true;
-public const int mjVERSION_HEADER = 3014000;
+public const int mjVERSION_HEADER = 3014001;
 
 
 // ------------------------------------Enums------------------------------------
@@ -1071,7 +1071,6 @@ public unsafe struct mjModel_ {
   public UInt64 nefm0L;
   public UInt64 nflexelemedge;
   public UInt64 nflexshelldata;
-  public UInt64 nflexevpair;
   public UInt64 nflextexcoord;
   public UInt64 nJfe;
   public UInt64 nJfv;
@@ -1307,7 +1306,6 @@ public unsafe struct mjModel_ {
   public double* flex_friction;
   public double* flex_margin;
   public double* flex_gap;
-  public byte* flex_internal;
   public int* flex_selfcollide;
   public int* flex_activelayers;
   public int* flex_passive;
@@ -1330,8 +1328,6 @@ public unsafe struct mjModel_ {
   public int* flex_bendingadr;
   public int* flex_shellnum;
   public int* flex_shelldataadr;
-  public int* flex_evpairadr;
-  public int* flex_evpairnum;
   public int* flex_texcoordadr;
   public int* flex_nodebodyid;
   public int* flex_vertbodyid;
@@ -1345,7 +1341,6 @@ public unsafe struct mjModel_ {
   public int* flex_elemedge;
   public int* flex_elemlayer;
   public int* flex_shell;
-  public int* flex_evpair;
   public double* flex_vert;
   public double* flex_vert0;
   public double* flex_vertmetric;
@@ -5796,6 +5791,9 @@ public unsafe struct mjData_ {
   public double* flexvert_xpos;
   public double* flexelem_aabb;
   public double* flexelem_krot;
+  public byte* flex_hessian_valid;
+  public double* flexvert_hessian;
+  public double* flexedge_hessian;
   public double* flexedge_J;
   public double* flexedge_length;
   public double* flexvert_J;
@@ -6825,13 +6823,13 @@ public static unsafe extern void mj_defaultVisual(mjVisual_* vis);
 public static unsafe extern mjModel_* mj_copyModel(mjModel_* dest, mjModel_* src);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
-public static unsafe extern void mj_saveModel(mjModel_* m, [MarshalAs(UnmanagedType.LPStr)]string filename, void* buffer, int buffer_sz);
+public static unsafe extern void mj_saveModel(mjModel_* m, [MarshalAs(UnmanagedType.LPStr)]string filename, void* buffer, UInt64 buffer_sz);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern mjModel_* mj_loadModel([MarshalAs(UnmanagedType.LPStr)]string filename, void* vfs);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
-public static unsafe extern mjModel_* mj_loadModelBuffer(void* buffer, int buffer_sz);
+public static unsafe extern mjModel_* mj_loadModelBuffer(void* buffer, UInt64 buffer_sz);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern void mj_deleteModel(mjModel_* m);

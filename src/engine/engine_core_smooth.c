@@ -15,6 +15,7 @@
 #include "engine/engine_core_smooth.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #include <mujoco/mjdata.h>
 #include <mujoco/mjmacro.h>
@@ -558,6 +559,9 @@ void mj_flex(const mjModel* m, mjData* d) {
   if (!m->nflex) {
     return;
   }
+
+  // geometry updates invalidate the lazily prepared Cartesian stretch Hessian
+  memset(d->flex_hessian_valid, 0, m->nflex * sizeof(mjtBool));
 
   // compute Cartesian positions of flex vertices
   for (int f=0; f < m->nflex; f++) {
@@ -1508,8 +1512,8 @@ void mj_transmission(const mjModel* m, mjData* d) {
 
         // relative rotation as expmap in the refsite frame
         mjtNum quat[4], refquat[4], vec[3];
-        mji_mulQuat(quat, m->site_quat+4*id, d->xquat+4*m->site_bodyid[id]);
-        mji_mulQuat(refquat, m->site_quat+4*refid, d->xquat+4*m->site_bodyid[refid]);
+        mji_mulQuat(quat, d->xquat+4*m->site_bodyid[id], m->site_quat+4*id);
+        mji_mulQuat(refquat, d->xquat+4*m->site_bodyid[refid], m->site_quat+4*refid);
         mji_subQuat(vec, quat, refquat);
 
         // relative rotational Jacobian in global frame
@@ -1671,8 +1675,8 @@ void mj_transmission(const mjModel* m, mjData* d) {
 
           // get site and refsite quats from parent bodies (avoiding mju_mat2Quat)
           mjtNum quat[4];
-          mji_mulQuat(quat, m->site_quat+4*id, d->xquat+4*m->site_bodyid[id]);
-          mji_mulQuat(refquat, m->site_quat+4*refid, d->xquat+4*m->site_bodyid[refid]);
+          mji_mulQuat(quat, d->xquat+4*m->site_bodyid[id], m->site_quat+4*id);
+          mji_mulQuat(refquat, d->xquat+4*m->site_bodyid[refid], m->site_quat+4*refid);
 
           // convert difference to expmap (axis-angle)
           mjtNum vec[3];
@@ -1769,6 +1773,9 @@ void mj_transmission(const mjModel* m, mjData* d) {
 
           // mark contact normals in efc_force
           if (!con->exclude) {
+            if (con->efc_address < 0) {
+              continue;
+            }
             counter++;
 
             // condim 1 or elliptic cones: normal is in the first row

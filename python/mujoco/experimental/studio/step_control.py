@@ -30,14 +30,10 @@ class StepControl:
   def __init__(self) -> None:
     self.step_control = sim.StepControl()
 
-  @messages.handler(priority=messages.Priority.LIBRARY)
-  def _on_model(self, event: messages.ModelEvent) -> bool:
+  @messages.handler(priority=messages.Priority.INTERNAL)
+  def _on_post_model(self, event: messages.PostModelEvent) -> None:
     del event
-    # Fresh step control so the new model starts time-synchronized. Runs at
-    # LIBRARY priority, before ViewerHandle swaps model/data and consumes the
-    # event at INTERNAL priority.
     self.step_control = sim.StepControl()
-    return False
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_step_control(self, event: messages.StepControlSnapshot) -> bool:
@@ -48,7 +44,5 @@ class StepControl:
     return True
 
   @messages.handler(priority=messages.Priority.INTERNAL)
-  def _on_step(self, event: messages.StepEvent) -> bool:
+  def _on_step(self, event: messages.StepEvent) -> None:
     self.step_control.advance(event.model, event.data)
-    # Do not consume: lower-priority plugins may observe the post-step state.
-    return False
