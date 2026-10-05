@@ -718,5 +718,90 @@ TEST_F(SetConstTest, SimpleBodyLostSameframeError) {
                              "sameframe no longer holds"));
 }
 
+TEST_F(SetConstTest, DampRatioInertia) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="J1" type="slide"/>
+        <geom size=".1" mass="1"/>
+      </body>
+      <body>
+        <joint name="J2" type="slide"/>
+        <geom size=".1" mass="1"/>
+      </body>
+      <body>
+        <joint name="B" type="ball"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="2 4 4"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="T1" armature="3">
+        <joint joint="J1" coef="1"/>
+        <joint joint="J2" coef="1e-6"/>
+      </fixed>
+    </tendon>
+    <actuator>
+      <position name="tendon" tendon="T1" kp="9" dampratio="1"/>
+      <orientation name="orient" joint="B" kp="3" dampratio="1"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+
+  // T1: mass = 1 + 3 (tendon armature) = 4, tiny J2 coef does not blow up
+  // damping = 2 * sqrt(9 * 4) = 12
+  EXPECT_NEAR(m->actuator_biasprm[0 * mjNBIAS + 2], -12, MjTol(1e-6, 1e-4));
+
+  // orient: average invweight = (1/2 + 1/4 + 1/4) / 3 = 1/3, mass = 3
+  // damping = 2 * sqrt(3 * 3) = 6
+  EXPECT_NEAR(m->actuator_biasprm[1 * mjNBIAS + 2], -6, MjTol(1e-10, 1e-6));
+}
+
+// The constant bending factor of M + K_bend is consumed only by bending-only
+// flexes: with stretching present the per-step factor replaces it, so a
+// singular M + K_bend must not be an error.
+TEST_F(SetConstTest, RankDeficientBendingFactor) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option solver="CG" integrator="discrete"/>
+    <worldbody>
+      <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.05 0.05 0.05"
+                radius=".005" dim="2" mass="0.5" dof="full">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e3" poisson="0.2" elastic2d="ELASTIC2D"
+                    thickness="0.01"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  for (const char* elastic2d : {"both", "bend"}) {
+    std::string model_xml(xml);
+    model_xml.replace(model_xml.find("ELASTIC2D"), 9, elastic2d);
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(model_xml.c_str(), error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    ASSERT_GT(m->nefm0dof, 0);
+    MjDataPtr d(mj_makeData(m.get()));
+
+    // vanishing vertex masses make M + K_bend singular (rigid motions)
+    for (int b = 1; b < m->nbody; b++) {
+      m->body_mass[b] = 1e-20;
+      m->body_inertia[3 * b + 0] = 1e-20;
+      m->body_inertia[3 * b + 1] = 1e-20;
+      m->body_inertia[3 * b + 2] = 1e-20;
+    }
+
+    std::string err = MjuErrorMessageFrom(mj_setConst)(m.get(), d.get());
+    if (std::string(elastic2d) == "both") {
+      EXPECT_EQ(err, "");
+    } else {
+      EXPECT_THAT(err, HasSubstr("constant metric factor is rank-deficient"));
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mujoco

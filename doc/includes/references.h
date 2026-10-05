@@ -210,18 +210,21 @@ typedef struct mjData_ {
   mjtNum* cinert;            // com-based body inertia and mass                  (nbody x 10)
 
   // computed by mj_fwdPosition/mj_flex
-  mjtNum* flexvert_xpos;     // Cartesian flex vertex positions                  (nflexvert x 3)
-  mjtNum* flexelem_aabb;     // flex element bounding boxes (center, size)       (nflexelem x 6)
-  mjtNum* flexelem_krot;     // corotated element stiffness (implicit only)      (nflexstiffness x 1)
-  mjtNum* flexedge_J;        // flex edge Jacobian                               (nJfe x 1)
-  mjtNum* flexedge_length;   // flex edge lengths                                (nflexedge x 1)
-  mjtNum* flexvert_J;        // flex vertex Jacobian                             (nJfv x 2)
-  mjtNum* flexvert_length;   // flex vertex lengths                              (nflexvert x 2)
-  mjtNum* bvh_aabb_dyn;      // global bounding box (center, size)               (nbvhdynamic x 6)
+  mjtNum*  flexvert_xpos;      // Cartesian flex vertex positions                (nflexvert x 3)
+  mjtNum*  flexelem_aabb;      // flex element bounding boxes (center, size)     (nflexelem x 6)
+  mjtNum*  flexelem_krot;      // corotated element stiffness (implicit only)    (nflexstiffness x 1)
+  mjtBool* flex_hessian_valid; // Cartesian stretch Hessian cache is current     (nflex x 1)
+  mjtNum*  flexvert_hessian;   // symmetric diagonal Hessian blocks              (nflexvert x 6)
+  mjtNum*  flexedge_hessian;   // oriented off-diagonal Hessian blocks           (nflexedge x 9)
+  mjtNum*  flexedge_J;         // flex edge Jacobian                             (nJfe x 1)
+  mjtNum*  flexedge_length;    // flex edge lengths                              (nflexedge x 1)
+  mjtNum*  flexvert_J;         // flex vertex Jacobian                           (nJfv x 2)
+  mjtNum*  flexvert_length;    // flex vertex lengths                            (nflexvert x 2)
+  mjtNum*  bvh_aabb_dyn;       // global bounding box (center, size)             (nbvhdynamic x 6)
 
   // AL contact state carried across steps (flag ipc, not in mjtState)
-  mjtNum* flexvert_lambda;   // flex contact multiplier                          (nflexvert x 1)
-  int*    flexvert_conage;   // flex contact age: <0 loaded, >0 steps since      (nflexvert x 1)
+  mjtNum*  flexvert_lambda;    // flex contact multiplier                        (nflexvert x 1)
+  int*     flexvert_conage;    // flex contact age: <0 loaded, >0 steps since    (nflexvert x 1)
 
   // computed by mj_fwdPosition/mj_tendon
   int*    ten_wrapadr;       // start address of tendon's path                   (ntendon x 1)
@@ -628,7 +631,6 @@ typedef struct mjModel_ {
   mjtSize nefm0L;                 // number of non-zeros in the constant metric factor
   mjtSize nflexelemedge;          // number of element edge ids in all flexes
   mjtSize nflexshelldata;         // number of shell fragment vertex ids in all flexes
-  mjtSize nflexevpair;            // number of element-vertex pairs in all flexes
   mjtSize nflextexcoord;          // number of vertices with texture coordinates
   mjtSize nJfe;                   // number of non-zeros in sparse flexedge Jacobian matrix
   mjtSize nJfv;                   // number of non-zeros in sparse flexvert Jacobian matrix
@@ -902,7 +904,6 @@ typedef struct mjModel_ {
   mjtNum*   flex_friction;        // friction for (slide, spin, roll)         (nflex x 3)
   mjtNum*   flex_margin;          // geometric inflation for contact          (nflex x 1)
   mjtNum*   flex_gap;             // additional contact detection buffer      (nflex x 1)
-  mjtBool*  flex_internal;        // internal flex collision enabled          (nflex x 1)
   int*      flex_selfcollide;     // self collision mode (mjtFlexSelf)        (nflex x 1)
   int*      flex_activelayers;    // number of active element layers, 3D only (nflex x 1)
   int*      flex_passive;         // passive collisions enabled               (nflex x 1)
@@ -927,8 +928,6 @@ typedef struct mjModel_ {
   int*      flex_bendingadr;      // first bending data address               (nflex x 1)
   int*      flex_shellnum;        // number of shells                         (nflex x 1)
   int*      flex_shelldataadr;    // first shell data address                 (nflex x 1)
-  int*      flex_evpairadr;       // first evpair address                     (nflex x 1)
-  int*      flex_evpairnum;       // number of evpairs                        (nflex x 1)
   int*      flex_texcoordadr;     // address in flex_texcoord; -1: none       (nflex x 1)
   int*      flex_nodebodyid;      // node body ids                            (nflexnode x 1)
   int*      flex_vertbodyid;      // vertex body ids                          (nflexvert x 1)
@@ -942,7 +941,6 @@ typedef struct mjModel_ {
   int*      flex_elemedge;        // element edge ids                         (nflexelemedge x 1)
   int*      flex_elemlayer;       // element distance from surface, 3D only   (nflexelem x 1)
   int*      flex_shell;           // shell fragment vertex ids (dim per frag) (nflexshelldata x 1)
-  int*      flex_evpair;          // (element, vertex) collision pairs        (nflexevpair x 2)
   mjtNum*   flex_vert;            // vertex positions in local body frames    (nflexvert x 3)
   mjtNum*   flex_vert0;           // vertex positions in qpos0 on [0, 1]^d    (nflexvert x 3)
   mjtNum*   flex_vertmetric;      // inverse of reference shape matrix        (nflexvert x 4)
@@ -2068,7 +2066,6 @@ typedef struct mjsFlex_ {          // flex specification
   int dim;                         // element dimensionality
   double radius;                   // radius around primitive element
   double size[3];                  // vertex bounding box half sizes in qpos0
-  mjtBool internal;                // enable internal collisions
   mjtBool flatskin;                // render flex skin with flat shading
   mjtFlexSelf selfcollide;         // mode for flex self collision
   int passive;                     // mode for passive collisions
@@ -2083,6 +2080,8 @@ typedef struct mjsFlex_ {          // flex specification
   double damping;                  // Rayleigh's damping
   double thickness;                // thickness (2D only)
   int elastic2d;                   // 2D passive forces; 0: none, 1: bending, 2: stretching, 3: both
+  int elastic3d;  // experimental 3D material (mjSpec only); 0: Saint
+                  // Venant-Kirchhoff, 1: Stable Neo-Hookean
   int cellcount[3];                // grid cell count for finite cell method
   int order;                       // interpolation order (1: trilinear, 2: quadratic)
 
@@ -3697,9 +3696,9 @@ void mj_defaultSolRefImp(mjtNum* solref, mjtNum* solimp);
 void mj_defaultOption(mjOption* opt);
 void mj_defaultVisual(mjVisual* vis);
 mjModel* mj_copyModel(mjModel* dest, const mjModel* src);
-void mj_saveModel(const mjModel* m, const char* filename, void* buffer, int buffer_sz);
+void mj_saveModel(const mjModel* m, const char* filename, void* buffer, mjtSize buffer_sz);
 mjModel* mj_loadModel(const char* filename, const mjVFS* vfs);
-mjModel* mj_loadModelBuffer(const void* buffer, int buffer_sz);
+mjModel* mj_loadModelBuffer(const void* buffer, mjtSize buffer_sz);
 void mj_deleteModel(mjModel* m);
 mjtSize mj_sizeModel(const mjModel* m);
 mjData* mj_makeData(const mjModel* m);

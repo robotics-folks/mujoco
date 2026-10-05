@@ -85,8 +85,11 @@ static int ZipMount(mjResource* resource) {
   handle->name = mujoco::user::FilePath(resource->name).Str();
   std::memset(&handle->archive, 0, sizeof(handle->archive));
 
+  const bool in_vfs =
+      resource->vfs && (mj_containsBufferVFS(resource->vfs, resource->name) == 1 ||
+                        mj_containsFileVFS(resource->vfs, nullptr, resource->name) == 1);
   std::error_code ec;
-  if (std::filesystem::is_regular_file(resource->name, ec)) {
+  if (!in_vfs && std::filesystem::is_regular_file(resource->name, ec)) {
     if (!mz_zip_reader_init_file(&handle->archive, resource->name, 0)) { return 0; }
   } else {
     mjResource* raw_res = mju_openResource("", resource->name, resource->vfs, nullptr, 0);
@@ -115,7 +118,10 @@ static int ZipMount(mjResource* resource) {
     mz_zip_archive_file_stat stat;
     if (!mz_zip_reader_file_stat(&handle->archive, i, &stat)) { return 0; }
     if (stat.m_uncomp_size > 0) {
-      handle->files[stat.m_filename] = FileInfo{i, static_cast<int>(stat.m_uncomp_size)};
+      // Index entries by their reduced name, as lookups are; this also maps the '\' separators
+      // of archives written by older Windows builds to '/'.
+      handle->files[mujoco::user::FilePath(stat.m_filename).Str()] =
+          FileInfo{i, static_cast<int>(stat.m_uncomp_size)};
     }
   }
 

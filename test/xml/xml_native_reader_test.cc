@@ -17,6 +17,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -2106,6 +2107,28 @@ TEST_F(XMLReaderTest, ResizeKeyframeAfterParsing) {
   mj_deleteVFS(vfs.get());
 }
 
+TEST_F(XMLReaderTest, CheckTextureGridlayoutParsing) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <texture name="test_skybox" type="skybox" file="dummy_image.png"
+               gridsize="2 4" gridlayout="LFRB.D.."/>
+    </asset>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, 0, error.data(), error.size());
+  EXPECT_THAT(spec, NotNull()) << error.data();
+  auto skybox_spec =
+      mjs_asTexture(mjs_findElement(spec, mjOBJ_TEXTURE, "test_skybox"));
+  EXPECT_THAT(skybox_spec, NotNull()) << error.data();
+  EXPECT_EQ(std::strlen(skybox_spec->gridlayout), 8);
+  EXPECT_TRUE(std::strcmp(skybox_spec->gridlayout, "LFRB.D..") == 0);
+
+  mj_deleteSpec(spec);
+}
+
 // ----------------------- test camera parsing ---------------------------------
 
 TEST_F(XMLReaderTest, CameraInvalidFovyAndSensorsize) {
@@ -2295,13 +2318,13 @@ TEST_F(XMLReaderTest, ReadsSkinGroups) {
       <body pos="1 -1 .6" name="B0_parent">
         <flexcomp name="B0" type="grid" count="4 4 1" spacing=".2 .2 .2" group="2" radius=".1" dim="2">
           <edge equality="true"/>
-          <contact internal="false" selfcollide="none"/>
+          <contact selfcollide="none"/>
         </flexcomp>
       </body>
       <body pos="-1 1 .6" name="B1_parent">
         <flexcomp name="B1" type="grid" count="4 4 1" spacing=".2 .2 .2" group="4" radius=".1" dim="2">
           <edge equality="true"/>
-          <contact internal="false" selfcollide="none"/>
+          <contact selfcollide="none"/>
         </flexcomp>
       </body>
     </worldbody>
@@ -4377,6 +4400,34 @@ message {
   mj_deleteModel(m);
   mj_deleteModel(m_orig);
   mj_deleteSpec(saved_spec);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(XMLReaderTest, DeepBodyNesting) {
+  constexpr int kDepth = 100;
+  std::string xml = "<mujoco><worldbody>";
+  for (int i = 0; i < kDepth; ++i) {
+    xml +=
+        "<body pos=\"0 .05 0\"><joint type=\"hinge\" armature=\"0.1\"/>"
+        "<geom type=\"capsule\" size=\"0.01 0.02\"/>";
+  }
+  for (int i = 0; i < kDepth; ++i) {
+    xml += "</body>";
+  }
+  xml += "</worldbody></mujoco>";
+
+  std::array<char, 1024> error;
+  mjSpec* spec =
+      mj_parseXMLString(xml.c_str(), nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+  EXPECT_EQ(m->nbody, kDepth + 1);
+  EXPECT_EQ(m->njnt, kDepth);
+  EXPECT_EQ(m->ngeom, kDepth);
+
+  mj_deleteModel(m);
   mj_deleteSpec(spec);
 }
 

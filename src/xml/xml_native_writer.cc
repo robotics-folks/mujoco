@@ -142,6 +142,12 @@ void mjXWriter::OneFlex(XMLElement* elem, const mjCFlex* flex) {
   string  text;
   mjCFlex defflex;
 
+  if (flex->elastic3d) {
+    throw mjXError(0,
+                   "Stable Neo-Hookean elasticity is mjSpec-only and cannot be "
+                   "written to MJCF");
+  }
+
   // common attributes
   WriteAttrTxt(elem, "name", flex->name);
   WriteAttrTable(elem,
@@ -2128,6 +2134,7 @@ void mjXWriter::Sensor(XMLElement* root) {
         WriteAttrTxt(elem, "objtype", mju_type2Str(sensor->objtype));
         WriteAttrTxt(elem, "objname", sensor->get_objname());
         WriteAttrTxt(elem, "site", sensor->get_refname());
+        if (sensor->intprm[0]) { WriteAttrTxt(elem, "enclosed", "true"); }
         break;
       case mjSENS_GEOMDIST:
         elem = InsertEnd(section, "distance");

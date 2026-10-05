@@ -605,9 +605,8 @@ class mjCBody : public mjCBody_, private mjsBody {
   template <class T>
   const std::vector<T*>& GetList() const;
 
-  // accumulate inertia of another body into this body, if `result` is not nullptr, the accumulated
-  // inertia will be stored in `result`, otherwise the body's private spec will be used.
-  void AccumulateInertia(const mjsBody* other, mjsBody* result = nullptr);
+  // accumulate compiled inertia of another body into this body
+  void AccumulateInertia(const mjsBody* other);
 
  private:
   mjCBody(const mjCBody& other, mjCModel* _model);  // copy constructor
@@ -615,6 +614,12 @@ class mjCBody : public mjCBody_, private mjsBody {
 
   void Compile(void);          // compiler
   void InertiaFromGeom(void);  // get inertial info from geoms
+
+  // get the inertial in the spec: center of mass in body coordinates and inertia matrix about it
+  void SpecInertial(double com[3], double inert[6]) const;
+
+  // merge the inertial in the spec of a child body into the inertial in the spec of this body
+  void MergeInertial(const mjCBody* child);
 
   // objects allocated by Add functions
   std::vector<mjCBody*>   bodies;   // child bodies
@@ -704,6 +709,7 @@ class mjCJoint : public mjCJoint_, private mjsJoint {
   friend class mjCDef;
   friend class mjCEquality;
   friend class mjCBody;
+  friend class mjCFlex;
   friend class mjCModel;
   friend class mjCSensor;
   friend class mjXWriter;
@@ -1002,7 +1008,6 @@ class mjCFlex_ : public mjCBase {
   std::vector<std::pair<int, int>> edge;          // edge vertex ids
   std::vector<int>                 shell;         // shell fragment vertex ids (dim per fragment)
   std::vector<int>                 elemlayer;     // element layer (distance from border)
-  std::vector<int>                 evpair;        // element-vertex pairs
   std::vector<StencilFlap>         flaps;         // adjacent triangles
   std::vector<double>              vertxpos;      // global vertex positions
   mjCBoundingVolumeHierarchy       tree;          // bounding volume hierarchy
@@ -1074,9 +1079,10 @@ class mjCFlex : public mjCFlex_, private mjsFlex {
 
 
  private:
+  bool IsSimple() const;           // fixed or independent XYZ-slide attachments
   void Compile(const mjVFS* vfs);  // compiler
   void CreateBVH(void);            // create flex BVH
-  void CreateShellPair(void);      // create shells and evpairs
+  void CreateShell(void);          // create shells
   void ComputeCellEmpty(const double* vpos,
                         const int*    elems,  // identify cells
                         int           nv,

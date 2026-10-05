@@ -460,7 +460,6 @@ inline constexpr mjXAttr kFlexcomp_contactAttrs[] = {
   {"solimp", mjXAttr::kNum, mjNIMP, false, false, false, false, (int)offsetof(mjsFlex, solimp)},
   {"margin", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, margin)},
   {"gap", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, gap)},
-  {"internal", mjXAttr::kBool, 1, true, false, false, false, (int)offsetof(mjsFlex, internal)},
   {"selfcollide", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsFlex, selfcollide), flexself_map, flexself_sz},
   {"activelayers", mjXAttr::kInt, 1, true, false, false, false, (int)offsetof(mjsFlex, activelayers)},
   {"passive", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsFlex, passive), bool_map, 2},
@@ -912,6 +911,7 @@ inline constexpr mjXAttr kInsidesiteAttrs[] = {
   {"site", mjXAttr::kString, 1, true, true, false, false, (int)offsetof(mjsSensor, refname)},
   {"objtype", mjXAttr::kEnum, 1, true, true, false, false, (int)offsetof(mjsSensor, objtype), frameobj_map, frameobj_sz},
   {"objname", mjXAttr::kString, 1, true, true, false, false, (int)offsetof(mjsSensor, objname)},
+  {"enclosed", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsSensor, intprm), bool_map, 2},
 };
 inline constexpr int kInsidesiteAttrsN = sizeof(kInsidesiteAttrs) / sizeof(kInsidesiteAttrs[0]);
 

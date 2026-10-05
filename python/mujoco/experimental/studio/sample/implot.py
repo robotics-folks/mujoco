@@ -127,6 +127,14 @@ class BodyInspector:
     self._app = event.viewer_app
 
   @messages.handler
+  def on_post_model(self, event: messages.PostModelEvent) -> None:
+    """Resets plotted history and body selection when the model changes."""
+    del event
+    self._centroid = [np.zeros(3) for _ in range(_N_HISTORY)]
+    self._euler = [np.zeros(3) for _ in range(_N_HISTORY)]
+    self._body_id = -1
+
+  @messages.handler
   def inspect_body(self, _: messages.BuildGuiEvent) -> None:
     """Renders the body-inspection charts in ImGui/ImPlot."""
     app = self._app
@@ -236,19 +244,13 @@ def main(argv: list[str]) -> None:
       http_port=_PORT.value,
   )
 
-  with launch_passive.launch_passive(
+  launch_passive.run(
       config,
+      model=model,
+      data=data,
       viewer_plugins=[viewer_app.ViewerApp(), BodyInspector()],
       sim_plugins=[step_control.StepControl()],
-  ) as handle:
-    handle.send_to_viewer(messages.ModelEvent(model=model))
-
-    try:
-      while handle.is_running():
-        model, data = handle.sync(model, data)
-    except KeyboardInterrupt:
-      # Ctrl+C is the documented way to quit; exit cleanly, no traceback.
-      print('\nShutting down.', flush=True)
+  )
 
 
 if __name__ == '__main__':

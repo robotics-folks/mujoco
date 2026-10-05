@@ -232,7 +232,6 @@ void mjs_defaultFlex(mjsFlex* flex) {
   flex->cellcount[0] = 1;
   flex->cellcount[1] = 1;
   flex->cellcount[2] = 1;
-  flex->internal     = 0;
   flex->selfcollide  = mjFLEXSELF_AUTO;
   flex->activelayers = 1;
   flex->rgba[0] = flex->rgba[1] = flex->rgba[2] = 0.5f;
@@ -276,8 +275,7 @@ void mjs_defaultTexture(mjsTexture* texture) {
   texture->random                                        = 0.01;
   texture->gridsize[0] = texture->gridsize[1]     = 1;
   texture->nchannel                               = 3;
-  char defaultlayout[sizeof(texture->gridlayout)] = "............";
-  memcpy(texture->gridlayout, defaultlayout, sizeof(texture->gridlayout));
+  memcpy(texture->gridlayout, "............", sizeof(texture->gridlayout));
 }
 
 

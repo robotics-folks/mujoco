@@ -3659,6 +3659,7 @@
     <xs:attribute name="site" type="xs:string" use="required"/>
     <xs:attribute name="objtype" type="kw_frameobj" use="required"/>
     <xs:attribute name="objname" type="xs:string" use="required"/>
+    <xs:attribute name="enclosed" type="kw_bool" default="false"/>
   </xs:complexType>
 
   <xs:complexType name="distance">
@@ -4070,7 +4071,6 @@
     <xs:attribute name="solimp" type="double1to5" default="0.9 0.95 0.001 0.5 2"/>
     <xs:attribute name="margin" type="xs:double"/>
     <xs:attribute name="gap" type="xs:double"/>
-    <xs:attribute name="internal" type="kw_bool"/>
     <xs:attribute name="selfcollide" type="kw_flexself" default="auto"/>
     <xs:attribute name="activelayers" type="xs:int" default="1"/>
     <xs:attribute name="passive" type="kw_bool"/>

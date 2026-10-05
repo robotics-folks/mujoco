@@ -4294,7 +4294,7 @@ TEST_F(ImplicitIntegratorTest, FlexContactEnergy) {
         <edge equality="true" damping="0.1"/>
         <elasticity young="3e6" poisson="0" thickness="2e-2"
                     elastic2d="bend" damping="0"/>
-        <contact solref="0.003 1" internal="false" selfcollide="none"/>
+        <contact solref="0.003 1" selfcollide="none"/>
       </flexcomp>
     </worldbody>
   </mujoco>
@@ -4347,7 +4347,7 @@ TEST_F(ImplicitIntegratorTest, BendingDampingDecaysEnergy) {
         <edge equality="false" damping="0" stiffness="0"/>
         <elasticity young="1e6" poisson="0" thickness="0.02"
                     elastic2d="bend" damping="0.1"/>
-        <contact solref="0.01" internal="false" selfcollide="none"/>
+        <contact solref="0.01" selfcollide="none"/>
       </flexcomp>
     </worldbody>
   </mujoco>
@@ -4406,7 +4406,7 @@ TEST_F(ImplicitIntegratorTest, InterpStretchEnergy) {
                 spacing=".05 .05 .05" radius=".005" name="cube"
                 dim="3" mass="10" dof="trilinear">
         <elasticity young="1e6" poisson="0.3" damping="0"/>
-        <contact selfcollide="none" internal="false"/>
+        <contact selfcollide="none"/>
       </flexcomp>
     </worldbody>
   </mujoco>
@@ -4870,6 +4870,48 @@ TEST_F(ForwardTest, DiscreteJointInverseConsistency) {
   scale = mju_norm(data->qfrc_passive, nv) +
           mju_norm(data->qfrc_constraint, nv) + mju_norm(data->qfrc_bias, nv);
   EXPECT_LT(mju_norm(data->qfrc_inverse, nv), MjTol(1e-6, 5e-5) * scale);
+}
+
+TEST_F(ForwardTest, SNHRequiresDiscreteIntegrator) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="discrete"/>
+    <worldbody>
+      <flexcomp name="test" dim="3" count="2 2 2">
+        <contact contype="0" conaffinity="0" selfcollide="none"/>
+        <elasticity young="1000" damping=".01"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>)";
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, nullptr, 0);
+  ASSERT_THAT(spec, NotNull());
+  mjs_asFlex(mjs_findElement(spec, mjOBJ_FLEX, "test"))->elastic3d = 1;
+  MjModelPtr m(mj_compile(spec, nullptr));
+  mj_deleteSpec(spec);
+  ASSERT_THAT(m.get(), NotNull());
+  MjDataPtr d = MakeData(m);
+  auto forward_error = MjuErrorMessageFrom(mj_forward);
+  auto step_error = MjuErrorMessageFrom(mj_step);
+  auto step1_error = MjuErrorMessageFrom(mj_step1);
+  for (int integrator :
+       {mjINT_EULER, mjINT_RK4, mjINT_IMPLICIT, mjINT_IMPLICITFAST}) {
+    SCOPED_TRACE(integrator);
+    m->opt.integrator = integrator;
+    for (auto error :
+         {forward_error(m.get(), d.get()), step_error(m.get(), d.get()),
+          step1_error(m.get(), d.get())}) {
+      EXPECT_THAT(
+          error,
+          HasSubstr(
+              "stable Neo-Hookean elasticity requires integrator='discrete'"));
+    }
+  }
+  m->opt.integrator = mjINT_DISCRETE;
+  for (int solver : {mjSOL_CG, mjSOL_NEWTON}) {
+    m->opt.solver = solver;
+    EXPECT_EQ(forward_error(m.get(), d.get()), "");
+    EXPECT_EQ(step_error(m.get(), d.get()), "");
+  }
 }
 
 // flex elasticity lost its implicit treatment under implicit*: the migration is

@@ -922,16 +922,18 @@ mjrfMaterial ModelRenderables::GetMaterial(mjtObj obj_type, int obj_index,
   if (obj_type == mjOBJ_GEOM && vopts_.flags[mjVIS_TRANSPARENT]) {
     const int category = GetBodyCategory(model, model->geom_bodyid[obj_index]);
     if (category == mjCAT_DYNAMIC) {
-      material.color[3] = model->vis.map.alpha;
+      material.color[3] *= model->vis.map.alpha;
     }
   }
 
   // Highlight selected objects.
   if (selected_obj_type_ == mjOBJ_BODY) {
-    if (model->geom_bodyid[obj_index] == selected_obj_index_) {
+    if (obj_type == mjOBJ_GEOM &&
+        model->geom_bodyid[obj_index] == selected_obj_index_) {
       material.selected = true;
     }
-    if (model->site_bodyid[obj_index] == selected_obj_index_) {
+    if (obj_type == mjOBJ_SITE &&
+        model->site_bodyid[obj_index] == selected_obj_index_) {
       material.selected = true;
     }
   } else if (selected_obj_type_ == obj_type &&
