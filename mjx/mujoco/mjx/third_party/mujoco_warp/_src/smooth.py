@@ -572,6 +572,8 @@ def _flex_face_kinematics(
 
 @event_scope
 def flex(m: Model, d: Data):
+  if m.nflex > 0:
+    d.flex_hessian_valid.zero_()
   # Compute node positions first (needed for interpolated vertex positions)
   wp.launch(
     _flex_nodes,
@@ -2966,8 +2968,8 @@ def _transmission(
 
       if rotational_transmission:
         # get site and refsite quats from parent bodies (avoid converting matrix to quat)
-        quat = math.mul_quat(site_quat[site_quat_id, siteid], xquat_in[worldid, bodyid])
-        refquat = math.mul_quat(site_quat[site_quat_id, refid], xquat_in[worldid, bodyrefid])
+        quat = math.mul_quat(xquat_in[worldid, bodyid], site_quat[site_quat_id, siteid])
+        refquat = math.mul_quat(xquat_in[worldid, bodyrefid], site_quat[site_quat_id, refid])
 
         # convert difference to expmap (axis-angle)
         vec = math.quat_sub(quat, refquat)
@@ -4533,7 +4535,7 @@ def tendon(m: Model, d: Data):
   d.ten_length.zero_()
   d.ten_J.zero_()
 
-  # Cartesian 3D points fro geom wrap points
+  # Cartesian 3D points for geom wrap points
   wrap_geom_xpos = wp.empty((d.nworld, m.nwrap), dtype=wp.spatial_vector)
 
   # process joint tendons

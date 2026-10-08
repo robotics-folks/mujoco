@@ -205,9 +205,9 @@ mjCMesh::mjCMesh(mjCModel* _model, mjCDef* _def) {
   center_       = nullptr;
   graph_        = nullptr;
   needhull_     = false;
+  needsdf_      = false;
   maxhullvert_  = -1;
   processed_    = false;
-  visual_       = true;
   needreorient_ = true;
 
   // reset to default if given
@@ -266,6 +266,8 @@ void mjCMesh::PointToLocal() {
   spec.userfacenormal     = &spec_facenormal_;
   spec.usertexcoord       = &spec_texcoord_;
   spec.userfacetexcoord   = &spec_facetexcoord_;
+  spec.usernode           = &spec_node_;
+  spec.usertet            = &spec_tet_;
   spec.material           = &spec_material_;
   spec.plugin.plugin_name = &plugin_name;
   spec.plugin.name        = &plugin_instance_name;
@@ -278,15 +280,16 @@ void mjCMesh::PointToLocal() {
   userfacenormal          = nullptr;
   usertexcoord            = nullptr;
   userfacetexcoord        = nullptr;
+  usernode                = nullptr;
+  usertet                 = nullptr;
 }
 
 
 void mjCMesh::NameSpace(const mjCModel* m) {
-  if (name.empty()) {
-    std::string stripped = mjuu_strippath(spec_file_);
-    name                 = mjuu_stripext(stripped);
-  }
   mjCBase::NameSpace(m);
+  if (!spec_material_.empty() && model != m) {
+    spec_material_ = m->prefix + spec_material_ + m->suffix;
+  }
   if (!plugin_instance_name.empty()) {
     plugin_instance_name = m->prefix + plugin_instance_name + m->suffix;
   }
@@ -300,6 +303,8 @@ void mjCMesh::CopyFromSpec() {
   content_type_ = spec_content_type_;
   normal_       = spec_normal_;
   face_         = spec_face_;
+  node_         = spec_node_;
+  tet_          = spec_tet_;
   material_     = spec_material_;
   ProcessVertices(spec_vert_);
   texcoord_          = spec_texcoord_;
@@ -316,12 +321,6 @@ void mjCMesh::CopyFromSpec() {
   szgraph_ = 0;
   center_  = nullptr;
   graph_   = nullptr;
-
-  // use filename if name is missing
-  if (name.empty()) {
-    std::string stripped = mjuu_strippath(file_);
-    name                 = mjuu_stripext(stripped);
-  }
 }
 
 
@@ -364,8 +363,10 @@ void mjCMesh::LoadSDF() {
   std::vector<const char*> names(pplugin->nattribute, 0);
   std::vector<const char*> values(pplugin->nattribute, 0);
   for (int i = 0; i < pplugin->nattribute; i++) {
+    // an attribute which is not configured is empty, and is not added to the configuration
     names[i]  = pplugin->attributes[i];
-    values[i] = plugin_instance->config_attribs[names[i]].c_str();
+    auto it   = plugin_instance->config_attribs.find(names[i]);
+    values[i] = it != plugin_instance->config_attribs.end() ? it->second.c_str() : "";
   }
 
   if (pplugin->sdf_attribute) {
@@ -421,6 +422,7 @@ void mjCMesh::LoadSDF() {
 
   needreorient_ = false;
   needsdf       = false;
+  needsdf_      = false;
   normal_       = std::move(usernormal);
   face_         = std::move(userface);
   ProcessVertices(uservert);
@@ -437,6 +439,7 @@ void mjCMesh::CacheMesh(mjCCache* cache, const mjResource* resource) {
   // mesh properties
   mesh->maxhullvert_ = maxhullvert_;
   mesh->inertia      = inertia;
+  mesh->smoothnormal = smoothnormal;
   std::copy(scale, scale + 3, mesh->scale);
 
   // mesh processed data
@@ -603,8 +606,12 @@ bool mjCMesh::IsMSH() const {
 void mjCMesh::LoadFromDecoder(mjResource* resource, bool remove_repeated) {
   const mjpDecoder* decoder = mjp_findDecoder(resource, content_type_.c_str());
   if (!decoder) { throw mjCError(this, "no decoder found for mesh file '%s'", resource->name); }
-  mjSpec* mesh_spec = decoder->decode(resource, nullptr);
-  if (!mesh_spec) { throw mjCError(this, "decoder failed for mesh file '%s'", resource->name); }
+  char    error[1024] = "";
+  mjSpec* mesh_spec   = decoder->decode(resource, nullptr, error, sizeof(error));
+  if (!mesh_spec) {
+    if (error[0]) { throw mjCError(this, "%s", error); }
+    throw mjCError(this, "decoder failed for mesh file '%s'", resource->name);
+  }
   mjsElement* elem = mjs_firstElement(mesh_spec, mjOBJ_MESH);
   if (elem) {
     mjsMesh* src_mesh = mjs_asMesh(elem);
@@ -614,6 +621,10 @@ void mjCMesh::LoadFromDecoder(mjResource* resource, bool remove_repeated) {
       face_.assign(src_mesh->userface->begin(), src_mesh->userface->end());
       facenormal_.assign(src_mesh->userfacenormal->begin(), src_mesh->userfacenormal->end());
       facetexcoord_.assign(src_mesh->userfacetexcoord->begin(), src_mesh->userfacetexcoord->end());
+      if (src_mesh->usernode) {
+        node_.assign(src_mesh->usernode->begin(), src_mesh->usernode->end());
+      }
+      if (src_mesh->usertet) { tet_.assign(src_mesh->usertet->begin(), src_mesh->usertet->end()); }
 
 
       std::vector<float> vert(src_mesh->uservert->begin(), src_mesh->uservert->end());
@@ -662,7 +673,6 @@ void mjCMesh::TryCompile(const mjVFS* vfs) {
 
   bool fromCache = false;
   CopyFromSpec();
-  visual_         = true;
   mjCCache* cache = reinterpret_cast<mjCCache*>(mj_getCache()->impl_);
 
   Clock::time_point t0 = Clock::now();
@@ -750,7 +760,7 @@ void mjCMesh::TryCompile(const mjVFS* vfs) {
     // we need to compute it here. If inversely it has an octree but we *do not*
     // need one, we clear it.
     t0 = Clock::now();
-    if (!needsdf) {
+    if (!needsdf && !needsdf_) {
       octree_.Clear();
     } else if (octree_.NumNodes() == 0) {
       std::vector<double> dvert(vert_.begin(), vert_.end());
@@ -879,11 +889,6 @@ void mjCMesh::CopyPolygonNormals(mjtNum* arr) {
 }
 
 
-void mjCMesh::DelTexcoord() {
-  texcoord_.clear();
-}
-
-
 // set geom size to match mesh
 void mjCMesh::FitGeom(mjCGeom* geom, double center[3]) {
   // use inertial box
@@ -970,6 +975,9 @@ bool mjCMesh::LoadCachedMesh(mjCCache* cache, const mjResource* resource) {
 
     // check if inertia is different
     if (inertia != mesh->inertia) { return false; }
+
+    // check if normal generation is different
+    if (smoothnormal != mesh->smoothnormal) { return false; }
 
     // check if scale is different
     if (scale[0] != mesh->scale[0] || scale[1] != mesh->scale[1] || scale[2] != mesh->scale[2]) {
@@ -1485,7 +1493,7 @@ void mjCMesh::Process() {
 
   t0 = Clock::now();
   // make octree
-  if (needsdf) {
+  if (needsdf || needsdf_) {
     octree_.SetFace(dvert, face_);
     octree_.SetMaxDepth(spec.octree_maxdepth);
     octree_.CreateOctree(aamm_);
@@ -2377,6 +2385,521 @@ void mjCMesh::MakeCone(int nedge, double radius) {
 }
 
 
+// get point id from box coordinates and side
+static int BoxID(int ix, int iy, int iz, const int count[3]) {
+  // side iz=0
+  if (iz == 0) {
+    return ix * count[1] + iy + 1;
+  }
+
+  // side iz=max
+  else if (iz == count[2] - 1) {
+    return count[0] * count[1] + ix * count[1] + iy + 1;
+  }
+
+  // side iy=0
+  else if (iy == 0) {
+    return 2 * count[0] * count[1] + ix * (count[2] - 2) + iz - 1 + 1;
+  }
+
+  // side iy=max
+  else if (iy == count[1] - 1) {
+    return 2 * count[0] * count[1] + count[0] * (count[2] - 2) + ix * (count[2] - 2) + iz - 1 + 1;
+  }
+
+  // side ix=0
+  else if (ix == 0) {
+    return 2 * count[0] * count[1] +
+           2 * count[0] * (count[2] - 2) +
+           (iy - 1) * (count[2] - 2) +
+           iz -
+           1 +
+           1;
+  }
+
+  // side ix=max
+  else {
+    return 2 * count[0] * count[1] +
+           2 * count[0] * (count[2] - 2) +
+           (count[1] - 2) * (count[2] - 2) +
+           (iy - 1) * (count[2] - 2) +
+           iz -
+           1 +
+           1;
+  }
+}
+
+
+// shape onto which the surface of a box is projected
+enum BoxShape { kBoxShapeBox, kBoxShapeCylinder, kBoxShapeEllipsoid };
+
+
+// project from box to other shape
+static void BoxProject(double*      pos,
+                       int          ix,
+                       int          iy,
+                       int          iz,
+                       const int    count[3],
+                       const double spacing[3],
+                       BoxShape     shape) {
+  // init point
+  pos[0] = 2.0 * ix / (count[0] - 1) - 1;
+  pos[1] = 2.0 * iy / (count[1] - 1) - 1;
+  pos[2] = 2.0 * iz / (count[2] - 1) - 1;
+
+  // determine sizes
+  double size[3] = {0.5 * spacing[0] * (count[0] - 1),
+                    0.5 * spacing[1] * (count[1] - 1),
+                    0.5 * spacing[2] * (count[2] - 1)};
+
+  // box
+  if (shape == kBoxShapeBox) {
+    pos[0] *= size[0];
+    pos[1] *= size[1];
+    pos[2] *= size[2];
+  }
+
+  // cylinder
+  else if (shape == kBoxShapeCylinder) {
+    double L0 = std::max(std::abs(pos[0]), std::abs(pos[1]));
+    mjuu_normvec(pos, 2);
+    pos[0] *= size[0] * L0;
+    pos[1] *= size[1] * L0;
+    pos[2] *= size[2];
+  }
+
+  // ellipsoid
+  else if (shape == kBoxShapeEllipsoid) {
+    mjuu_normvec(pos, 3);
+    pos[0] *= size[0];
+    pos[1] *= size[1];
+    pos[2] *= size[2];
+  }
+}
+
+
+static int mat2lin(int ix, int iy, int iz, const int count[3]) {
+  return ix * count[1] * count[2] + iy * count[2] + iz;
+}
+
+
+// generate grid points, elements and texcoords:
+// 1D points only, 2D triangles or 3D tetrahedra
+static void GridData(std::vector<double>& points,
+                     std::vector<int>&    elements,
+                     std::vector<float>&  texcoords,
+                     const int            count[3],
+                     const double         spacing[3],
+                     int                  dim,
+                     bool                 disc,
+                     bool                 needtex) {
+  // 1D: points only, connectivity is implicit
+  if (dim == 1) {
+    for (int ix = 0; ix < count[0]; ix++) {
+      points.push_back(spacing[0] * (ix - 0.5 * (count[0] - 1)));
+      points.push_back(0);
+      points.push_back(0);
+    }
+  }
+
+  // 2D
+  else if (dim == 2) {
+    for (int ix = 0; ix < count[0]; ix++) {
+      for (int iy = 0; iy < count[1]; iy++) {
+        int quad2tri[2][3] = {
+            {0, 1, 2},
+            {0, 2, 3}
+        };
+
+        // add point
+        double pos[2] = {spacing[0] * (ix - 0.5 * (count[0] - 1)),
+                         spacing[1] * (iy - 0.5 * (count[1] - 1))};
+        points.push_back(pos[0]);
+        points.push_back(pos[1]);
+        points.push_back(0);
+
+        // add texture coordinates, if not specified explicitly
+        if (needtex) {
+          texcoords.push_back(ix / (double)std::max(count[0] - 1, 1));
+          texcoords.push_back(iy / (double)std::max(count[1] - 1, 1));
+        }
+
+        // flip triangles if radial projection is requested
+        if (((pos[0] < -mjEPS && pos[1] > -mjEPS) || (pos[0] > -mjEPS && pos[1] < -mjEPS)) &&
+            disc) {
+          quad2tri[0][2] = 3;
+          quad2tri[1][0] = 1;
+        }
+
+        // add elements
+        if (ix < count[0] - 1 && iy < count[1] - 1) {
+          int vert[4] = {
+              count[2] * count[1] * (ix + 0) + count[2] * (iy + 0),
+              count[2] * count[1] * (ix + 1) + count[2] * (iy + 0),
+              count[2] * count[1] * (ix + 1) + count[2] * (iy + 1),
+              count[2] * count[1] * (ix + 0) + count[2] * (iy + 1),
+          };
+          for (int s = 0; s < 2; s++) {
+            for (int v = 0; v < 3; v++) { elements.push_back(vert[quad2tri[s][v]]); }
+          }
+        }
+      }
+    }
+  }
+
+  // 3D
+  else {
+    int cube2tets[6][4] = {
+        {0, 3, 1, 7},
+        {0, 1, 4, 7},
+        {1, 3, 2, 7},
+        {1, 2, 6, 7},
+        {1, 5, 4, 7},
+        {1, 6, 5, 7}
+    };
+    for (int ix = 0; ix < count[0]; ix++) {
+      for (int iy = 0; iy < count[1]; iy++) {
+        for (int iz = 0; iz < count[2]; iz++) {
+          // add point
+          points.push_back(spacing[0] * (ix - 0.5 * (count[0] - 1)));
+          points.push_back(spacing[1] * (iy - 0.5 * (count[1] - 1)));
+          points.push_back(spacing[2] * (iz - 0.5 * (count[2] - 1)));
+
+          // add texture coordinates, if not specified explicitly
+          if (needtex) {
+            texcoords.push_back(ix / (float)std::max(count[0] - 1, 1));
+            texcoords.push_back(iy / (float)std::max(count[1] - 1, 1));
+          }
+
+          // add elements
+          if (ix < count[0] - 1 && iy < count[1] - 1 && iz < count[2] - 1) {
+            int vert[8] = {
+                count[2] * count[1] * (ix + 0) + count[2] * (iy + 0) + iz + 0,
+                count[2] * count[1] * (ix + 1) + count[2] * (iy + 0) + iz + 0,
+                count[2] * count[1] * (ix + 1) + count[2] * (iy + 1) + iz + 0,
+                count[2] * count[1] * (ix + 0) + count[2] * (iy + 1) + iz + 0,
+                count[2] * count[1] * (ix + 0) + count[2] * (iy + 0) + iz + 1,
+                count[2] * count[1] * (ix + 1) + count[2] * (iy + 0) + iz + 1,
+                count[2] * count[1] * (ix + 1) + count[2] * (iy + 1) + iz + 1,
+                count[2] * count[1] * (ix + 0) + count[2] * (iy + 1) + iz + 1,
+            };
+            for (int s = 0; s < 6; s++) {
+              for (int v = 0; v < 4; v++) { elements.push_back(vert[cube2tets[s][v]]); }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+
+// save procedurally generated points, elements and texcoords to a mesh spec
+static void SetProcedural(mjsMesh*                   spec,
+                          const std::vector<double>& points,
+                          const std::vector<int>&    elements,
+                          const std::vector<float>&  texcoords,
+                          int                        dim) {
+  // 1D meshes only have nodes, uservert is needed by surfaces and volumes used by geoms
+  if (dim > 1) {
+    std::vector<float> points_f(points.begin(), points.end());
+    mjs_setFloat(spec->uservert, points_f.data(), points_f.size());
+  }
+  mjs_setDouble(spec->usernode, points.data(), points.size());
+  if (dim == 3) {
+    mjs_setInt(spec->usertet, elements.data(), elements.size());
+  } else if (dim == 2) {
+    mjs_setInt(spec->userface, elements.data(), elements.size());
+  }
+  if (!texcoords.empty()) { mjs_setFloat(spec->usertexcoord, texcoords.data(), texcoords.size()); }
+}
+
+
+// make a line of nodes (dim=1), a 2D grid of triangles (dim=2) or a 3D grid of
+// tetrahedra (dim=3); 1D grids only have nodes since their connectivity is implicit
+void mjCMesh::MakeGrid(const int count[3], const double spacing[3], int dim, bool needtex) {
+  std::vector<double> points;
+  std::vector<int>    elements;
+  std::vector<float>  texcoords;
+  GridData(points, elements, texcoords, count, spacing, dim, /*disc=*/false, needtex);
+  SetProcedural(&spec, points, elements, texcoords, dim);
+}
+
+
+// make a closed circle of count[0]-1 nodes with spacing[0] between consecutive
+// nodes; only nodes are generated since the connectivity is implicit; at least
+// three nodes (count[0] >= 4) are needed, otherwise nothing is generated
+void mjCMesh::MakeCircle(const int count[3], const double spacing[3]) {
+  if (count[0] < 4) { return; }
+  std::vector<double> points;
+  double              theta  = 2 * mjPI / (count[0] - 1);
+  double              radius = spacing[0] / std::sin(theta / 2) / 2;
+  for (int ix = 0; ix < count[0] - 1; ix++) {
+    points.push_back(radius * std::cos(theta * ix));
+    points.push_back(radius * std::sin(theta * ix));
+    points.push_back(0);
+  }
+  SetProcedural(&spec, points, {}, {}, 1);
+}
+
+
+// make a 2D disc of triangles by radial projection of a square grid
+void mjCMesh::MakeDisc(const int count[3], const double spacing[3], bool needtex) {
+  std::vector<double> points;
+  std::vector<int>    elements;
+  std::vector<float>  texcoords;
+  GridData(points, elements, texcoords, count, spacing, 2, /*disc=*/true, needtex);
+
+  // radial projection
+  double size[2] = {
+      0.5 * spacing[0] * (count[0] - 1),
+      0.5 * spacing[1] * (count[1] - 1),
+  };
+  for (int i = 0; i < points.size() / 3; i++) {
+    double* pos = points.data() + 3 * i;
+    double  L0  = std::max(std::abs(pos[0]), std::abs(pos[1]));
+    mjuu_normvec(pos, 2);
+    pos[0] *= size[0] * L0;
+    pos[1] *= size[1] * L0;
+  }
+
+  SetProcedural(&spec, points, elements, texcoords, 2);
+}
+
+
+// generate points, elements and texcoords of a box projected onto a shape:
+// 3D tetrahedra connected to the center (dim=3) or surface triangles (dim=2)
+static void BoxData(std::vector<double>& points,
+                    std::vector<int>&    elements,
+                    std::vector<float>&  texcoords,
+                    const int            count[3],
+                    const double         spacing[3],
+                    int                  dim,
+                    bool                 needtex,
+                    bool                 open,
+                    BoxShape             shape) {
+  double pos[3];
+
+  // at least two points per side are needed
+  if (count[0] < 2 || count[1] < 2 || count[2] < 2) { return; }
+
+  // add center point and its texture coordinates
+  if (dim == 3) {
+    points.push_back(0);
+    points.push_back(0);
+    points.push_back(0);
+    if (needtex) {
+      texcoords.push_back(0);
+      texcoords.push_back(0);
+    }
+  }
+
+  // add points
+  int              n = 0;
+  std::vector<int> idx(count[0] * count[1] * count[2]);
+
+  // iz=0/max
+  for (int iz = 0; iz < count[2]; iz += count[2] - 1) {
+    for (int ix = 0; ix < count[0]; ix++) {
+      for (int iy = 0; iy < count[1]; iy++) {
+        if (open && dim == 2 && iz != 0) { continue; }
+
+        // add point
+        BoxProject(pos, ix, iy, iz, count, spacing, shape);
+        points.push_back(pos[0]);
+        points.push_back(pos[1]);
+        points.push_back(pos[2]);
+        idx[mat2lin(ix, iy, iz, count)] = n++;
+
+        // add texture coordinates, if not specified explicitly
+        if (needtex) {
+          texcoords.push_back(ix / (float)std::max(count[0] - 1, 1));
+          texcoords.push_back(iy / (float)std::max(count[1] - 1, 1));
+        }
+      }
+    }
+  }
+
+  // iy=0/max
+  for (int iy = 0; iy < count[1]; iy += count[1] - 1) {
+    for (int ix = 0; ix < count[0]; ix++) {
+      for (int iz = 0; iz < count[2]; iz++) {
+        // add point
+        if (iz > 0 && ((open && dim == 2) || (iz < count[2] - 1))) {
+          BoxProject(pos, ix, iy, iz, count, spacing, shape);
+          points.push_back(pos[0]);
+          points.push_back(pos[1]);
+          points.push_back(pos[2]);
+          idx[mat2lin(ix, iy, iz, count)] = n++;
+
+          // add texture coordinates
+          if (needtex) {
+            texcoords.push_back(ix / (float)std::max(count[0] - 1, 1));
+            texcoords.push_back(iz / (float)std::max(count[2] - 1, 1));
+          }
+        }
+      }
+    }
+  }
+
+  // ix=0/max
+  for (int ix = 0; ix < count[0]; ix += count[0] - 1) {
+    for (int iy = 0; iy < count[1]; iy++) {
+      for (int iz = 0; iz < count[2]; iz++) {
+        // add point
+        if (iz > 0 && ((open && dim == 2) || (iz < count[2] - 1)) && iy > 0 && iy < count[1] - 1) {
+          BoxProject(pos, ix, iy, iz, count, spacing, shape);
+          points.push_back(pos[0]);
+          points.push_back(pos[1]);
+          points.push_back(pos[2]);
+          idx[mat2lin(ix, iy, iz, count)] = n++;
+
+          // add texture coordinates
+          if (needtex) {
+            texcoords.push_back(iy / (float)std::max(count[1] - 1, 1));
+            texcoords.push_back(iz / (float)std::max(count[2] - 1, 1));
+          }
+        }
+      }
+    }
+  }
+
+  // add elements
+
+  // iz=0/max
+  for (int iz = 0; iz < count[2]; iz += count[2] - 1) {
+    for (int ix = 0; ix < count[0]; ix++) {
+      for (int iy = 0; iy < count[1]; iy++) {
+        if (open && dim == 2 && iz != 0) { continue; }
+
+        if (ix < count[0] - 1 && iy < count[1] - 1) {
+          if (dim == 3) {
+            elements.push_back(0);
+            elements.push_back(BoxID(ix, iy, iz, count));
+            elements.push_back(BoxID(ix + 1, iy, iz, count));
+            elements.push_back(BoxID(ix + 1, iy + 1, iz, count));
+
+            elements.push_back(0);
+            elements.push_back(BoxID(ix, iy, iz, count));
+            elements.push_back(BoxID(ix, iy + 1, iz, count));
+            elements.push_back(BoxID(ix + 1, iy + 1, iz, count));
+          } else {
+            int step1 = iz == 0 ? 1 : 0;
+            int step2 = iz == 0 ? 0 : 1;
+            elements.push_back(idx[mat2lin(ix, iy, iz, count)]);
+            elements.push_back(idx[mat2lin(ix + 1, iy + step1, iz, count)]);
+            elements.push_back(idx[mat2lin(ix + 1, iy + step2, iz, count)]);
+
+            elements.push_back(idx[mat2lin(ix, iy, iz, count)]);
+            elements.push_back(idx[mat2lin(ix + step2, iy + 1, iz, count)]);
+            elements.push_back(idx[mat2lin(ix + step1, iy + 1, iz, count)]);
+          }
+        }
+      }
+    }
+  }
+
+  // iy=0/max
+  for (int iy = 0; iy < count[1]; iy += count[1] - 1) {
+    for (int ix = 0; ix < count[0]; ix++) {
+      for (int iz = 0; iz < count[2]; iz++) {
+        if (ix < count[0] - 1 && iz < count[2] - 1) {
+          if (dim == 3) {
+            elements.push_back(0);
+            elements.push_back(BoxID(ix, iy, iz, count));
+            elements.push_back(BoxID(ix + 1, iy, iz, count));
+            elements.push_back(BoxID(ix + 1, iy, iz + 1, count));
+
+            elements.push_back(0);
+            elements.push_back(BoxID(ix, iy, iz, count));
+            elements.push_back(BoxID(ix, iy, iz + 1, count));
+            elements.push_back(BoxID(ix + 1, iy, iz + 1, count));
+          } else {
+            int ix0 = iy == 0 ? ix : ix + 1;
+            int dx  = iy == 0 ? 1 : -1;
+            elements.push_back(idx[mat2lin(ix0, iy, iz, count)]);
+            elements.push_back(idx[mat2lin(ix0 + dx, iy, iz, count)]);
+            elements.push_back(idx[mat2lin(ix0 + dx, iy, iz + 1, count)]);
+
+            elements.push_back(idx[mat2lin(ix0, iy, iz, count)]);
+            elements.push_back(idx[mat2lin(ix0 + dx, iy, iz + 1, count)]);
+            elements.push_back(idx[mat2lin(ix0, iy, iz + 1, count)]);
+          }
+        }
+      }
+    }
+  }
+
+  // ix=0/max
+  for (int ix = 0; ix < count[0]; ix += count[0] - 1) {
+    for (int iy = 0; iy < count[1]; iy++) {
+      for (int iz = 0; iz < count[2]; iz++) {
+        if (iy < count[1] - 1 && iz < count[2] - 1) {
+          if (dim == 3) {
+            elements.push_back(0);
+            elements.push_back(BoxID(ix, iy, iz, count));
+            elements.push_back(BoxID(ix, iy + 1, iz, count));
+            elements.push_back(BoxID(ix, iy + 1, iz + 1, count));
+
+            elements.push_back(0);
+            elements.push_back(BoxID(ix, iy, iz, count));
+            elements.push_back(BoxID(ix, iy, iz + 1, count));
+            elements.push_back(BoxID(ix, iy + 1, iz + 1, count));
+          } else {
+            int iy0 = ix != 0 ? iy : iy + 1;
+            int dy  = ix != 0 ? 1 : -1;
+            elements.push_back(idx[mat2lin(ix, iy0, iz, count)]);
+            elements.push_back(idx[mat2lin(ix, iy0 + dy, iz, count)]);
+            elements.push_back(idx[mat2lin(ix, iy0 + dy, iz + 1, count)]);
+
+            elements.push_back(idx[mat2lin(ix, iy0, iz, count)]);
+            elements.push_back(idx[mat2lin(ix, iy0 + dy, iz + 1, count)]);
+            elements.push_back(idx[mat2lin(ix, iy0, iz + 1, count)]);
+          }
+        }
+      }
+    }
+  }
+}
+
+
+// make a box, cylinder or ellipsoid mesh
+static void MakeBoxShape(mjsMesh*     spec,
+                         const int    count[3],
+                         const double spacing[3],
+                         int          dim,
+                         bool         needtex,
+                         bool         open,
+                         BoxShape     shape) {
+  std::vector<double> points;
+  std::vector<int>    elements;
+  std::vector<float>  texcoords;
+  BoxData(points, elements, texcoords, count, spacing, dim, needtex, open, shape);
+  SetProcedural(spec, points, elements, texcoords, dim);
+}
+
+
+// make a box: 3D tetrahedra (dim=3) or surface triangles (dim=2)
+void mjCMesh::MakeBox(
+    const int count[3], const double spacing[3], int dim, bool needtex, bool open) {
+  MakeBoxShape(&spec, count, spacing, dim, needtex, open, kBoxShapeBox);
+}
+
+
+// make a cylinder: 3D tetrahedra (dim=3) or surface triangles (dim=2)
+void mjCMesh::MakeCylinder(
+    const int count[3], const double spacing[3], int dim, bool needtex, bool open) {
+  MakeBoxShape(&spec, count, spacing, dim, needtex, open, kBoxShapeCylinder);
+}
+
+
+// make an ellipsoid: 3D tetrahedra (dim=3) or surface triangles (dim=2)
+void mjCMesh::MakeEllipsoid(
+    const int count[3], const double spacing[3], int dim, bool needtex, bool open) {
+  MakeBoxShape(&spec, count, spacing, dim, needtex, open, kBoxShapeEllipsoid);
+}
+
+
 // compute vertex normals
 void mjCMesh::MakeNormal(const double* dvert) {
   // only if normal data is missing
@@ -2898,12 +3421,11 @@ void mjCSkin::PointToLocal() {
 
 
 void mjCSkin::NameSpace(const mjCModel* m) {
-  // use filename if name is missing
-  if (name.empty()) {
-    std::string stripped = mjuu_strippath(spec_file_);
-    name                 = mjuu_stripext(stripped);
-  }
+  mjCBase::NameSpace(m);
   for (auto& name : spec_bodyname_) { name = m->prefix + name + m->suffix; }
+  if (!spec_material_.empty() && model != m) {
+    spec_material_ = m->prefix + spec_material_ + m->suffix;
+  }
 }
 
 
@@ -2919,12 +3441,6 @@ void mjCSkin::CopyFromSpec() {
   bindquat_                    = spec_bindquat_;
   vertid_                      = spec_vertid_;
   vertweight_                  = spec_vertweight_;
-
-  // use filename if name is missing
-  if (name.empty()) {
-    std::string stripped = mjuu_strippath(file_);
-    name                 = mjuu_stripext(stripped);
-  }
 }
 
 
@@ -3028,11 +3544,10 @@ void mjCSkin::Compile(const mjVFS* vfs) {
 
   // resolve material name
   mjCBase* pmat = model->FindObject(mjOBJ_MATERIAL, material_);
-  if (pmat) {
-    matid = pmat->id;
-  } else if (!material_.empty()) {
+  if (!pmat && !material_.empty()) {
     throw mjCError(this, "unknown material '%s' in skin", material_.c_str());
   }
+  matid = pmat ? pmat->id : -1;
 
   // set total vertex weights to 0
   std::vector<float> vw;
@@ -3677,8 +4192,8 @@ void quadratureGaussLegendre(
     weights[1] = dpdx;
   } else {
     points[0]  = p0;
-    points[1]  = -dpdx / sqrt(3. / 5.) + p0;
-    points[2]  = dpdx / sqrt(3. / 5.) + p0;
+    points[1]  = -dpdx * sqrt(3. / 5.) + p0;
+    points[2]  = dpdx * sqrt(3. / 5.) + p0;
     weights[0] = 8. / 9. * dpdx;
     weights[1] = 5. / 9. * dpdx;
     weights[2] = 5. / 9. * dpdx;
@@ -3809,7 +4324,7 @@ void inline ComputeLinearStiffness(
         }
 
         // tensor contraction of the gradients of elastic strains
-        // (d(F+F')/dx : d(F+F')/dx)
+        // lambda * div(u) * div(v) + 2*mu * sym(grad(u)) : sym(grad(v))
         for (int i = 0; i < n; i++) {
           for (int j = 0; j < n; j++) {
             Matrix du;
@@ -3825,7 +4340,7 @@ void inline ComputeLinearStiffness(
                 dv[l][1]                           = invJ[1] * F[j][1];
                 dv[l][2]                           = invJ[2] * F[j][2];
                 K[ndof * (3 * i + k) + 3 * j + l] -= la * trace(du) * trace(dv) * dvol;
-                K[ndof * (3 * i + k) + 3 * j + l] -= mu * trace(inner(sym(du), sym(dv))) * dvol;
+                K[ndof * (3 * i + k) + 3 * j + l] -= 2 * mu * trace(inner(sym(du), sym(dv))) * dvol;
                 mjuu_zerovec(du[k].data(), 3);
                 mjuu_zerovec(dv[l].data(), 3);
               }
@@ -3919,8 +4434,7 @@ void inline ComputeLinearStiffness2D(std::vector<double>& K,
               dv[l][axis1] = invJ1 * F[j][1];
 
               K[ndof * (3 * i + k) + 3 * j + l] -= la * trace(du) * trace(dv) * dvol;
-              // mu (not 2*mu): same convention as 3D ComputeLinearStiffness
-              K[ndof * (3 * i + k) + 3 * j + l] -= mu * trace(inner(sym(du), sym(dv))) * dvol;
+              K[ndof * (3 * i + k) + 3 * j + l] -= 2 * mu * trace(inner(sym(du), sym(dv))) * dvol;
               mjuu_zerovec(du[k].data(), 3);
               mjuu_zerovec(dv[l].data(), 3);
             }
@@ -4184,11 +4698,6 @@ void mjCFlex::CopyFromSpec() {
 
 bool mjCFlex::HasTexcoord() const {
   return !texcoord_.empty();
-}
-
-
-void mjCFlex::DelTexcoord() {
-  texcoord_.clear();
 }
 
 
@@ -4662,11 +5171,10 @@ void mjCFlex::Compile(const mjVFS* vfs) {
 
   // resolve material name
   mjCBase* pmat = model->FindObject(mjOBJ_MATERIAL, material_);
-  if (pmat) {
-    matid = pmat->id;
-  } else if (!material_.empty()) {
+  if (!pmat && !material_.empty()) {
     throw mjCError(this, "unknown material '%s' in flex", material_.c_str());
   }
+  matid = pmat ? pmat->id : -1;
 
   // resolve body ids
   ResolveReferences(model);
@@ -4921,7 +5429,24 @@ void mjCFlex::Compile(const mjVFS* vfs) {
   // (survives XML round-trips where flexcomp data is lost)
   if (interpolated && !elastic2d && cell_empty.empty()) {
     int cx = spec.cellcount[0], cy = spec.cellcount[1], cz = spec.cellcount[2];
-    if (cx * cy * cz > 1) { ComputeCellEmpty(vertxpos.data(), elem_.data(), nvert, nelem, dim); }
+    if (cx * cy * cz > 1) {
+      // as in flexcomp: vertices in the frame of the grid, cells dividing the box of the nodes
+      std::vector<double> vertxpos_local(3 * nvert);
+      for (int j = 0; j < nvert; j++) {
+        mjuu_mulvecmat(vertxpos_local.data() + 3 * j, vertxpos.data() + 3 * j, R0);
+      }
+      double minmax[6] = {mjMAXVAL, mjMAXVAL, mjMAXVAL, -mjMAXVAL, -mjMAXVAL, -mjMAXVAL};
+      for (int i = 0; i < nnode; i++) {
+        for (int k = 0; k < 3; k++) {
+          minmax[k]     = std::min(minmax[k], nodexpos_local[3 * i + k]);
+          minmax[k + 3] = std::max(minmax[k + 3], nodexpos_local[3 * i + k]);
+        }
+      }
+      ComputeCellEmpty(vertxpos_local.data(), elem_.data(), nelem, dim, minmax);
+
+      // the grid rotation is measured on the first non-empty cell
+      nodexpos_local = ComputeUnrotatedNodePositions(nodexpos, R0);
+    }
   }
 
   // compute linear stiffness for interpolated elements (cached)
@@ -5259,28 +5784,13 @@ std::vector<double> mjCFlex::ComputeUnrotatedNodePositions(const std::vector<dou
 }
 
 
-// identify cells with no mesh content from vertex/element geometry
+// identify cells with no mesh content from vertex/element geometry, minmax: box of the node grid
 void mjCFlex::ComputeCellEmpty(
-    const double* vpos, const int* elems, int nv, int ne, int fdim, const double* bbox) {
+    const double* vpos, const int* elems, int ne, int fdim, const double minmax[6]) {
   int cx     = spec.cellcount[0];
   int cy     = spec.cellcount[1];
   int cz     = spec.cellcount[2];
   int ncells = cx * cy * cz;
-
-  // use precomputed bounding box if provided, otherwise compute from vertices
-  double minmax[6];
-  if (bbox) {
-    for (int j = 0; j < 6; j++) minmax[j] = bbox[j];
-  } else {
-    minmax[0] = minmax[1] = minmax[2] = 1e30;
-    minmax[3] = minmax[4] = minmax[5] = -1e30;
-    for (int i = 0; i < nv; i++) {
-      for (int j = 0; j < 3; j++) {
-        minmax[j + 0] = std::min(minmax[j + 0], vpos[3 * i + j]);
-        minmax[j + 3] = std::max(minmax[j + 3], vpos[3 * i + j]);
-      }
-    }
-  }
 
   double dx = minmax[3] - minmax[0];
   double dy = minmax[4] - minmax[1];

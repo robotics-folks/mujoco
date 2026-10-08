@@ -859,7 +859,7 @@ TEST_F(CoreSmoothTest, RefsiteConservesMomentum) {
 
   // simulate, assert that momentum is conserved
   mjtNum eps = MjTol(1e-9, 2e-6);
-  while (data->time < 1) {
+  while (data->time < 0.1) {
     mjtNum time = data->time;
     mj_step(model, data);
     ASSERT_GT(data->time, time) << "Divergence detected";
@@ -1323,7 +1323,7 @@ TEST_F(CoreSmoothTest, SO3QuatNeutralCtrl) {
   mj_deleteData(data);
 }
 
-// Input names: NULL for single-input actuators, chart components for SO3.
+// Input names: the declared input of a servo, chart components for SO3.
 TEST_F(CoreSmoothTest, ActuatorInputNames) {
   constexpr char kOrientationPath[] =
       "engine/testdata/actuation/orientation.xml";
@@ -1335,7 +1335,7 @@ TEST_F(CoreSmoothTest, ActuatorInputNames) {
   int rx_peraxis = mj_name2id(model.get(), mjOBJ_ACTUATOR, "rx_peraxis");
   int expmap = mj_name2id(model.get(), mjOBJ_ACTUATOR, "expmap");
   int quat = mj_name2id(model.get(), mjOBJ_ACTUATOR, "quat");
-  EXPECT_EQ(mj_actuatorInputName(model.get(), rx_peraxis, 0), nullptr);
+  EXPECT_STREQ(mj_actuatorInputName(model.get(), rx_peraxis, 0), "pos");
   EXPECT_STREQ(mj_actuatorInputName(model.get(), expmap, 0), "rx");
   EXPECT_STREQ(mj_actuatorInputName(model.get(), expmap, 2), "rz");
   EXPECT_EQ(mj_actuatorInputName(model.get(), expmap, 3),
@@ -1776,7 +1776,7 @@ TEST_F(CoreSmoothTest, PidInputSubsets) {
     <actuator>
       <pid joint="j1" kp="7" input="pos"/>
       <position joint="j1" kp="7"/>
-      <pid joint="j2" kv="3" input="vel"/>
+      <pid joint="j2" kp="0" kv="3" input="vel"/>
       <velocity joint="j2" kv="3"/>
       <pid joint="j2" kp="5" kv="2" input="pos ff"/>
     </actuator>

@@ -28,7 +28,7 @@
 #include <mujoco/mujoco.h>
 #include "experimental/filament/compat/scene_geom_util.h"
 #include "experimental/filament/compat/scene_objects.h"
-#include "render/filament/mjrfilament_cpp.h"
+#include "render/filament/support/mjrf_ptr.h"
 #include "render/filament/support/filament_util.h"
 #include "render/filament/support/model_lights.h"
 #include "render/filament/support/model_objects.h"
@@ -47,7 +47,7 @@ SceneBridge::SceneBridge(mjrfContext* ctx, mjrfScene* scene, const mjModel* mode
 
   mjrf_configureSceneFromModel(scene_, model);
 
-  auto clear_color = ReadElement(model, "filament.clearColor",
+  auto clear_color = ReadElement(model, "filament.clear_color",
                                  filament::math::float4(0, 0, 0, 1));
   mjrf_setClearColor(ctx_, &clear_color[0]);
 

@@ -34,6 +34,7 @@
 #include "engine/engine_island.h"
 #include "engine/engine_macro.h"
 #include "engine/engine_memory.h"
+#include "engine/engine_metric.h"
 #include "engine/engine_passive.h"
 #include "engine/engine_plugin.h"
 #include "engine/engine_sensor.h"
@@ -61,9 +62,9 @@ void mj_checkPos(const mjModel* m, mjData* d) {
       mj_warning(d, mjWARN_BADQPOS, i);
       if (!mjDISABLED(mjDSBL_AUTORESET)) {
         mj_resetData(m, d);
+        d->warning[mjWARN_BADQPOS].number++;
+        d->warning[mjWARN_BADQPOS].lastinfo = i;
       }
-      d->warning[mjWARN_BADQPOS].number++;
-      d->warning[mjWARN_BADQPOS].lastinfo = i;
       return;
     }
   }
@@ -82,9 +83,9 @@ void mj_checkVel(const mjModel* m, mjData* d) {
       mj_warning(d, mjWARN_BADQVEL, i);
       if (!mjDISABLED(mjDSBL_AUTORESET)) {
         mj_resetData(m, d);
+        d->warning[mjWARN_BADQVEL].number++;
+        d->warning[mjWARN_BADQVEL].lastinfo = i;
       }
-      d->warning[mjWARN_BADQVEL].number++;
-      d->warning[mjWARN_BADQVEL].lastinfo = i;
       return;
     }
   }
@@ -103,10 +104,8 @@ void mj_checkAcc(const mjModel* m, mjData* d) {
       mj_warning(d, mjWARN_BADQACC, i);
       if (!mjDISABLED(mjDSBL_AUTORESET)) {
         mj_resetData(m, d);
-      }
-      d->warning[mjWARN_BADQACC].number++;
-      d->warning[mjWARN_BADQACC].lastinfo = i;
-      if (!mjDISABLED(mjDSBL_AUTORESET)) {
+        d->warning[mjWARN_BADQACC].number++;
+        d->warning[mjWARN_BADQACC].lastinfo = i;
         mj_forward(m, d);
       }
       return;
@@ -173,7 +172,7 @@ void mj_fwdPosition(const mjModel* m, mjData* d) {
   // implicit effective metric Mtilde = M + K: build (or deactivate) for this step. Arena
   // lifetime and skip semantics mirror the constraint data: built once per position stage,
   // value-refreshed in the velocity stage, consumed downstream.
-  mjd_effBuild(m, d, mj_isMetric(m), /*flg_factor=*/1);
+  mj_effBuild(m, d, mj_isMetric(m), /*flg_factor=*/1);
 
   TM_END1(mjTIMER_POSITION);
 }
@@ -230,7 +229,7 @@ void mj_fwdVelocity(const mjModel* m, mjData* d) {
   mj_tendonBias(m, d, d->qfrc_bias);
 
   // refresh the metric's velocity-stage values
-  mjd_effShift(m, d);
+  mj_effShift(m, d);
 
 
   TM_END(mjTIMER_VELOCITY);
@@ -1037,7 +1036,7 @@ void mj_fwdAcceleration(const mjModel* m, mjData* d) {
       if (d->efm_ca) {
         mju_addTo(qfrc_eff, d->efm_ca, nv);
       }
-      mjd_effSolve(m, d, d->qacc_smooth, qfrc_eff);
+      mj_effSolve(m, d, d->qacc_smooth, qfrc_eff);
     } else {
       // awake dofs only: sleep islands follow the metric couplings, so the metric has no
       // terms across the awake/asleep boundary and zeroed asleep entries remain exactly
@@ -1048,7 +1047,7 @@ void mj_fwdAcceleration(const mjModel* m, mjData* d) {
         mju_addToInd(qfrc_eff, d->efm_ca, index, nv);
       }
       mjtNum* qacc_eff = mjSTACKALLOC(d, m->nv, mjtNum);
-      mjd_effSolve(m, d, qacc_eff, qfrc_eff);
+      mj_effSolve(m, d, qacc_eff, qfrc_eff);
       mju_copyInd(d->qacc_smooth, qacc_eff, index, nv);
     }
     mj_freeStack(d);
@@ -1117,7 +1116,7 @@ static void warmstart(const mjModel* m, mjData* d) {
       mju_sub(da, d->qacc_warmstart, d->qacc_smooth, nv);
       mj_mulM(m, d, Mda, da);
       if (d->efm_active) {
-        mjd_effMulAdd(m, d, Mda, da, /*flg_contact=*/1);
+        mj_effMulAdd(m, d, Mda, da, /*flg_contact=*/1);
       }
       cost_warmstart += 0.5 * mju_dot(da, Mda, nv);
 
@@ -1997,7 +1996,7 @@ void mj_forwardSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor) 
   }
 
   mj_fwdActuation(m, d);
-  mjd_effActuation(m, d);
+  mj_effActuation(m, d, /*flg_factor=*/1);
   if (mj_isMetric(m)) {
     mj_regularizeConstraint(m, d, /*flg_AR=*/1);
     mj_referenceConstraint(m, d);
@@ -2105,7 +2104,7 @@ void mj_step1(const mjModel* m, mjData* d) {
 void mj_step2(const mjModel* m, mjData* d) {
   TM_START;
   mj_fwdActuation(m, d);
-  mjd_effActuation(m, d);
+  mj_effActuation(m, d, /*flg_factor=*/1);
   if (mj_isMetric(m)) {
     mj_regularizeConstraint(m, d, /*flg_AR=*/1);
     mj_referenceConstraint(m, d);

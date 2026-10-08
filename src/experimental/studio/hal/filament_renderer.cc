@@ -24,7 +24,7 @@
 #include "experimental/studio/hal/graphics_mode.h"
 #include "experimental/studio/ux/imgui_widgets.h"
 #include "experimental/studio/ux/plugin.h"
-#include "render/filament/mjrfilament_cpp.h"
+#include "render/filament/support/mjrf_ptr.h"
 #include "render/filament/support/imgui_bridge.h"
 #include "render/filament/support/model_decorations.h"
 #include "render/filament/support/model_lights.h"
@@ -84,7 +84,7 @@ void FilamentRenderer::Init(const mjModel* model) {
 
   if (model) {
     float clear_color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-    const int id = mj_name2id(model, mjOBJ_NUMERIC, "filament.clearColor");
+    const int id = mj_name2id(model, mjOBJ_NUMERIC, "filament.clear_color");
     if (id >= 0 && model->numeric_size[id] == 4) {
       const mjtNum* ptr = model->numeric_data + model->numeric_adr[id];
       for (int i = 0; i < 4; ++i) {
@@ -195,7 +195,7 @@ void FilamentRenderer::Submit(int width, int height,
   mjrfFrameStats stats;
   mjrf_defaultFrameStats(&stats);
   mjrf_getFrameStats(filament_context_.get(), frame, &stats);
-  fps_ = stats.frame_rate;
+  gpu_frame_ms_ = stats.frame_rate > 0 ? 1000.0 / stats.frame_rate : 0;
 }
 
 void FilamentRenderer::RenderToTexture(const mjModel* model, mjData* data,
@@ -234,7 +234,7 @@ int FilamentRenderer::UploadImage(int texture_id, const std::byte* pixels,
       bpp);
 }
 
-double FilamentRenderer::GetFps() { return fps_; }
+double FilamentRenderer::GetGpuFrameMs() { return gpu_frame_ms_; }
 
 void FilamentRenderer::BuildMainRenderRequest(mjrfRenderRequest* request,
                                               const mjVisual& vis,

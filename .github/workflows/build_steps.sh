@@ -51,7 +51,12 @@ generate_matrix() {
 
 prepare_linux() {
     echo "Preparing Linux..."
-    sudo apt-get update && sudo apt-get install \
+    sudo apt-get update
+    local extra_pkgs=()
+    if apt-cache show libclang-rt-18-dev >/dev/null 2>&1; then
+        extra_pkgs+=(libclang-rt-18-dev)
+    fi
+    sudo apt-get install -y \
         libgl1-mesa-dev \
         libwayland-dev \
         libxinerama-dev \
@@ -59,7 +64,8 @@ prepare_linux() {
         libxkbcommon-dev \
         libxrandr-dev \
         libxi-dev \
-        ninja-build
+        ninja-build \
+        "${extra_pkgs[@]}"
 }
 
 
@@ -69,10 +75,14 @@ prepare_python() {
     pushd "${TMPDIR}" > /dev/null
     python -m venv venv
     if [[ $RUNNER_OS == "Windows" ]]; then
-    mkdir venv/bin
-    fixpath="$(s="$(cat venv/Scripts/activate | grep VIRTUAL_ENV=)"; echo "${s:13:-1}")"
-    sed -i "s#$(printf "%q" "${fixpath}")#$(cygpath "${fixpath}")#g" venv/Scripts/activate
-    ln -s ../Scripts/activate venv/bin/activate
+        mkdir -p venv/bin
+        if ! grep -q "cygpath" venv/Scripts/activate; then
+            fixpath="$(grep '^VIRTUAL_ENV=' venv/Scripts/activate | cut -d= -f2- | tr -d '\"')"
+            if [[ -n "${fixpath}" ]]; then
+                sed -i "s#$(printf "%q" "${fixpath}")#$(cygpath "${fixpath}")#g" venv/Scripts/activate
+            fi
+        fi
+        ln -sf ../Scripts/activate venv/bin/activate
     fi
     source venv/bin/activate
     # Install build deps with uv when available (set up by setup-uv in CI on
@@ -112,20 +122,14 @@ setup_emsdk() {
 }
 
 
-configure_mujoco() {
-    echo "Configuring MuJoCo..."
-    # Disable IPO/LTO to cut build time. Skip this on Windows: turning off MSVC's
-    # whole-program optimization (/GL) exposes a latent heap corruption in
-    # SetConstTest.SleepingNotAllowed (a real bug worth a separate investigation),
-    # and Windows build time is not a CI bottleneck.
-    local ipo_off="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF"
-    if [[ "${RUNNER_OS}" == "Windows" ]]; then
-        ipo_off=""
-    fi
-
-    # Use cached external dependencies from actions/cache.
-    local ext_deps_args=()
+# Populate ext_deps_args with -DFETCHCONTENT_SOURCE_DIR_<DEP>=<path> for each
+# cached dependency in EXTERNAL_DEPS_DIR.
+_setup_ext_deps_args() {
+    ext_deps_args=()
     local ext_deps_dir="${EXTERNAL_DEPS_DIR:-${TMPDIR}/external_deps}"
+    if command -v cygpath >/dev/null 2>&1 && [[ -n "${ext_deps_dir}" ]]; then
+        ext_deps_dir="$(cygpath -m "${ext_deps_dir}")"
+    fi
     if [[ -d "${ext_deps_dir}" ]]; then
         for dep_path in "${ext_deps_dir}"/*; do
             if [[ -d "${dep_path}" ]]; then
@@ -135,9 +139,29 @@ configure_mujoco() {
                 dep_upper="$(echo "${dep_name}" | tr '[:lower:]' '[:upper:]')"
                 echo "Using cached ${dep_name} from ${dep_path}"
                 ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_${dep_upper}=${dep_path}")
+                # python/mujoco/CMakeLists.txt declares "eigen" instead of "Eigen3".
+                if [[ "${dep_upper}" == "EIGEN3" ]]; then
+                    ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_EIGEN=${dep_path}")
+                fi
             fi
         done
     fi
+}
+
+
+configure_mujoco() {
+    echo "Configuring MuJoCo..."
+    # Disable global IPO/LTO to avoid expensive whole-program optimization link
+    # passes on third-party dependencies, Studio, and the 65 test binaries. On
+    # Windows MSVC, CMakeLists.txt keeps INTERPROCEDURAL_OPTIMIZATION enabled on
+    # the core mujoco DLL target to avoid an MSVC /EHsc + longjmp unwinding crash
+    # in SetConstTest.SleepingNotAllowed.
+    local ipo_off="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF"
+
+    # Use cached external dependencies from actions/cache.
+    local ext_deps_args=()
+    local ext_deps_dir="${EXTERNAL_DEPS_DIR:-${TMPDIR}/external_deps}"
+    _setup_ext_deps_args
 
     mkdir build &&
     cd build &&
@@ -163,6 +187,18 @@ configure_mujoco() {
 }
 
 
+build_mujoco_core() {
+    echo "Building MuJoCo core and plugins..."
+    cmake --build . --config=Release --target mujoco actuator elasticity sensor sdf_plugin ${CMAKE_BUILD_ARGS}
+}
+
+
+build_mujoco_studio() {
+    echo "Building MuJoCo Studio..."
+    cmake --build . --config=Release --target mujoco_studio ${CMAKE_BUILD_ARGS}
+}
+
+
 build_mujoco() {
     echo "Building MuJoCo..."
     cmake --build . --config=Release ${CMAKE_BUILD_ARGS}
@@ -173,16 +209,8 @@ test_mujoco() {
     echo "Testing MuJoCo..."
     # ctest defaults to serial. The suite is ~1650 independent tests that use
     # unique temp files (mkstemp / testing::TempDir) and declare no RUN_SERIAL /
-    # RESOURCE_LOCK, so running them in parallel is safe and ~2x faster on POSIX.
-    # Windows is kept serial conservatively: parallel-safety on the Windows file
-    # system is unverified and its test time is not a CI bottleneck.
-    if [[ "${RUNNER_OS}" == "Windows" ]]; then
-        ctest -C Release --output-on-failure .
-    else
-        local ncpu
-        ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-2}")"
-        ctest -C Release --output-on-failure --parallel "${ncpu}" .
-    fi
+    # RESOURCE_LOCK, so running them in parallel is safe.
+    ctest -C Release --output-on-failure --parallel "${NJOBS}" .
 }
 
 
@@ -205,9 +233,13 @@ copy_plugins_posix() {
 copy_plugins_window() {
     echo "Copying plugins..."
     mkdir -p ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp bin/Release/actuator.dll ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp bin/Release/elasticity.dll ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp bin/Release/sensor.dll ${TMPDIR}/mujoco_install/mujoco_plugin
+    local dll_dir="bin"
+    if [[ -d "bin/Release" ]]; then
+        dll_dir="bin/Release"
+    fi
+    cp ${dll_dir}/actuator.dll ${TMPDIR}/mujoco_install/mujoco_plugin &&
+    cp ${dll_dir}/elasticity.dll ${TMPDIR}/mujoco_install/mujoco_plugin &&
+    cp ${dll_dir}/sensor.dll ${TMPDIR}/mujoco_install/mujoco_plugin
 }
 
 
@@ -302,12 +334,22 @@ build_python_bindings() {
     # layout, producing an ABI-mismatched binding (wrong field offsets, stale
     # mjNENABLE, signature mismatch). The mtime/ctime flags are kept: they handle the
     # temp-dir churn without affecting header content detection.
-    export CCACHE_BASEDIR="${TMPDIR}"
+    # On Windows (Git Bash / MSYS2), TMPDIR is an MSYS path (/c/Temp) that MSYS2
+    # does not auto-convert in custom env vars passed to native Win32 processes,
+    # so convert it to a Windows path (C:/Temp) for ccache.exe.
+    if command -v cygpath >/dev/null 2>&1; then
+        export CCACHE_BASEDIR="$(cygpath -m "${TMPDIR}")"
+    else
+        export CCACHE_BASEDIR="${TMPDIR}"
+    fi
+    export CCACHE_NOHASHDIR=1
     export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
+    local ext_deps_args=()
+    _setup_ext_deps_args
     MUJOCO_PATH="${TMPDIR}/mujoco_install" \
     MUJOCO_PLUGIN_PATH="${TMPDIR}/mujoco_install/mujoco_plugin" \
-    MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS}" \
-    pip wheel -v --no-deps mujoco-*.tar.gz
+    MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS} ${ext_deps_args[*]}" \
+    pip wheel -v --no-deps --no-build-isolation mujoco-*.tar.gz
 }
 
 
@@ -392,7 +434,7 @@ package_wasm() {
 package_mjx() {
     echo "Packaging MJX..."
     source ${TMPDIR}/venv/bin/activate &&
-    python -m build .
+    python -m build --no-isolation .
 }
 
 
@@ -489,7 +531,12 @@ _build_python_wheel() {
 
     # See build_python_bindings for why CCACHE_BASEDIR/SLOPPINESS are set.
     # ccache is what keeps repeated wheel builds bearable.
-    export CCACHE_BASEDIR="${TMPDIR:-$(pwd)}"
+    if command -v cygpath >/dev/null 2>&1; then
+        export CCACHE_BASEDIR="$(cygpath -m "${TMPDIR:-$(pwd)}")"
+    else
+        export CCACHE_BASEDIR="${TMPDIR:-$(pwd)}"
+    fi
+    export CCACHE_NOHASHDIR=1
     export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
     MUJOCO_PATH="${prefix}" \
     MUJOCO_PLUGIN_PATH="${prefix}/mujoco_plugin" \
@@ -734,11 +781,9 @@ build_studio_wasm() {
 build_engine() {
     echo "Building the MuJoCo engine..."
     local prefix="${TMPDIR:-$(pwd)/build}/mujoco_install"
-    # See configure_mujoco for why IPO stays on for Windows.
+    # See configure_mujoco for why global IPO is off while CMakeLists.txt keeps
+    # IPO on the core mujoco target on Windows MSVC.
     local ipo_off="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF"
-    if [[ "${RUNNER_OS}" == "Windows" ]]; then
-        ipo_off=""
-    fi
     cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE:STRING=Release \
         ${ipo_off} \
@@ -770,9 +815,6 @@ build_simulate_app() {
     if [[ ! -f build_simulate/CMakeCache.txt ]]; then
         echo "Configuring the engine + simulate build..."
         local ipo_off="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF"
-        if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            ipo_off=""
-        fi
         cmake -S . -B build_simulate -G Ninja \
             -DCMAKE_BUILD_TYPE:STRING=Release \
             ${ipo_off} \

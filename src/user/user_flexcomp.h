@@ -69,15 +69,10 @@ class mjCFlexcomp {
                 char*        error,
                 int          error_sz,
                 const mjVFS* vfs = nullptr);
-  void LoadGMSH(mjCModel* model, mjResource* resource);
-  void LoadGMSH41(char* buffer, int binary, int nodeend, int nodebegin, int elemend, int elembegin);
-  void LoadGMSH22(char* buffer, int binary, int nodeend, int nodebegin, int elemend, int elembegin);
 
 
-  int  GridID(int ix, int iy);
-  int  GridID(int ix, int iy, int iz);
-  int  BoxID(int ix, int iy, int iz);
-  void BoxProject(double* pos, int ix, int iy, int iz);
+  int GridID(int ix, int iy);
+  int GridID(int ix, int iy, int iz);
 
   // common properties set by user
   std::string  name;          // flex name
@@ -92,6 +87,7 @@ class mjCFlexcomp {
   int          equality;      // create equality constraint, 0:none, 1:edge, 2:vert, 3:strain
   std::string  file;          // mesh/gmsh file name
   mjtDof       doftype;       // dof type, all vertices or trilinear interpolation
+  bool         has_dim;       // whether dim was explicitly specified
 
   // pin specifications
   std::vector<int> pinid;         // ids of points to pin
@@ -124,13 +120,8 @@ class mjCFlexcomp {
 
  private:
   // identify empty cells and pin nodes exclusively in empty cells
-  void MarkEmptyCells(mjCFlex*      flex,
-                      const double* points,
-                      int           npnt,
-                      const double  minmax[6],
-                      int           nx,
-                      int           ny,
-                      int           nz);
+  void MarkEmptyCells(
+      mjCFlex* flex, const double* points, const double minmax[6], int nx, int ny, int nz);
 };
 
 #endif  // MUJOCO_SRC_USER_USER_FLEXCOMP_H_

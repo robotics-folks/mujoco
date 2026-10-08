@@ -2271,6 +2271,18 @@ struct MjsCompiler {
   void set_saveinertial(mjtBool value) {
     ptr_->saveinertial = value;
   }
+  mjtBool savecompiled() const {
+    return ptr_->savecompiled;
+  }
+  void set_savecompiled(mjtBool value) {
+    ptr_->savecompiled = value;
+  }
+  mjtBool savecanonical() const {
+    return ptr_->savecanonical;
+  }
+  void set_savecanonical(mjtBool value) {
+    ptr_->savecanonical = value;
+  }
   mjtBool alignfree() const {
     return ptr_->alignfree;
   }
@@ -6009,6 +6021,12 @@ struct MjsActuator {
   explicit MjsActuator(mjsActuator *ptr);
   mjsActuator* get() const;
   void set(mjsActuator* ptr);
+  mjtActuator type() const {
+    return ptr_->type;
+  }
+  void set_type(mjtActuator value) {
+    ptr_->type = value;
+  }
   mjtGain gaintype() const {
     return ptr_->gaintype;
   }
@@ -6247,6 +6265,12 @@ struct MjsBody {
   }
   void set_simple(mjtByte value) {
     ptr_->simple = value;
+  }
+  mjtByte fuse() const {
+    return ptr_->fuse;
+  }
+  void set_fuse(mjtByte value) {
+    ptr_->fuse = value;
   }
   mjDoubleVec &userdata() const {
     return *(ptr_->userdata);
@@ -6515,6 +6539,12 @@ struct MjsMesh {
   }
   mjIntVec &userfacetexcoord() const {
     return *(ptr_->userfacetexcoord);
+  }
+  mjDoubleVec &usernode() const {
+    return *(ptr_->usernode);
+  }
+  mjIntVec &usertet() const {
+    return *(ptr_->usertet);
   }
   mjString material() const {
     return (ptr_ && ptr_->material) ? *(ptr_->material) : "";

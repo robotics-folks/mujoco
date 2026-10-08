@@ -357,6 +357,19 @@ static int canCollide2(const mjModel* m, int bf1, int bf2) {
 }
 
 
+// return 1 if bodyflex has dofs and they are awake, 0 otherwise
+static int hasAwakeDofs(const mjModel* m, const mjData* d, int bf, int sleep_filter) {
+  // body
+  if (bf < m->nbody) {
+    return m->body_treeid[bf] >= 0 && (!sleep_filter || d->body_awake[bf] == mjS_AWAKE);
+  }
+
+  // flex: static if none of its vertices (or nodes) are in a body with dofs
+  mjtSleepState state = mj_sleepState(m, d, mjOBJ_FLEX, bf - m->nbody);
+  return state != mjS_STATIC && (!sleep_filter || state == mjS_AWAKE);
+}
+
+
 // return 1 if element is active, 0 otherwise
 int mj_isElemActive(const mjModel* m, int f, int e) {
   if (m->flex_dim[f] < 3) {
@@ -509,6 +522,18 @@ static int pushGeomGeom(const mjModel* m, mjData* d, int g1, int g2, int ipair, 
   pair.geom_geom.g2 = g2;
   pair.geom_geom.ipair = ipair;
   return pushPairArena(d, &pair, npair);
+}
+
+
+// flex with few dofs (rigid or interpolated): its contacts can be reduced to mjMAXCONPAIR
+static inline int flexReducible(const mjModel* m, int f) {
+  return m->flex_rigid[f] || m->flex_interp[f];
+}
+
+
+// filter group of geom g in a body with first geom geomadr (-1: no filtering)
+static inline int geomGroup(int group, int g, int geomadr) {
+  return group < 0 ? -1 : group + g - geomadr;
 }
 
 
@@ -706,7 +731,17 @@ void mj_collision(const mjModel* m, mjData* d) {
 
     // process bodyflex pair: midphase
     else if (!mjDISABLED(mjDSBL_MIDPHASE) && bvh1 >= 0 && bvh2 >= 0) {
-      int group = (bf1 >= nbody || bf2 >= nbody) ? ngroup++ : -1;
+      // filter groups for reducible flexes: one per geom for body:flex, one for flex:flex
+      int group = -1;
+      if (isbody1 && !isbody2) {
+        if (flexReducible(m, bf2-nbody)) {
+          group = ngroup;
+          ngroup += m->body_geomnum[bf1];
+        }
+      } else if (!isbody1 && flexReducible(m, bf1-nbody) &&
+                 flexReducible(m, bf2-nbody)) {
+        group = ngroup++;
+      }
       ncandidate = mj_collideTree(m, d, bf1, bf2, merged, startadr, pairadr, parena, ncandidate, group);
     }
 
@@ -742,7 +777,7 @@ void mj_collision(const mjModel* m, mjData* d) {
             continue;
           }
 
-          int group = ngroup++;
+          int group = flexReducible(m, f) ? ngroup++ : -1;
 
           // plane special processing
           if (m->geom_type[g] == mjGEOM_PLANE) {
@@ -772,7 +807,7 @@ void mj_collision(const mjModel* m, mjData* d) {
       else {
         int f1 = bf1 - nbody;
         int f2 = bf2 - nbody;
-        int group = ngroup++;
+        int group = (flexReducible(m, f1) && flexReducible(m, f2)) ? ngroup++ : -1;
 
         // collide elements of two flexes
         for (int e1=0; e1 < m->flex_elemnum[f1]; e1++) {
@@ -800,14 +835,14 @@ void mj_collision(const mjModel* m, mjData* d) {
   // flex self-collisions
   for (int f=0; f < m->nflex; f++) {
     if (!m->flex_rigid[f] && (m->flex_contype[f] & m->flex_conaffinity[f])) {
-      // skip if flex is asleep
-      if (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) == mjS_ASLEEP) continue;
+      // skip if flex has no dofs or is asleep
+      if (!hasAwakeDofs(m, d, nbody+f, sleep_filter)) continue;
       // under the ipc flag the IPC step resolves a dim-2 flex's self-contact itself
       if (mjc_ipcOwnsFlexFlex(m, f, f)) continue;
 
       // active element collisions
       if (m->flex_selfcollide[f] != mjFLEXSELF_NONE) {
-        int group = ngroup++;
+        int group = flexReducible(m, f) ? ngroup++ : -1;
 
         // element-element: midphase
         if (!mjDISABLED(mjDSBL_MIDPHASE) &&
@@ -958,6 +993,7 @@ int mj_collideOBB(const mjtNum aabb1[6], const mjtNum aabb2[6],
 
 
 // binary search between two bodyflex trees
+//  body:flex pairs of geom g are in filter group: group + g - body_geomadr[bf1]
 static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
                           int merged, int startadr, int pairadr,
                           size_t parena, int npair, int group) {
@@ -966,6 +1002,7 @@ static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
   mjtBool isbody2 = (bf2 < nbody);
   int f1 = isbody1 ? -1 : bf1 - nbody;
   int f2 = isbody2 ? -1 : bf2 - nbody;
+  int geomadr1 = isbody1 ? m->body_geomadr[bf1] : -1;
   int mark_active = m->vis.global.bvactive;
   const int bvhadr1 = isbody1 ? m->body_bvhadr[bf1] : m->flex_bvhadr[f1];
   const int bvhadr2 = isbody2 ? m->body_bvhadr[bf2] : m->flex_bvhadr[f2];
@@ -998,10 +1035,10 @@ static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
 
   // for body:flex, if dof-less body has planes, call pushGeomFlex
   if (isbody1 && !isbody2 && m->body_dofnum[m->body_weldid[bf1]] == 0) {
-    for (int i=m->body_geomadr[bf1]; i < m->body_geomadr[bf1]+m->body_geomnum[bf1]; i++) {
+    for (int i=geomadr1; i < geomadr1+m->body_geomnum[bf1]; i++) {
       if (m->geom_type[i] == mjGEOM_PLANE) {
         if (!mjc_ipcOwnsFlexGeom(m, f2, i)) {
-          npair = pushGeomFlex(d, i, f2, group, npair);
+          npair = pushGeomFlex(d, i, f2, geomGroup(group, i, geomadr1), npair);
         }
       }
     }
@@ -1009,10 +1046,10 @@ static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
 
   // for body:flex, if body has SDFs, call pushGeomFlex
   if (isbody1 && !isbody2) {
-    for (int i=m->body_geomadr[bf1]; i < m->body_geomadr[bf1]+m->body_geomnum[bf1]; i++) {
+    for (int i=geomadr1; i < geomadr1+m->body_geomnum[bf1]; i++) {
       if (m->geom_type[i] == mjGEOM_SDF) {
         if (m->flex_dim[f2] == 2) {
-          npair = pushGeomFlex(d, i, f2, group, npair);
+          npair = pushGeomFlex(d, i, f2, geomGroup(group, i, geomadr1), npair);
         }
       }
     }
@@ -1092,7 +1129,8 @@ static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
             if (m->geom_type[nodeid1] != mjGEOM_PLANE &&
                 m->geom_type[nodeid1] != mjGEOM_SDF) {
               if (!mjc_ipcOwnsFlexGeom(m, f2, nodeid1)) {
-                npair = pushGeomElem(d, nodeid1, f2, nodeid2, group, npair);
+                npair = pushGeomElem(d, nodeid1, f2, nodeid2, geomGroup(group, nodeid1, geomadr1),
+                                     npair);
               }
             }
             if (mark_active) {
@@ -1583,9 +1621,9 @@ static int mj_broadphase(const mjModel* m, mjData* d, mjPacked32* bfpair, int ma
         add_pair(m, b1, b2, &npair, bfpair, maxpair);
       }
 
-      // add body:flex pairs, skip if flex asleep
+      // add body:flex pairs, skip if flex has no dofs (like b1) or is asleep
       for (int f=0; f < nflex; f++) {
-        if (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) == mjS_ASLEEP) continue;
+        if (!hasAwakeDofs(m, d, nbody+f, sleep_filter)) continue;
         add_pair(m, b1, nbody+f, &npair, bfpair, maxpair);
       }
     }
@@ -1683,13 +1721,11 @@ static int mj_broadphase(const mjModel* m, mjData* d, mjPacked32* bfpair, int ma
         }
       }
 
-      // flex pair: skip if neither side is dynamically awake
-      else if (sleep_filter) {
-        int awake1 = (bf1 >= nbody) ? mj_sleepState(m, d, mjOBJ_FLEX, bf1-nbody) == mjS_AWAKE
-                                    : d->body_awake[bf1] == mjS_AWAKE && m->body_treeid[bf1] >= 0;
-        int awake2 = (bf2 >= nbody) ? mj_sleepState(m, d, mjOBJ_FLEX, bf2-nbody) == mjS_AWAKE
-                                    : d->body_awake[bf2] == mjS_AWAKE && m->body_treeid[bf2] >= 0;
-        if (!awake1 && !awake2) continue;
+      // flex pair: skip if neither side has awake dofs
+      // (smaller id first: a body is cheaper to test than a flex)
+      else if (!hasAwakeDofs(m, d, mjMIN(bf1, bf2), sleep_filter) &&
+               !hasAwakeDofs(m, d, mjMAX(bf1, bf2), sleep_filter)) {
+        continue;
       }
 
       // add bodyflex pair if there is room in buffer

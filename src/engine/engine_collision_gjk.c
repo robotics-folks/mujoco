@@ -20,7 +20,6 @@
 #include <string.h>
 
 #include <mujoco/mjtype.h>
-#include <mujoco/mjmodel.h>
 #include "engine/engine_collision_convex.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
@@ -100,6 +99,7 @@ typedef struct {
     int* indices;     // indices of faces on horizon
     int* edges;       // corresponding edge of each face on the horizon
     int nedges;       // number of edges in horizon
+    int maxedges;     // max number of edges in horizon
     const mjtNum* w;  // point where horizon is created
   } horizon;
 } Polytope;
@@ -182,15 +182,17 @@ static inline mjtNum det3(const mjtNum v1[3], const mjtNum v2[3], const mjtNum v
 // ---------------------------------------- GJK ---------------------------------------------------
 
 
-// return true if both geoms are discrete shapes (i.e. meshes or boxes with no margin)
-static int discreteGeoms(mjCCDObj* obj1, mjCCDObj* obj2) {
+// return true if object is a discrete shape or shrunk to a point/line with no margin
+static int discreteGeom(const mjCCDObj* obj) {
   // non-zero margin makes geoms smooth
-  if (obj1->margin != 0 || obj2->margin != 0) return 0;
+  if (obj->margin != 0) return 0;
 
-  int g1 = obj1->geom_type;
-  int g2 = obj2->geom_type;
-  return (g1 == mjGEOM_MESH || g1 == mjGEOM_BOX || g1 == mjGEOM_HFIELD) &&
-         (g2 == mjGEOM_MESH || g2 == mjGEOM_BOX || g2 == mjGEOM_HFIELD);
+  // point and line supports are discrete
+  if (obj->support == mjc_pointSupport || obj->support == mjc_lineSupport) return 1;
+
+  // mesh, box, and hfield supports are discrete
+  int g = obj->geom_type;
+  return (g == mjGEOM_MESH || g == mjGEOM_BOX || g == mjGEOM_HFIELD);
 }
 
 
@@ -210,10 +212,11 @@ static void gjk(mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2) {
   status->separated = 0;
 
   // if both geoms are discrete, finite convergence is guaranteed; set tolerance to 0
-  mjtNum epsilon = discreteGeoms(obj1, obj2) ? 0 : 0.5 * tol2;
+  int discrete = discreteGeom(obj1) && discreteGeom(obj2);
+  mjtNum epsilon = discrete ? 0 : 0.5 * tol2;
 
-  // tolerance on norm of x_k
-  mjtNum min_norm = discreteGeoms(obj1, obj2) ? mjMINVAL : status->tolerance;
+  // minimum norm of x_k; resolve distances below tolerance for discrete shapes or distance queries
+  mjtNum min_norm = (discrete || get_dist) ? mjMINVAL : status->tolerance;
 
   // set initial guess
   sub3(x_k, x1_k, x2_k);
@@ -1124,6 +1127,14 @@ static int polytope3(Polytope* pt, mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj
     return mjEPA_P3_INVALID_V5;
   }
 
+  // check that v4 and v5 are not coplanar with the 2-simplex
+  mjtNum d4[3], d5[3];
+  sub3(d4, v4, v1);
+  sub3(d5, v5, v1);
+  if (dot3(n, d4) < mjMINEPATOL*n_norm || dot3(n_neg, d5) < mjMINEPATOL*n_norm) {
+    return mjEPA_P3_ORIGIN_ON_FACE;
+  }
+
   // if origin does not lie on simplex then we need to check that the hexahedron contains the
   // origin
   //
@@ -1265,10 +1276,16 @@ static inline mjtNum attachFace(Polytope* pt, int v1, int v2, int v3,
 }
 
 
-// add an edge to the horizon
-static inline void addEdge(Polytope* pt, int index, int edge) {
-  pt->horizon.edges[pt->horizon.nedges] = edge;
-  pt->horizon.indices[pt->horizon.nedges++] = index;
+// add an edge to the horizon; return number of edges added
+static inline int addEdge(Polytope* pt, int index, int edge) {
+  // always increment nedges so we can produce a useful warning if threshold is exceeded
+  int i = pt->horizon.nedges++;
+  if (i < pt->horizon.maxedges) {
+    pt->horizon.edges[i] = edge;
+    pt->horizon.indices[i] = index;
+    return 1;
+  }
+  return 0;
 }
 
 
@@ -1287,6 +1304,7 @@ static int horizonRec(Polytope* pt, Face* face, int e) {
     if (dot3(face->v, pt->horizon.w) - face->dist2 > mjMINVAL) {
       int verts[3] = EPA_VERT_EXPAND(face->verts);
       deleteFace(pt, face);
+      int ret = 1;
 
       // recursively search the adjacent faces on the next two edges
       for (int k = 1; k < 3; k++) {
@@ -1294,42 +1312,34 @@ static int horizonRec(Polytope* pt, Face* face, int e) {
         Face* adjFace = &pt->faces[face->adj[i]];
         if (adjFace->index > -2) {
           int adjEdge = getEdge(adjFace, verts[(i + 1) % 3]);
-          if (!horizonRec(pt, adjFace, adjEdge)) {
-            addEdge(pt, face->adj[i], adjEdge);
+          int r = horizonRec(pt, adjFace, adjEdge);
+          if (r < 0 || (!r && !addEdge(pt, face->adj[i], adjEdge))) {
+            ret = -1;
           }
         }
       }
-      return 1;
+      return ret;
     }
   return 0;
 }
 
 
-// create horizon given the face as starting point
-static void horizon(Polytope* pt, Face* face) {
+// create horizon given the face as starting point; return 0 on success
+static int horizon(Polytope* pt, Face* face) {
   deleteFace(pt, face);
   int verts[3] = EPA_VERT_EXPAND(face->verts);
-
-  // first edge
-  Face* adjFace = &pt->faces[face->adj[0]];
-  int adjEdge = getEdge(adjFace, verts[1]);
-  if (!horizonRec(pt, adjFace, adjEdge)) {
-    addEdge(pt, face->adj[0], adjEdge);
+  int ret = 0;
+  for (int i = 0; i < 3; i++) {
+    Face* adjFace = &pt->faces[face->adj[i]];
+    if (adjFace->index > -2) {
+      int adjEdge = getEdge(adjFace, verts[(i + 1) % 3]);
+      int r = horizonRec(pt, adjFace, adjEdge);
+      if (r < 0 || (!r && !addEdge(pt, face->adj[i], adjEdge))) {
+        ret = -1;
+      }
+    }
   }
-
-  // second edge
-  adjFace = &pt->faces[face->adj[1]];
-  adjEdge = getEdge(adjFace, verts[2]);
-  if (adjFace->index > -2 && !horizonRec(pt, adjFace, adjEdge)) {
-    addEdge(pt, face->adj[1], adjEdge);
-  }
-
-  // third edge
-  adjFace = &pt->faces[face->adj[2]];
-  adjEdge = getEdge(adjFace, verts[0]);
-  if (adjFace->index > -2 && !horizonRec(pt, adjFace, adjEdge)) {
-    addEdge(pt, face->adj[2], adjEdge);
-  }
+  return ret;
 }
 
 
@@ -1358,7 +1368,7 @@ static mjtNum epaWitness(const Polytope* pt, const Face* face, mjtNum x1[3], mjt
 static Face* epa(mjCCDStatus* status, Polytope* pt, mjCCDObj* obj1, mjCCDObj* obj2) {
   mjtNum upper = mjMAX_LIMIT, upper2 = mjMAX_LIMIT, lower2;
   Face* face = NULL, *pface = NULL;  // face closest to origin
-  int discrete = discreteGeoms(obj1, obj2);
+  int discrete = discreteGeom(obj1) && discreteGeom(obj2);
 
   // discrete geoms return in a finite number of iterations, a non-zero tolerance avoids
   // absurdly small lower and upper bounds
@@ -1402,6 +1412,7 @@ static Face* epa(mjCCDStatus* status, Polytope* pt, mjCCDObj* obj1, mjCCDObj* ob
       // terminate without contact when upper < lower on first iteration
       if (k == 0 && upper < lower - 1e-10) {
         face = NULL;
+        status->epa_status = mjEPA_NOCONTACT;
       }
       break;
     }
@@ -1420,7 +1431,14 @@ static Face* epa(mjCCDStatus* status, Polytope* pt, mjCCDObj* obj1, mjCCDObj* ob
     }
 
     pt->horizon.w = w->vert;
-    horizon(pt, face);
+    if (horizon(pt, face) < 0) {
+      mju_warning(
+          "EPA: out of memory for horizon edges on expanding polytope, "
+          "set ccd_iterations to at least %d",
+          pt->horizon.nedges + 11);
+      face = NULL;
+      break;
+    }
 
     // unrecoverable numerical issue; at least one face was deleted so nedges is 3 or more
     if (pt->horizon.nedges < 3) {
@@ -1597,15 +1615,15 @@ static inline mjtNum witnessOnFace(mjtNum w1[3], mjtNum w2[3], const mjtNum v[3]
 }
 
 
-// clip a polygon against another polygon
-static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
-                        const mjtNum* face2, int nface2, const mjtNum n[3],
-                        const mjtNum dir[3], mjtNum* buffer, int npolygonmax) {
+// clip a polygon against another polygon, return number of contacts written
+static int polygonClip(mjtNum* x1, mjtNum* x2, mjtNum* dist, int nconmax,
+                       const mjtNum* face1, int nface1,
+                       const mjtNum* face2, int nface2, const mjtNum n[3],
+                       const mjtNum dir[3], mjtNum* buffer, int npolygonmax) {
   // clipping face needs to be at least a triangle
   if (nface1 < 3) {
-    return;
+    return 0;
   }
-  mjtNum* dist = status->dist;
   mjtNum* polygon = buffer;
   mjtNum* clipped = polygon + 6 * npolygonmax;
   mjtNum* pn = clipped + 6 * npolygonmax;
@@ -1685,19 +1703,17 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
   }
 
   if (npolygon < 1) {
-    return;
+    return 0;
   }
 
-  // copy final clipped polygon to status
-  if (status->max_contacts < 5 && npolygon > 4) {
-    status->nx = 4;
+  // copy final clipped polygon
+  if (nconmax < 5 && npolygon > 4) {
     int idx[4];
     hull4(idx, polygon, npolygon);
     for (int i = 0; i < 4; i++) {
-      dist[i] = witnessOnFace(status->x1 + 3*i, status->x2 + 3*i, polygon + 3*idx[i],
-                              face1, n, dir);
+      dist[i] = witnessOnFace(x1 + 3*i, x2 + 3*i, polygon + 3*idx[i], face1, n, dir);
     }
-    return;
+    return 4;
   }
 
   // if the face is an edge, remove potential duplicates
@@ -1717,19 +1733,17 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
         }
       }
     }
-    dist[0] = witnessOnFace(status->x1, status->x2, polygon + 3*best1, face1, n, dir);
-    dist[1] = witnessOnFace(status->x1 + 3, status->x2 + 3, polygon + 3*best2, face1, n, dir);
-    status->nx = 2;
-    return;
+    dist[0] = witnessOnFace(x1, x2, polygon + 3*best1, face1, n, dir);
+    dist[1] = witnessOnFace(x1 + 3, x2 + 3, polygon + 3*best2, face1, n, dir);
+    return 2;
   }
 
   // no pruning needed (cap to max contacts)
-  int maxcon = sizeof(status->x2) / (3*sizeof(status->x2[0]));
-  npolygon = (npolygon < maxcon) ? npolygon : maxcon;
+  npolygon = (npolygon < nconmax) ? npolygon : nconmax;
   for (int i = 0; i < npolygon; i++) {
-    dist[i] = witnessOnFace(status->x1 + 3*i, status->x2 + 3*i, polygon + 3*i, face1, n, dir);
+    dist[i] = witnessOnFace(x1 + 3*i, x2 + 3*i, polygon + 3*i, face1, n, dir);
   }
-  status->nx = npolygon;
+  return npolygon;
 }
 
 
@@ -2329,31 +2343,30 @@ static void multicontact(int nmeshdegmax, int npolygonmax, uint8_t* buffer, cons
   // normal direction for witness recovery
   mjtNum wit_dir[3];
 
-  // face1 is an edge; clip face1 against face2
+  // save status members
+  int nx, nconmax = status->max_contacts;
+  mjtNum* dist = status->dist, *x1 = status->x1, *x2 = status->x2;
+
   if (edgecon1) {
+    // face1 is an edge; clip face1 against face2
     scl3(wit_dir, n2 + 3*j, -1.0);
-    polygonClip(status, face2, nface2, face1, nface1, n2 + 3*j, wit_dir, polygon, npolygonmax);
-    // x1 and x2 must be flipped as we flipped the faces in polygonClip
-    int nx = status->nx;
-    for (int k = 0; k < nx; k++) {
-      mjtNum tmp[3];
-      copy3(tmp, status->x1 + 3*k);
-      copy3(status->x1 + 3*k, status->x2 + 3*k);
-      copy3(status->x2 + 3*k, tmp);
-    }
-    return;
-  }
-
-  // face2 is an edge; clip face2 against face1
-  if (edgecon2) {
+    nx = polygonClip(x2, x1, dist, nconmax, face2, nface2, face1, nface1, n2 + 3*j, wit_dir,
+                     polygon, npolygonmax);
+  } else if (edgecon2) {
+    // face2 is an edge; clip face2 against face1
     scl3(wit_dir, n1 + 3*j, -1.0);
-    polygonClip(status, face1, nface1, face2, nface2, n1 + 3*j, wit_dir, polygon, npolygonmax);
-    return;
+    nx = polygonClip(x1, x2, dist, nconmax, face1, nface1, face2, nface2, n1 + 3*j, wit_dir,
+                     polygon, npolygonmax);
+  } else {
+    // face-face collision
+    copy3(wit_dir, n2 + 3*j);
+    nx = polygonClip(x1, x2, dist, nconmax, face1, nface1, face2, nface2, n1 + 3*i, wit_dir,
+                     polygon, npolygonmax);
   }
 
-  // face-face collision
-  copy3(wit_dir, n2 + 3*j);
-  polygonClip(status, face1, nface1, face2, nface2, n1 + 3*i, wit_dir, polygon, npolygonmax);
+  if (nx > 0) {
+    status->nx = nx;
+  }
 }
 
 
@@ -2379,11 +2392,12 @@ static inline void inflate(mjCCDStatus* status, mjtNum margin1, mjtNum margin2) 
 
 // return size in bytes of the buffer needed for mjc_ccd for a given number of iterations
 size_t mjc_ccdSize(int npolygonmax, int nmeshdegmax, int iterations) {
+  int maxedges = 24 + (iterations > 35 ? iterations - 35 : 0);
   size_t epa_size = align8(sizeof(Vertex) * (5 + iterations))   // vertices in polytope
                   + align8(sizeof(Face) * 6 * iterations)       // faces in polytope
                   + align8(sizeof(Face*) * 6 * iterations)      // map in polytope
-                  + align8(sizeof(int) * 24)                    // horizon indices
-                  + align8(sizeof(int) * 24);                   // horizon edges
+                  + align8(sizeof(int) * maxedges)              // horizon indices
+                  + align8(sizeof(int) * maxedges);             // horizon edges
 
   // allocate room for primitive geoms (multicontact is hardwired for primitive collisions)
   npolygonmax = npolygonmax < 16 ? 16 : npolygonmax;
@@ -2414,7 +2428,8 @@ mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, m
   status->epa_status = mjEPA_NOCONTACT;
   status->tolerance = config->tolerance;
   status->max_iterations = config->max_iterations;
-  status->max_contacts = config->max_contacts;
+  int maxcon = sizeof(status->dist) / sizeof(status->dist[0]);
+  status->max_contacts = config->max_contacts < maxcon ? config->max_contacts : maxcon;
   status->dist_cutoff = config->dist_cutoff;
 
   // special handling for sphere and capsule (shrink to point and line respectively)
@@ -2499,6 +2514,7 @@ mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, m
 
   if (status->dist[0] <= config->tolerance && status->nsimplex > 1
       && config->buffer && !status->separated) {
+    mjtNum gjk_dist = status->dist[0];
     status->dist[0] = 0;  // assume touching
     Polytope pt;
     pt.nfaces = pt.nmap = pt.nverts = pt.horizon.nedges = 0;
@@ -2506,6 +2522,7 @@ mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, m
     // allocate memory for polytope
     int N = config->max_iterations;
     pt.maxfaces = 6 * N;
+    pt.horizon.maxedges = 24 + (N > 35 ? N - 35 : 0);
     uint8_t* buffer = config->buffer;
     pt.verts = (Vertex*)buffer;
     buffer += align8(sizeof(Vertex) * (5 + N));
@@ -2514,7 +2531,7 @@ mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, m
     pt.map = (Face**)buffer;
     buffer += align8(sizeof(Face*) * (6 * N));
     pt.horizon.indices = (int*)buffer;
-    buffer += align8(sizeof(int) * 24);
+    buffer += align8(sizeof(int) * pt.horizon.maxedges);
     pt.horizon.edges = (int*)buffer;
 
     int ret;
@@ -2530,11 +2547,19 @@ mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, m
     // simplex not on boundary (objects are penetrating)
     if (!ret) {
       Face* face = epa(status, &pt, obj1, obj2);
+
+      // get multiple contacts if requested
       if (config->max_contacts > 1 && face) {
         int verts[3] = EPA_VERT_EXPAND(face->verts);
         multicontact(config->nmeshdegmax, config->npolygonmax, config->buffer,
                      pt.verts + verts[0], pt.verts + verts[1], pt.verts + verts[2],
                      status, obj1, obj2);
+      }
+
+      // if EPA found no contact during a distance query, restore GJK distance and witness count
+      if (!face && config->dist_cutoff > 0 && status->epa_status == mjEPA_NOCONTACT) {
+        status->nx = 1;
+        status->dist[0] = gjk_dist;
       }
     }
   }

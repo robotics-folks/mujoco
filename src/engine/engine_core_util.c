@@ -50,6 +50,16 @@ int mj_isPyramidal(const mjModel* m) {
 }
 
 
+// determine type of solver
+int mj_isDual(const mjModel* m) {
+  if (m->opt.solver == mjSOL_PGS || m->opt.noslip_iterations > 0) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
+
 //-------------------------- sparse chains ---------------------------------------------------------
 
 // merge dof chains for two bodies
@@ -1419,7 +1429,7 @@ int mj_effFlexContactPossible(const mjModel* m, int f) {
 
 
 // does flex f contribute elastic stiffness to the metric. Unlike the assembler gate
-// flexStiff_active (engine_derivative.c), interpolated flexes are included: their
+// mjd_flexStiff_active (engine_derivative.c), interpolated flexes are included: their
 // stiffness is carried matrix-free
 int mj_effFlexStiffPossible(const mjModel* m, int f) {
   // rigid or 1D flexes do not contribute stiffness
