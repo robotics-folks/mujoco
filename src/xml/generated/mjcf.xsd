@@ -211,6 +211,26 @@
     </xs:restriction>
   </xs:simpleType>
 
+  <xs:simpleType name="kw_actuatortype">
+    <xs:annotation>
+      <xs:documentation>the element an actuator is written with</xs:documentation>
+    </xs:annotation>
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="general"/>
+      <xs:enumeration value="motor"/>
+      <xs:enumeration value="position"/>
+      <xs:enumeration value="velocity"/>
+      <xs:enumeration value="intvelocity"/>
+      <xs:enumeration value="damper"/>
+      <xs:enumeration value="cylinder"/>
+      <xs:enumeration value="muscle"/>
+      <xs:enumeration value="adhesion"/>
+      <xs:enumeration value="pid"/>
+      <xs:enumeration value="orientation"/>
+      <xs:enumeration value="dcmotor"/>
+    </xs:restriction>
+  </xs:simpleType>
+
   <xs:simpleType name="kw_dyn">
     <xs:restriction base="xs:string">
       <xs:enumeration value="none"/>
@@ -261,6 +281,7 @@
       <xs:enumeration value="vel"/>
       <xs:enumeration value="ff"/>
       <xs:enumeration value="voltage"/>
+      <xs:enumeration value="pressure"/>
     </xs:restriction>
   </xs:simpleType>
   <xs:simpleType name="kwlist_inputbit">
@@ -735,6 +756,8 @@
     <xs:attribute name="inertiafromgeom" type="kw_FalseTrueAuto" default="auto"/>
     <xs:attribute name="inertiagrouprange" type="int2" default="0 5"/>
     <xs:attribute name="saveinertial" type="kw_bool"/>
+    <xs:attribute name="savecompiled" type="kw_bool" default="true"/>
+    <xs:attribute name="savecanonical" type="kw_bool" default="true"/>
     <xs:attribute name="assetdir" type="xs:string">
       <xs:annotation>
         <xs:documentation>fans out to mesh/texturedir</xs:documentation>
@@ -1585,13 +1608,18 @@
         <xs:documentation>saved default depends on dyntype</xs:documentation>
       </xs:annotation>
     </xs:attribute>
-    <xs:attribute name="input" type="kw_inputchart">
+    <xs:attribute name="input" type="xs:string">
       <xs:annotation>
-        <xs:documentation>so3 chart keyword, or servo token subset</xs:documentation>
+        <xs:documentation>so3 chart keyword, input tokens, or none</xs:documentation>
       </xs:annotation>
     </xs:attribute>
     <xs:attribute name="velrange" type="double2"/>
     <xs:attribute name="ffrange" type="double2"/>
+    <xs:attribute name="inheritrange" type="xs:double">
+      <xs:annotation>
+        <xs:documentation>compiled values have the range in its place</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
     <xs:attribute name="dyntype" type="kw_dyn" default="none"/>
     <xs:attribute name="gaintype" type="kw_gain" default="fixed">
       <xs:annotation>
@@ -2082,6 +2110,7 @@
     <xs:attribute name="gravcomp" type="xs:double"/>
     <xs:attribute name="sleep" type="kw_bodysleep"/>
     <xs:attribute name="simple" type="kw_FalseAuto" default="auto"/>
+    <xs:attribute name="fuse" type="kw_FalseAuto" default="auto"/>
     <xs:attribute name="user" type="doublelist"/>
   </xs:complexType>
 
@@ -2672,13 +2701,18 @@
         <xs:documentation>saved default depends on dyntype</xs:documentation>
       </xs:annotation>
     </xs:attribute>
-    <xs:attribute name="input" type="kw_inputchart">
+    <xs:attribute name="input" type="xs:string">
       <xs:annotation>
-        <xs:documentation>so3 chart keyword, or servo token subset</xs:documentation>
+        <xs:documentation>so3 chart keyword, input tokens, or none</xs:documentation>
       </xs:annotation>
     </xs:attribute>
     <xs:attribute name="velrange" type="double2"/>
     <xs:attribute name="ffrange" type="double2"/>
+    <xs:attribute name="inheritrange" type="xs:double">
+      <xs:annotation>
+        <xs:documentation>compiled values have the range in its place</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
     <xs:attribute name="dyntype" type="kw_dyn" default="none"/>
     <xs:attribute name="gaintype" type="kw_gain" default="fixed">
       <xs:annotation>

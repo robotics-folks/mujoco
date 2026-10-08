@@ -22,15 +22,14 @@
 #include <string_view>
 #include <vector>
 
-#include <ccd/ccd.h>   // IWYU pragma: keep
-#include <ccd/vec3.h>  // IWYU pragma: keep
-
-#include "src/engine/engine_collision_convex.h"
-#include <mujoco/mujoco.h>
-#include <mujoco/mjtype.h>
-#include "test/fixture.h"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <ccd/ccd.h>   // IWYU pragma: keep
+#include <ccd/vec3.h>  // IWYU pragma: keep
+#include <mujoco/mjtype.h>
+#include <mujoco/mujoco.h>
+#include "src/engine/engine_collision_convex.h"
+#include "test/fixture.h"
 
 // uncomment to run tests with libccd
 // #define TEST_WITH_LIBCCD
@@ -2473,6 +2472,106 @@ TEST_F(MjGjkTest, CapsuleMeshMultiCCDTilted) {
 
   // tilted capsule should only generate 1 contact at the lower end
   EXPECT_EQ(ncons, 1);
+}
+
+TEST_F(MjGjkTest, Polytope3CoplanarSupport) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cone"
+            vertex="1 0 0   0.70710678 0.70710678 0   0 1 0  -0.70710678 0.70710678 0
+                   -1 0 0  -0.70710678 -0.70710678 0  0 -1 0  0.70710678 -0.70710678 0
+                    0 0 0.5"/>
+    </asset>
+    <worldbody>
+      <geom name="g1" type="mesh" mesh="cone" euler="13 27 41"/>
+      <geom name="g2" type="sphere" size="0.1"/>
+    </worldbody>
+  </mujoco>)";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // get world-space coordinates of base vertices 0, 2, 4 and apex 8
+  auto world_vert = [&](int v, mjtNum out[3]) {
+    mjtNum local[3] = {model->mesh_vert[3 * v + 0], model->mesh_vert[3 * v + 1],
+                       model->mesh_vert[3 * v + 2]};
+    mju_mulMatVec3(out, data->geom_xmat, local);
+    mju_addTo3(out, data->geom_xpos);
+  };
+  mjtNum w0[3], w2[3], w4[3], w8[3];
+  world_vert(0, w0);
+  world_vert(2, w2);
+  world_vert(4, w4);
+  world_vert(8, w8);
+
+  // shrink sphere to a point on the base face (within tolerance of the plane)
+  model->geom_size[3] = 0;
+  for (int k = 0; k < 3; k++) {
+    mjtNum base = 0.2 * w0[k] + 0.24 * w2[k] + 0.56 * w4[k];
+    data->geom_xpos[3 + k] = base + 1e-8 * (w8[k] - base);
+  }
+
+  mjCCDStatus status;
+  std::vector<mjtNum> dir, pos;
+  mjtNum dist;
+  int ncons = Penetration(status, dist, dir, pos, model, data, 0, 1);
+  EXPECT_EQ(ncons, 0);
+  EXPECT_NE(status.epa_status, mjEPA_SUCCESS);
+}
+
+TEST_F(MjGjkTest, GeomDistanceBelowTolerance) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="g1" type="box" size="0.1 0.1 0.1"/>
+      <geom name="g2" type="ellipsoid" pos="0 0 0.2000005" size="0.1 0.1 0.1"/>
+    </worldbody>
+  </mujoco>)";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  mjtNum fromto[6] = {0};
+  mjtNum dist = mj_geomDistance(model.get(), data.get(), 0, 1, 1.0, fromto);
+  EXPECT_NEAR(dist, 5e-7, MjTol(1e-9, 5e-6));
+  EXPECT_NEAR(fromto[2], 0.1, MjTol(1e-6, 1e-5));
+  EXPECT_NEAR(fromto[5], 0.1000005, MjTol(1e-6, 1e-5));
+}
+
+TEST_F(MjGjkTest, MultiCCDEdgeClipEmpty) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="box1" type="box" size="0.2 0.2 0.01"
+            pos="0.1316 0.7377 -0.0022" euler="-9 -15 15"/>
+      <geom name="box2" type="box" size="0.001 0.5 0.5"/>
+    </worldbody>
+  </mujoco>)";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  int g1 = mj_name2id(model.get(), mjOBJ_GEOM, "box1");
+  int g2 = mj_name2id(model.get(), mjOBJ_GEOM, "box2");
+
+  mjCCDStatus status1, status2;
+  std::vector<mjtNum> dir1, pos1, dir2, pos2;
+  mjtNum dist1, dist2;
+  int ncons1 = Penetration(status1, dist1, dir1, pos1, model, data, g1, g2);
+  ASSERT_EQ(ncons1, 1);
+
+  int ncons2 =
+      Penetration(status2, dist2, dir2, pos2, model, data, g1, g2, 0, 4);
+  ASSERT_EQ(ncons2, 1);
+
+  EXPECT_MJTNUM_EQ(dist1, dist2);
+  EXPECT_MJTNUM_EQ(dir1[0], dir2[0]);
+  EXPECT_MJTNUM_EQ(dir1[1], dir2[1]);
+  EXPECT_MJTNUM_EQ(dir1[2], dir2[2]);
 }
 
 }  // namespace mujoco

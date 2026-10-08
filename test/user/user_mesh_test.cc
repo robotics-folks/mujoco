@@ -32,6 +32,7 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjtype.h>
 #include <mujoco/mujoco.h>
+#include "src/user/user_objects.h"
 #include "test/fixture.h"
 
 namespace mujoco {
@@ -797,6 +798,73 @@ TEST_F(MjCMeshTest, VolumeSmallAllowedShell) {
   EXPECT_LE(mju_abs(model->geom_size[2]), 1);
 }
 
+// Check the compiled stiffness against continuum strain energies on a unit
+// cube. Affine fields test the Lamé coefficients; quadratic fields also test
+// quadrature.
+TEST_F(MjCMeshTest, InterpolatedFlexStrainEnergy) {
+  for (bool membrane : {false, true}) {
+    for (bool quadratic : {false, true}) {
+      for (double poisson : {0.0, 0.25}) {
+        SCOPED_TRACE(absl::StrFormat("membrane=%d quadratic=%d poisson=%g",
+                                     membrane, quadratic, poisson));
+        std::string xml =
+            absl::StrFormat(R"(
+          <mujoco>
+            <worldbody>
+              <flexcomp name="f" type="grid" count="3 3 3" spacing=".5 .5 .5" dim="3" dof="%s">
+                <elasticity young="2" poisson="%g" thickness=".1" %s/>
+                <contact selfcollide="none"/>
+              </flexcomp>
+            </worldbody>
+          </mujoco>)",
+                            quadratic ? "quadratic" : "trilinear", poisson,
+                            membrane ? "elastic2d=\"stretch\"" : "");
+        char error[1024];
+        MjModelPtr model =
+            LoadModelFromString(xml.c_str(), error, sizeof(error));
+        ASSERT_THAT(model.get(), testing::NotNull()) << error;
+        int order = quadratic ? 2 : 1;
+        int nbasis = order + 1;
+        int nnode = membrane ? nbasis * nbasis : nbasis * nbasis * nbasis;
+        int ndof = 3 * nnode;
+        double mu = 1 / (1 + poisson);
+        double lambda = membrane
+                            ? 2 * poisson / (1 - poisson * poisson)
+                            : 2 * poisson / ((1 + poisson) * (1 - 2 * poisson));
+        for (int field = 0; field < (quadratic ? 3 : 2); ++field) {
+          SCOPED_TRACE(absl::StrFormat("field=%d", field));
+          // u_x=x, u_y=x, or u_x=x^2/2. For membranes use each face's in-plane
+          // axes.
+          for (int face = 0; face < (membrane ? 6 : 1); ++face) {
+            int axis0 = membrane ? (face / 2 + 1) % 3 : 0;
+            int axis1 = membrane ? (face / 2 + 2) % 3 : 1;
+            std::vector<double> u(ndof, 0);
+            for (int i = 0; i < nnode; ++i) {
+              int ix = i / (membrane ? nbasis : nbasis * nbasis);
+              double x = static_cast<double>(ix) / order - 0.5;
+              u[3 * i + (field == 1 ? axis1 : axis0)] =
+                  field == 2 ? x * x / 2 : x;
+            }
+            const mjtNum* stiffness = model->flex_stiffness +
+                                      model->flex_stiffnessadr[0] +
+                                      face * ndof * ndof;
+            double energy = 0;
+            for (int i = 0; i < ndof; ++i) {
+              for (int j = 0; j < ndof; ++j) {
+                energy -= 0.5 * u[i] * stiffness[i * ndof + j] * u[j];
+              }
+            }
+            double expected = 0.5 * (field == 1 ? mu : lambda + 2 * mu);
+            if (field == 2) expected /= 12;  // integral of x^2 on [-1/2, 1/2]
+            if (membrane) expected *= 0.1;   // thickness
+            EXPECT_NEAR(energy, expected, MjTol(1e-12, 2e-6));
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST_F(MjCMeshTest, Flex2DElasticityRequiresPositiveThickness) {
   static constexpr char xml[] = R"(
   <mujoco>
@@ -1392,6 +1460,54 @@ TEST_F(MjCMeshTest, MissingTexCoord) {
   EXPECT_THAT(error.data(), HasSubstr("texcoord must be 2*nv"));
 }
 
+TEST_F(MjCMeshTest, ObjIncompleteFaceTexCoord) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="mesh" file="mesh.obj"/>
+    </asset>
+  </mujoco>
+  )";
+  static constexpr char obj[] =
+      "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\n"
+      "vt 0 0\n"
+      "f 1 3/1 2/1\nf 1/1 2/1 4/1\nf 3/1 1/1 4/1\nf 2/1 3/1 4/1\n";
+  mjVFS vfs;
+  mj_defaultVFS(&vfs);
+  mj_addBufferVFS(&vfs, "mesh.obj", obj, sizeof(obj) - 1);
+  std::array<char, 1024> error;
+  mock_warning_handler.ExpectWarnings("missing face texture coordinate");
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size(), &vfs);
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_EQ(model->mesh_texcoordadr[0], -1);
+  EXPECT_EQ(model->nmeshtexcoord, 0);
+  mj_deleteVFS(&vfs);
+}
+
+TEST_F(MjCMeshTest, ObjOutOfRangeFaceTexCoord) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="mesh" file="mesh.obj"/>
+    </asset>
+  </mujoco>
+  )";
+  static constexpr char obj[] =
+      "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\n"
+      "vt \n"
+      "f 1/1 3/3 2/2\nf 1/1 2/2 4/4\nf 3/3 1/1 4/4\nf 2/2 3/3 4/4\n";
+  mjVFS vfs;
+  mj_defaultVFS(&vfs);
+  mj_addBufferVFS(&vfs, "mesh.obj", obj, sizeof(obj) - 1);
+  std::array<char, 1024> error;
+  mock_warning_handler.ExpectWarnings("invalid or missing face texture");
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size(), &vfs);
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_EQ(model->mesh_texcoordadr[0], -1);
+  EXPECT_EQ(model->nmeshtexcoord, 0);
+  mj_deleteVFS(&vfs);
+}
+
 // ----------------------------- qhull ----------------------------------------
 
 TEST_F(MjCMeshTest, NaNConvexHullDisallowed) {
@@ -1428,6 +1544,22 @@ TEST_F(MjCMeshTest, InvalidIndexInFace) {
   MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
   ASSERT_THAT(model.get(), IsNull());
   EXPECT_THAT(error, HasSubstr("in face 0, vertex index 6 does not exist"));
+}
+
+TEST_F(MjCMeshTest, CacheRespectsSmoothNormal) {
+  constexpr char xml[] = R"(
+    <mujoco>
+      <asset><mesh name="cube" file="%s" smoothnormal="%s"/></asset>
+      <worldbody><geom type="mesh" mesh="cube"/></worldbody>
+    </mujoco>)";
+  std::string path = GetTestDataFilePath("user/testdata/cube.stl");
+  MjModelPtr hard = LoadModelFromString(absl::StrFormat(xml, path, "false"));
+  MjModelPtr smooth = LoadModelFromString(absl::StrFormat(xml, path, "true"));
+  ASSERT_THAT(hard.get(), NotNull());
+  ASSERT_THAT(smooth.get(), NotNull());
+  EXPECT_GT(mj_getCacheSize(mj_getCache()), 0);
+  EXPECT_NE(AsVector(hard->mesh_normal, 3 * hard->nmeshnormal),
+            AsVector(smooth->mesh_normal, 3 * smooth->nmeshnormal));
 }
 
 TEST_F(MjCMeshTest, QhullCache) {
@@ -2027,6 +2159,181 @@ TEST_F(MjCMeshTest, MeshMaterial) {
   ASSERT_THAT(model.get(), NotNull()) << error.data();
   EXPECT_EQ(model->geom_matid[0], 1);
   EXPECT_EQ(model->geom_matid[1], 0);
+}
+
+TEST_F(MjCMeshTest, MakeGrid1D) {
+  mjCMesh mesh;
+  int count[3] = {5, 1, 1};
+  double spacing[3] = {0.1, 0, 0};
+  mesh.MakeGrid(count, spacing, 1, /*needtex=*/false);
+  const std::vector<double>& node = mesh.UserNode();
+  ASSERT_EQ(node.size(), 5 * 3);
+  // 1D grids only have nodes, connectivity is implicit
+  EXPECT_TRUE(mesh.UserFace().empty());
+  EXPECT_TRUE(mesh.UserTet().empty());
+  EXPECT_THAT(std::vector<double>(node.begin(), node.begin() + 6),
+              ElementsAre(0.1 * -2.0, 0, 0, 0.1 * -1.0, 0, 0));
+}
+
+TEST_F(MjCMeshTest, MakeCircle) {
+  mjCMesh mesh;
+  int count[3] = {5, 1, 1};
+  double spacing[3] = {1, 0, 0};
+  mesh.MakeCircle(count, spacing);
+  const std::vector<double>& node = mesh.UserNode();
+  ASSERT_EQ(node.size(), 4 * 3);  // last grid point coincides with the first
+  EXPECT_TRUE(mesh.UserFace().empty());
+  EXPECT_TRUE(mesh.UserTet().empty());
+  // square inscribed in a circle, consecutive nodes at distance spacing[0]
+  double radius = std::sqrt(0.5);
+  EXPECT_DOUBLE_EQ(node[0], radius);
+  EXPECT_DOUBLE_EQ(node[1], 0);
+  EXPECT_NEAR(node[3], 0, 1e-15);
+  EXPECT_DOUBLE_EQ(node[4], radius);
+}
+
+TEST_F(MjCMeshTest, MakeGrid2D) {
+  mjCMesh mesh;
+  int count[3] = {3, 4, 1};
+  double spacing[3] = {0.1, 0.2, 0};
+  mesh.MakeGrid(count, spacing, 2, /*needtex=*/true);
+  const std::vector<double>& node = mesh.UserNode();
+  const std::vector<int>& face = mesh.UserFace();
+  ASSERT_EQ(node.size(), 3 * 4 * 3);
+  ASSERT_EQ(face.size(), 2 * 3 * 2 * 3);  // 2*3 quads * 2 tris * 3 verts
+  EXPECT_EQ(mesh.UserTexcoord().size(), 3 * 4 * 2);
+  EXPECT_TRUE(mesh.UserTet().empty());
+
+  // nodes are stored in double precision, ordered with x outermost
+  EXPECT_EQ(node[0], 0.1 * -1.0);
+  EXPECT_EQ(node[1], 0.2 * -1.5);
+  EXPECT_EQ(node[2], 0.0);
+  EXPECT_EQ(node[3 * 11 + 0], 0.1 * 1.0);
+  EXPECT_EQ(node[3 * 11 + 1], 0.2 * 1.5);
+
+  // first quad (ix=0, iy=0) has vertices {0, 4, 5, 1}
+  EXPECT_THAT(std::vector<int>(face.begin(), face.begin() + 6),
+              ElementsAre(0, 4, 5, 0, 5, 1));
+}
+
+TEST_F(MjCMeshTest, MakeGrid3D) {
+  mjCMesh mesh;
+  int count[3] = {2, 2, 2};
+  double spacing[3] = {1, 1, 1};
+  mesh.MakeGrid(count, spacing, 3, /*needtex=*/false);
+  const std::vector<double>& node = mesh.UserNode();
+  const std::vector<int>& tet = mesh.UserTet();
+  ASSERT_EQ(node.size(), 8 * 3);
+  ASSERT_EQ(tet.size(), 6 * 4);  // 1 cube = 6 tets * 4 indices
+  EXPECT_TRUE(mesh.UserFace().empty());
+  EXPECT_THAT(std::vector<double>(node.begin(), node.begin() + 6),
+              ElementsAre(-0.5, -0.5, -0.5, -0.5, -0.5, 0.5));
+  EXPECT_THAT(std::vector<int>(tet.begin(), tet.begin() + 8),
+              ElementsAre(0, 2, 4, 3, 0, 4, 1, 3));
+}
+
+TEST_F(MjCMeshTest, MakeDisc) {
+  mjCMesh mesh;
+  int count[3] = {3, 3, 1};
+  double spacing[3] = {1, 1, 0};
+  mesh.MakeDisc(count, spacing, /*needtex=*/false);
+  const std::vector<double>& node = mesh.UserNode();
+  const std::vector<int>& face = mesh.UserFace();
+  ASSERT_EQ(node.size(), 9 * 3);
+  ASSERT_EQ(face.size(), 2 * 2 * 2 * 3);
+
+  // corner (-1, -1) is projected radially onto the unit circle
+  EXPECT_DOUBLE_EQ(node[0], -std::sqrt(0.5));
+  EXPECT_DOUBLE_EQ(node[1], -std::sqrt(0.5));
+  // edge midpoint (-1, 0) is unchanged
+  EXPECT_DOUBLE_EQ(node[3], -1.0);
+  EXPECT_DOUBLE_EQ(node[4], 0.0);
+  // center stays at the origin
+  EXPECT_DOUBLE_EQ(node[12], 0.0);
+  EXPECT_DOUBLE_EQ(node[13], 0.0);
+
+  // quad (0, 0) is not flipped, quad (0, 1) is flipped
+  EXPECT_THAT(std::vector<int>(face.begin(), face.begin() + 12),
+              ElementsAre(0, 3, 4, 0, 4, 1, 1, 4, 2, 4, 5, 2));
+}
+
+TEST_F(MjCMeshTest, MakeBoxCylinderEllipsoid) {
+  int count[3] = {3, 3, 3};
+  double spacing[3] = {0.5, 0.5, 0.5};
+
+  mjCMesh box2d;
+  box2d.MakeBox(count, spacing, 2, /*needtex=*/false, /*open=*/false);
+  EXPECT_FALSE(box2d.UserFace().empty());
+  EXPECT_TRUE(box2d.UserTet().empty());
+  // no center node for surfaces
+  EXPECT_THAT(std::vector<double>(box2d.UserNode().begin(),
+                                  box2d.UserNode().begin() + 3),
+              ElementsAre(-0.5, -0.5, -0.5));
+
+  mjCMesh box3d;
+  box3d.MakeBox(count, spacing, 3, /*needtex=*/false, /*open=*/false);
+  const std::vector<double>& node = box3d.UserNode();
+  const std::vector<int>& tet = box3d.UserTet();
+  ASSERT_FALSE(tet.empty());
+  EXPECT_TRUE(box3d.UserFace().empty());
+  // center node followed by the first corner
+  EXPECT_THAT(std::vector<double>(node.begin(), node.begin() + 6),
+              ElementsAre(0, 0, 0, -0.5, -0.5, -0.5));
+  // first tet connects the center to the first triangle of side iz=0
+  EXPECT_THAT(std::vector<int>(tet.begin(), tet.begin() + 4),
+              ElementsAre(0, 1, 4, 5));
+
+  mjCMesh cyl;
+  cyl.MakeCylinder(count, spacing, 3, /*needtex=*/false, /*open=*/false);
+  EXPECT_EQ(cyl.UserTet(), tet);
+  EXPECT_DOUBLE_EQ(cyl.UserNode()[3], -0.5 * std::sqrt(0.5));
+  EXPECT_DOUBLE_EQ(cyl.UserNode()[4], -0.5 * std::sqrt(0.5));
+  EXPECT_DOUBLE_EQ(cyl.UserNode()[5], -0.5);
+
+  mjCMesh ell;
+  ell.MakeEllipsoid(count, spacing, 3, /*needtex=*/false, /*open=*/false);
+  EXPECT_EQ(ell.UserTet(), tet);
+  EXPECT_DOUBLE_EQ(ell.UserNode()[3], -0.5 / std::sqrt(3.0));
+  EXPECT_DOUBLE_EQ(ell.UserNode()[4], -0.5 / std::sqrt(3.0));
+  EXPECT_DOUBLE_EQ(ell.UserNode()[5], -0.5 / std::sqrt(3.0));
+}
+
+TEST_F(MjCMeshTest, MakeBoxTexcoord) {
+  int count[3] = {3, 3, 3};
+  double spacing[3] = {0.5, 0.5, 0.5};
+
+  // one texcoord per node, the center node only exists in 3D
+  for (int dim : {2, 3}) {
+    mjCMesh box;
+    box.MakeBox(count, spacing, dim, /*needtex=*/true, /*open=*/false);
+    EXPECT_EQ(box.UserTexcoord().size() / 2, box.UserNode().size() / 3);
+  }
+}
+
+TEST_F(MjCMeshTest, MakeProceduralSmallCount) {
+  double spacing[3] = {1, 1, 1};
+
+  // boxes need at least two points per side
+  int box_count[3] = {3, 1, 3};
+  mjCMesh box;
+  box.MakeBox(box_count, spacing, 3, /*needtex=*/false, /*open=*/false);
+  EXPECT_TRUE(box.UserNode().empty());
+  EXPECT_TRUE(box.UserTet().empty());
+
+  // circles need at least three nodes
+  int circle_count[3] = {3, 1, 1};
+  mjCMesh circle;
+  circle.MakeCircle(circle_count, spacing);
+  EXPECT_TRUE(circle.UserNode().empty());
+}
+
+TEST_F(MjCMeshTest, MakeGrid1DNoVert) {
+  int count[3] = {4, 1, 1};
+  double spacing[3] = {1, 1, 1};
+  mjCMesh mesh;
+  mesh.MakeGrid(count, spacing, 1, /*needtex=*/false);
+  EXPECT_EQ(mesh.UserNode().size(), 4 * 3);
+  EXPECT_TRUE(mesh.UserVert().empty());
 }
 
 }  // namespace

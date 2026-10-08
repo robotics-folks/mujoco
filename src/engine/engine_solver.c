@@ -25,10 +25,10 @@
 #include <mujoco/mjtype.h>
 #include "engine/engine_core_constraint.h"
 #include "engine/engine_core_smooth.h"
-#include "engine/engine_derivative.h"
 #include "engine/engine_core_util.h"
 #include "engine/engine_memory.h"
 #include "engine/engine_macro.h"
+#include "engine/engine_metric.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
 #include "engine/engine_util_misc.h"
@@ -76,8 +76,8 @@ static void dualFinish(const mjModel* m, mjData* d) {
 
   // compute constrained acceleration in joint space, in the solve metric: under the
   // effective metric, qacc_smooth and the constraint response both live in Mtilde
-  // (mjd_effSolve is the plain M solve when the metric is inactive)
-  mjd_effSolve(m, d, d->qacc, d->qfrc_constraint);
+  // (mj_effSolve is the plain M solve when the metric is inactive)
+  mj_effSolve(m, d, d->qacc, d->qfrc_constraint);
   mju_addTo(d->qacc, d->qacc_smooth, m->nv);
 }
 
@@ -1079,7 +1079,8 @@ typedef struct {
   int flg_metric;         // effective metric active for this solve
   const mjModel* fm;      // model, for the metric calls
   mjData* fd;             // data, for the metric calls
-  mjtNum* epL;            // metric blocks with the contact class folded in, or NULL
+  mjEffFold epfold;       // metric preconditioner with the contact class folded in
+  mjEffFold* ep;          // &epfold when folded, or NULL
 
   // Newton: lower-triangle view of the metric matrix S = diag(h*D+h^2*K) + K_csr, built by
   // MakeMetricLower on the solver stack, merged into the Hessian alongside M
@@ -1120,7 +1121,7 @@ typedef struct {
 
 
 // IPC folds the efc rows in their quadratic zone (its contact pairs among them) and the metric's
-// rank-1 classes into a solver-owned copy of the metric blocks (mjd_effPrecFold): monolithic CG
+// rank-1 classes into a solver-owned copy of the metric blocks (mj_effPrecFold): monolithic CG
 // with a live metric
 static int effFoldWanted(const mjModel* m, const mjData* d, int island, int is_elliptic) {
   return d->efm_active && island < 0 && !is_elliptic && mjENABLED(mjENBL_IPC);
@@ -1252,7 +1253,7 @@ static void PrimalAllocate(const mjModel* m, mjData* d, mjPrimalContext* ctx, in
     int tcap = 0, tlow = 0;
     mjEffRank1Iter it = {0};
     mjEffRank1 e;
-    while (mjd_effRank1Next(m, d, &it, &e, /*flg_contact=*/1)) {
+    while (mj_effRank1Next(m, d, &it, &e, /*flg_contact=*/1)) {
       if (ctx->island >= 0 && d->tree_island[m->dof_treeid[e.colind[0]]] != ctx->island) {
         continue;
       }
@@ -1291,8 +1292,36 @@ static void PrimalAllocate(const mjModel* m, mjData* d, mjPrimalContext* ctx, in
       nInt += (count);         \
   } while (0)
 
+  // IPC fold, with the dense uncovered-dof blocks for CG (Newton folds only for its
+  // certificate, and its Hessian needs the stack). Sizing the blocks takes a frame that the
+  // fold's scratch bounds
+  int flg_fold = effFoldWanted(m, d, ctx->island, is_elliptic);
+  int nu = 0, ncomp = 0, nS = 0;
+  if (flg_fold && !flg_Newton && mj_stackBytesAvailable(d) >= mj_effFoldScratch(m, d, 1)) {
+    nS = mj_effFoldDenseSize(m, d, nefc, ctx->efc_D, is_sparse, ctx->J_rownnz, ctx->J_rowadr,
+                             ctx->J_colind, &nu, &ncomp);
+    if (!nS) {
+      nu = ncomp = 0;
+    }
+  }
+
   for (int pass = 0; pass < 2; pass++) {
     if (pass) {
+      // keep the dense blocks only if the stack holds both blocks with them and the deepest
+      // frame the solve takes on top while they are alive: the fold, the preconditioner apply
+      // or the metric product. Else drop them, with a warning: the backbone solve then
+      // preconditions their dofs
+      if (nu) {
+        size_t fold = mj_effFoldScratch(m, d, nu), mul = mj_effMulAddScratch(m, d);
+        size_t need = mj_stackBytes(sizeof(mjtNum)*nNum, _Alignof(mjtNum)) +
+                      mj_stackBytes(sizeof(int)*nInt, _Alignof(int)) + mjMAX(fold, mul);
+        if (need > mj_stackBytesAvailable(d)) {
+          nNum -= nS;
+          nInt -= nu + 2*(ncomp + 1);
+          nu = ncomp = nS = 0;
+          mj_warning(d, mjWARN_CNSTRFULL, d->narena);
+        }
+      }
       numblock = mjSTACKALLOC(d, nNum, mjtNum);
       intblock = mjSTACKALLOC(d, nInt, int);
     }
@@ -1355,10 +1384,20 @@ static void PrimalAllocate(const mjModel* m, mjData* d, mjPrimalContext* ctx, in
 
     // constraint state and Jacobian transpose (sparse)
     // IPC: a solver-owned copy of the metric blocks with the contact class folded in
-    // (mjd_effPrecFold), or none
-    ctx->epL = NULL;
-    if (effFoldWanted(m, d, ctx->island, is_elliptic)) {
-      CARVE_NUM(ctx->epL, 9*d->nefmdof);
+    // (mj_effPrecFold), or none; CG also folds the dense uncovered-dof blocks when they fit
+    ctx->ep = NULL;
+    if (flg_fold) {
+      ctx->ep = &ctx->epfold;
+      CARVE_NUM(ctx->ep->L,    9*d->nefmdof);
+      CARVE_NUM(ctx->ep->S,    nS);
+      CARVE_INT(ctx->ep->U,    nu);
+      CARVE_INT(ctx->ep->Uadr, nu ? ncomp + 1 : 0);
+      CARVE_INT(ctx->ep->Sadr, nu ? ncomp + 1 : 0);
+      ctx->ep->nu = nu;
+      ctx->ep->ncomp = ncomp;
+      ctx->ep->nS = nS;
+      ctx->ep->partial = 0;
+      ctx->ep->S_valid = 0;
     }
 
     CARVE_INT(ctx->oldstate, nefc);
@@ -1517,10 +1556,10 @@ static void PrimalUpdateGrad(mjPrimalContext* ctx) {
 
 // the metric preconditioner, against the contact-folded blocks where they were built
 static void PrimalMetricPrecond(mjPrimalContext* ctx, mjtNum* x, const mjtNum* b) {
-  if (ctx->epL) {
-    mjd_effPrecBlocks(ctx->fm, ctx->fd, x, b, ctx->epL);
+  if (ctx->ep) {
+    mj_effPrecBlocks(ctx->fm, ctx->fd, x, b, ctx->ep);
   } else {
-    mjd_effPrec(ctx->fm, ctx->fd, x, b);
+    mj_effPrec(ctx->fm, ctx->fd, x, b);
   }
 }
 
@@ -1994,9 +2033,9 @@ static mjtNum PrimalSearch(mjPrimalContext* ctx, mjtNum tolerance, mjtNum ls_ite
                       ctx->M_rownnz, ctx->M_rowadr, ctx->M_colind);
   if (ctx->flg_metric) {
     if (ctx->island < 0) {
-      mjd_effMulAdd(ctx->fm, ctx->fd, ctx->Mv, ctx->search, /*flg_contact=*/1);
+      mj_effMulAdd(ctx->fm, ctx->fd, ctx->Mv, ctx->search, /*flg_contact=*/1);
     } else {
-      mjd_effMulAddIsland(ctx->fm, ctx->fd, ctx->Mv, ctx->search, ctx->island);
+      mj_effMulAddIsland(ctx->fm, ctx->fd, ctx->Mv, ctx->search, ctx->island);
     }
   }
 
@@ -2202,7 +2241,7 @@ static void MakeMetricLower(mjData* d, mjPrimalContext* ctx) {
 
   // count rank-1 entries per (local) row
   it = (mjEffRank1Iter){0};
-  while (mjd_effRank1Next(m, d, &it, &e, /*flg_contact=*/1)) {
+  while (mj_effRank1Next(m, d, &it, &e, /*flg_contact=*/1)) {
     if (island >= 0 && d->tree_island[m->dof_treeid[e.colind[0]]] != island) {
       continue;
     }
@@ -2227,7 +2266,7 @@ static void MakeMetricLower(mjData* d, mjPrimalContext* ctx) {
 
   // fill the buckets
   it = (mjEffRank1Iter){0};
-  while (mjd_effRank1Next(m, d, &it, &e, /*flg_contact=*/1)) {
+  while (mj_effRank1Next(m, d, &it, &e, /*flg_contact=*/1)) {
     if (island >= 0 && d->tree_island[m->dof_treeid[e.colind[0]]] != island) {
       continue;
     }
@@ -2807,9 +2846,9 @@ static void mj_solPrimal(const mjModel* m, mjData* d, int island, int maxiter, i
                       ctx.M_rownnz, ctx.M_rowadr, ctx.M_colind);
   if (ctx.flg_metric) {
     if (ctx.island < 0) {
-      mjd_effMulAdd(m, d, ctx.Ma, ctx.qacc, /*flg_contact=*/1);
+      mj_effMulAdd(m, d, ctx.Ma, ctx.qacc, /*flg_contact=*/1);
     } else {
-      mjd_effMulAddIsland(m, d, ctx.Ma, ctx.qacc, ctx.island);
+      mj_effMulAddIsland(m, d, ctx.Ma, ctx.qacc, ctx.island);
     }
   }
 
@@ -2843,9 +2882,9 @@ static void mj_solPrimal(const mjModel* m, mjData* d, int island, int maxiter, i
 
   // IPC: fold the contact class and the efc rows into the solver-owned copy of the metric
   // blocks, so the CG preconditioner sees the contact curvature the operator carries
-  if (ctx.epL && !mjd_effPrecFold(m, d, ctx.epL, ctx.nefc, ctx.efc_D, ctx.is_sparse, ctx.J,
-                                  ctx.J_rownnz, ctx.J_rowadr, ctx.J_colind)) {
-    ctx.epL = NULL;
+  if (ctx.ep && !mj_effPrecFold(m, d, ctx.ep, ctx.nefc, ctx.efc_D, ctx.is_sparse, ctx.J,
+                                ctx.J_rownnz, ctx.J_rowadr, ctx.J_colind)) {
+    ctx.ep = NULL;
   }
 
   // Mgrad = M \ grad: the CG preconditioned gradient, also the convergence certificate

@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef MUJOCO_SRC_RENDER_FILAMENT_MJRFILAMENT_CPP_H_
-#define MUJOCO_SRC_RENDER_FILAMENT_MJRFILAMENT_CPP_H_
+#ifndef MUJOCO_SRC_RENDER_FILAMENT_SUPPORT_MJRF_PTR_H_
+#define MUJOCO_SRC_RENDER_FILAMENT_SUPPORT_MJRF_PTR_H_
 
 #include <memory>
-#include <string>
 
 #include <mujoco/mjrfilament.h>
 
@@ -67,8 +66,6 @@ inline UniquePtr<mjrfRenderTarget> CreateRenderTarget(
   return UniquePtr<mjrfRenderTarget>(render_target, mjrf_destroyRenderTarget);
 }
 
-std::string ResolveFilamentAssetPath(const std::string& filename);
-
 }  // namespace mujoco
 
-#endif  // MUJOCO_SRC_RENDER_FILAMENT_MJRFILAMENT_CPP_H_
+#endif  // MUJOCO_SRC_RENDER_FILAMENT_SUPPORT_MJRF_PTR_H_

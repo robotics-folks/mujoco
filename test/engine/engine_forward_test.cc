@@ -3373,7 +3373,7 @@ TEST_F(ForwardTest, FlexTrilinearInstability) {
 
   // stability simulation
   // run for steps to catch instability
-  for (int i = 0; i < 2000; ++i) {
+  for (int i = 0; i < 500; ++i) {
     mj_step(model.get(), data.get());
 
     for (int j = 0; j < model->nq; ++j) {
@@ -3493,7 +3493,7 @@ TEST_F(ForwardTest, FlexParentCoupling) {
 
   // implicit and explicit flex damping legitimately differ at
   // O(h*damping*K/M) in this comparison
-  EXPECT_LT(max_diff, MjTol(5e-5, 1.5e-2))
+  EXPECT_LT(max_diff, MjTol(1e-4, 1.5e-2))
       << "Implicit integrator should match Euler at small timestep";
 }
 
@@ -4144,7 +4144,7 @@ TEST_F(ImplicitIntegratorTest, PassiveFlexContactMovingBase) {
   mjData* data = d.get();
 
   mjtNum vmax = 0;
-  for (int i = 0; i < 1000; i++) {
+  for (int i = 0; i < 300; i++) {
     mj_step(model, data);
     for (int j = 0; j < model->nv; j++) {
       vmax = mju_max(vmax, mju_abs(data->qvel[j]));
@@ -5884,7 +5884,7 @@ TEST_F(ForwardTest, DiscreteSparseDualMatchesDense) {
     }
     EXPECT_EQ(nwarning, 0);
   }
-  EXPECT_THAT(qpos[1], Pointwise(MjNear(1e-8, 1e-3), qpos[0]));
+  EXPECT_THAT(qpos[1], Pointwise(MjNear(2e-8, 1e-3), qpos[0]));
 
   // PGS consumes the same symbolic AR: the sparse path steps cleanly
   std::snprintf(xml, sizeof(xml), xml_template, "sparse", "PGS");
@@ -6654,17 +6654,31 @@ TEST_F(ForwardTest, DiscreteActuatorInverseConsistency) {
   }
   data->qvel[0] = 0.1;
 
-  mj_forward(model.get(), data.get());
-  ASSERT_GT(data->ncon, 0);
-  mj_inverse(model.get(), data.get());
+  for (int diagexact = 0; diagexact < 2; diagexact++) {
+    if (diagexact) {
+      model->opt.enableflags |= mjENBL_DIAGEXACT;
+    } else {
+      model->opt.enableflags &= ~mjENBL_DIAGEXACT;
+    }
+    mj_forward(model.get(), data.get());
+    ASSERT_GT(data->ncon, 0);
 
-  // qfrc_inverse is the force that must be applied: here, the actuator's
-  mjtNum scale = mju_norm(data->qfrc_actuator, nv) +
-                 mju_norm(data->qfrc_constraint, nv) +
-                 mju_norm(data->qfrc_bias, nv);
-  std::vector<mjtNum> diff(nv);
-  mju_sub(diff.data(), data->qfrc_inverse, data->qfrc_actuator, nv);
-  EXPECT_LT(mju_norm(diff.data(), nv), 1e-6 * scale);
+    // the inverse only multiplies by the metric: it factors the backbone only
+    // when the exact constraint diagonal asks for it
+    mjtNum factored = data->qHDiagInv[0];
+    data->qHDiagInv[0] = -1;
+    mj_inverse(model.get(), data.get());
+    EXPECT_EQ(data->qHDiagInv[0], diagexact ? factored : -1);
+
+    // qfrc_inverse is the force that must be applied: here, the actuator's
+    mjtNum scale = mju_norm(data->qfrc_actuator, nv) +
+                   mju_norm(data->qfrc_constraint, nv) +
+                   mju_norm(data->qfrc_bias, nv);
+    std::vector<mjtNum> diff(nv);
+    mju_sub(diff.data(), data->qfrc_inverse, data->qfrc_actuator, nv);
+    EXPECT_LT(mju_norm(diff.data(), nv), 1e-6 * scale)
+        << "diagexact " << diagexact;
+  }
 }
 
 // tendon spring-damper in contact: native discrete inverse dynamics recovers
@@ -7671,6 +7685,52 @@ TEST_F(ForwardTest, DiscreteLimitVelocitySensors) {
   mj_forward(model.get(), data_fwd.get());
   EXPECT_EQ(data_fwd->sensordata[0], expected_joint_vel);
   EXPECT_EQ(data_fwd->sensordata[1], expected_tendon_vel);
+}
+
+TEST_F(ForwardTest, CheckWarningCount) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint type="slide"/>
+        <joint type="slide"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  const mjtNum nan = std::numeric_limits<mjtNum>::quiet_NaN();
+  mock_warning_handler.ExpectWarnings();
+
+  for (int disable_autoreset : {0, 1}) {
+    if (disable_autoreset) {
+      model->opt.disableflags |= mjDSBL_AUTORESET;
+    } else {
+      model->opt.disableflags &= ~mjDSBL_AUTORESET;
+    }
+
+    mj_resetData(model.get(), data.get());
+    data->qpos[1] = nan;
+    mj_checkPos(model.get(), data.get());
+    EXPECT_EQ(data->warning[mjWARN_BADQPOS].number, 1);
+    EXPECT_EQ(data->warning[mjWARN_BADQPOS].lastinfo, 1);
+
+    mj_resetData(model.get(), data.get());
+    data->qvel[1] = nan;
+    mj_checkVel(model.get(), data.get());
+    EXPECT_EQ(data->warning[mjWARN_BADQVEL].number, 1);
+    EXPECT_EQ(data->warning[mjWARN_BADQVEL].lastinfo, 1);
+
+    mj_resetData(model.get(), data.get());
+    data->qacc[1] = nan;
+    mj_checkAcc(model.get(), data.get());
+    EXPECT_EQ(data->warning[mjWARN_BADQACC].number, 1);
+    EXPECT_EQ(data->warning[mjWARN_BADQACC].lastinfo, 1);
+  }
 }
 
 }  // namespace

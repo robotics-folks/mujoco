@@ -29,7 +29,7 @@ set(MSVC_INCREMENTAL_DEFAULT ON)
 
 project(
   mujoco
-  VERSION 3.14.1
+  VERSION 3.15.1
   DESCRIPTION "MuJoCo Physics Simulator"
   HOMEPAGE_URL "https://mujoco.org"
 )
@@ -161,6 +161,7 @@ if(NOT EMSCRIPTEN)
   add_subdirectory(plugin/sensor)
   add_subdirectory(plugin/sdf)
 endif()
+add_subdirectory(plugin/gmsh_decoder)
 add_subdirectory(plugin/obj_decoder)
 add_subdirectory(plugin/stl_decoder)
 
@@ -223,6 +224,14 @@ endif()
 set_target_properties(
   mujoco PROPERTIES VERSION "${mujoco_VERSION}" PUBLIC_HEADER "${MUJOCO_HEADERS}"
 )
+
+if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND MUJOCO_ENABLE_LTO)
+  # Keep whole-program optimization (/GL + /LTCG) on the core mujoco DLL even
+  # when global CMAKE_INTERPROCEDURAL_OPTIMIZATION is disabled in CI: turning
+  # off /GL on mujoco exposes an MSVC /EHsc + longjmp stack-unwinding crash in
+  # SetConstTest.SleepingNotAllowed.
+  set_target_properties(mujoco PROPERTIES INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
 
 # CMake's built-in FRAMEWORK option doesn't give us control over the dylib name inside the
 # Framework. We instead make our own Framework here.
