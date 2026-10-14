@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "render/filament/support/model_objects.h"
+#include "render/filament/support/model_resources.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -76,6 +76,11 @@ static bool UseFaceNormal(const float3& face_normal,
   // clang-format on
 }
 
+// Same object-space projection that phong_2d.mat computes in its shader.
+static float2 ProjectUv(const float3& p) {
+  return float2(0.5f * p.x, -0.5f * p.y);
+}
+
 static void FillConvexHullBuffer(MeshBuilder& builder, const mjModel* model,
                                  int meshid) {
   const int numvert = model->mesh_graph[model->mesh_graphadr[meshid]];
@@ -97,9 +102,9 @@ static void FillConvexHullBuffer(MeshBuilder& builder, const mjModel* model,
     const float3 p2 = ReadFloat3(vertices, model->mesh_graph[j + 1]);
     const float3 p3 = ReadFloat3(vertices, model->mesh_graph[j + 2]);
     const float4 orientation = CalculateOrientation(p1, p2, p3);
-    const float2 uv1 = texcoords ? ReadFloat2(texcoords, model->mesh_graph[j + 0]) : float2(0, 0);
-    const float2 uv2 = texcoords ? ReadFloat2(texcoords, model->mesh_graph[j + 1]) : float2(0, 0);
-    const float2 uv3 = texcoords ? ReadFloat2(texcoords, model->mesh_graph[j + 2]) : float2(0, 0);
+    const float2 uv1 = texcoords ? ReadFloat2(texcoords, model->mesh_graph[j + 0]) : ProjectUv(p1);
+    const float2 uv2 = texcoords ? ReadFloat2(texcoords, model->mesh_graph[j + 1]) : ProjectUv(p2);
+    const float2 uv3 = texcoords ? ReadFloat2(texcoords, model->mesh_graph[j + 2]) : ProjectUv(p3);
     builder.Append(p1, orientation, uv1);
     builder.Append(p2, orientation, uv2);
     builder.Append(p3, orientation, uv3);
@@ -131,9 +136,9 @@ static void FillMeshBuffer(MeshBuilder& builder, const mjModel* model, int meshi
     const float3 n1 = ReadFloat3(normals, model->mesh_facenormal[face + 0]);
     const float3 n2 = ReadFloat3(normals, model->mesh_facenormal[face + 1]);
     const float3 n3 = ReadFloat3(normals, model->mesh_facenormal[face + 2]);
-    const float2 uv1 = texcoords ? ReadFloat2(texcoords, model->mesh_facetexcoord[face + 0]) : float2(0, 0);
-    const float2 uv2 = texcoords ? ReadFloat2(texcoords, model->mesh_facetexcoord[face + 1]) : float2(0, 0);
-    const float2 uv3 = texcoords ? ReadFloat2(texcoords, model->mesh_facetexcoord[face + 2]) : float2(0, 0);
+    const float2 uv1 = texcoords ? ReadFloat2(texcoords, model->mesh_facetexcoord[face + 0]) : ProjectUv(p1);
+    const float2 uv2 = texcoords ? ReadFloat2(texcoords, model->mesh_facetexcoord[face + 1]) : ProjectUv(p2);
+    const float2 uv3 = texcoords ? ReadFloat2(texcoords, model->mesh_facetexcoord[face + 2]) : ProjectUv(p3);
 
     if (UseFaceNormal(face_normal, n1)) {
       builder.Append(p1, CalculateOrientation(face_normal), uv1);
@@ -157,17 +162,15 @@ static void FillMeshBuffer(MeshBuilder& builder, const mjModel* model, int meshi
 
 static void FillHeightFieldBuffer(MeshBuilder& builder, const mjModel* model,
                                   int hfieldid) {
-  auto append_tri = [&](float3 a, float3 b, float3 c, float2 uv_a, float2 uv_b,
-                        float2 uv_c) {
+  auto append_tri = [&](float3 a, float3 b, float3 c) {
     float4 orientation = CalculateOrientation(a, b, c);
-    builder.Append(a, orientation, uv_a);
-    builder.Append(b, orientation, uv_b);
-    builder.Append(c, orientation, uv_c);
+    builder.Append(a, orientation, ProjectUv(a));
+    builder.Append(b, orientation, ProjectUv(b));
+    builder.Append(c, orientation, ProjectUv(c));
   };
-  auto append_quad = [&](float3 a, float3 b, float3 c, float3 d, float2 uv_a,
-                         float2 uv_b, float2 uv_c, float2 uv_d) {
-    append_tri(a, b, d, uv_a, uv_b, uv_d);
-    append_tri(d, b, c, uv_d, uv_b, uv_c);
+  auto append_quad = [&](float3 a, float3 b, float3 c, float3 d) {
+    append_tri(a, b, d);
+    append_tri(d, b, c);
   };
 
   const float* data = model->hfield_data + model->hfield_adr[hfieldid];
@@ -229,21 +232,10 @@ static void FillHeightFieldBuffer(MeshBuilder& builder, const mjModel* model,
       }
 
       const float3 mid = {mid_x, mid_y, mid_z};
-      const float2 uv_a = {(float)col / (ncol - 1),
-                           1.f - (float)row / (nrow - 1)};
-      const float2 uv_b = {(float)(col + 1) / (ncol - 1),
-                           1.f - (float)row / (nrow - 1)};
-      const float2 uv_c = {(float)(col + 1) / (ncol - 1),
-                           1.f - (float)(row + 1) / (nrow - 1)};
-      const float2 uv_d = {(float)col / (ncol - 1),
-                           1.f - (float)(row + 1) / (nrow - 1)};
-      const float2 uv_mid = {(float)(col + 0.5f) / (ncol - 1),
-                             1.f - (float)(row + 0.5f) / (nrow - 1)};
-
-      append_tri(a, b, mid, uv_a, uv_b, uv_mid);
-      append_tri(b, c, mid, uv_b, uv_c, uv_mid);
-      append_tri(c, d, mid, uv_c, uv_d, uv_mid);
-      append_tri(d, a, mid, uv_d, uv_a, uv_mid);
+      append_tri(a, b, mid);
+      append_tri(b, c, mid);
+      append_tri(c, d, mid);
+      append_tri(d, a, mid);
     }
   }
   // Build the left edge.
@@ -252,9 +244,7 @@ static void FillHeightFieldBuffer(MeshBuilder& builder, const mjModel* model,
     const float3 b = get_pos(row + 1, 0);
     const float3 c = {b.x, b.y, -sz[3]};
     const float3 d = {a.x, a.y, -sz[3]};
-    const float2 uv_a = {0.f, 1.f - (float)row / (nrow - 1)};
-    const float2 uv_b = {0.f, 1.f - (float)(row + 1) / (nrow - 1)};
-    append_quad(a, b, c, d, uv_a, uv_b, uv_b, uv_a);
+    append_quad(a, b, c, d);
   }
   // Build the right edge.
   for (int row = 0; row < nrow - 1; ++row) {
@@ -262,9 +252,7 @@ static void FillHeightFieldBuffer(MeshBuilder& builder, const mjModel* model,
     const float3 b = get_pos(row, ncol - 1);
     const float3 c = {b.x, b.y, -sz[3]};
     const float3 d = {a.x, a.y, -sz[3]};
-    const float2 uv_a = {1.f, 1.f - (float)(row + 1) / (nrow - 1)};
-    const float2 uv_b = {1.f, 1.f - (float)row / (nrow - 1)};
-    append_quad(a, b, c, d, uv_a, uv_b, uv_b, uv_a);
+    append_quad(a, b, c, d);
   }
   // Build the front edge.
   for (int col = 0; col < ncol - 1; ++col) {
@@ -272,9 +260,7 @@ static void FillHeightFieldBuffer(MeshBuilder& builder, const mjModel* model,
     const float3 b = {a.x, a.y, -sz[3]};
     const float3 d = get_pos(0, col + 1);
     const float3 c = {d.x, d.y, -sz[3]};
-    const float2 uv_a = {(float)col / (ncol - 1), 1.f};
-    const float2 uv_d = {(float)(col + 1) / (ncol - 1), 1.f};
-    append_quad(a, b, c, d, uv_a, uv_a, uv_d, uv_d);
+    append_quad(a, b, c, d);
   }
   // Build the back edge.
   for (int col = 0; col < ncol - 1; ++col) {
@@ -282,9 +268,7 @@ static void FillHeightFieldBuffer(MeshBuilder& builder, const mjModel* model,
     const float3 b = {a.x, a.y, -sz[3]};
     const float3 d = get_pos(nrow - 1, col);
     const float3 c = {d.x, d.y, -sz[3]};
-    const float2 uv_a = {(float)(col + 1) / (ncol - 1), 0.f};
-    const float2 uv_d = {(float)col / (ncol - 1), 0.f};
-    append_quad(a, b, c, d, uv_a, uv_a, uv_d, uv_d);
+    append_quad(a, b, c, d);
   }
   // Build the base. We use the visualization quality as the size rather than
   // the height field dimensions.
@@ -296,13 +280,8 @@ static void FillHeightFieldBuffer(MeshBuilder& builder, const mjModel* model,
       const float x1 = sz[0] * ((col + 1) / base_width - 1.0f);
       const float y0 = sz[1] * ((row + 0) / base_height - 1.0f);
       const float y1 = sz[1] * ((row + 1) / base_height - 1.0f);
-      const float2 uv0 = {(col + 0) / (2.f * base_width),
-                          1.f - (row + 0) / (2.f * base_height)};
-      const float2 uv1 = {(col + 1) / (2.f * base_width),
-                          1.f - (row + 1) / (2.f * base_height)};
       append_quad({x0, y0, -sz[3]}, {x0, y1, -sz[3]}, {x1, y1, -sz[3]},
-                  {x1, y0, -sz[3]}, {uv0.x, uv0.y}, {uv0.x, uv1.y},
-                  {uv1.x, uv1.y}, {uv1.x, uv0.y});
+                  {x1, y0, -sz[3]});
     }
   }
 }
@@ -326,11 +305,6 @@ static int CalculateHeightFieldVertexCount(const mjModel* model, int hfieldid) {
 
   const int total_count = surface_count + edge_count + base_count;
   return total_count;
-}
-
-static bool HasUvs(const mjModel* model, int id, MeshType mesh_type) {
-  return mesh_type == MeshType::kHeightField ||
-         model->mesh_texcoordadr[id] >= 0;
 }
 
 static bool IsValidIndex(const mjModel* model, int id, MeshType mesh_type) {
@@ -363,7 +337,6 @@ static void UpdateMeshData(mjrfMeshConfig* config, mjrfMeshData* data,
   }
 
   const int num_vertices = GetNumVertices(model, id, mesh_type);
-  const bool has_uvs = HasUvs(model, id, mesh_type);
 
   MeshBuilder* builder = new MeshBuilder(num_vertices);
   data->user_data = builder;
@@ -389,24 +362,20 @@ static void UpdateMeshData(mjrfMeshConfig* config, mjrfMeshData* data,
   config->index_type = num_vertices >= std::numeric_limits<uint16_t>::max()
                            ? mjINDEX_TYPE_U32
                            : mjINDEX_TYPE_U16;
-  config->num_attributes = has_uvs ? 3 : 2;
+  config->num_attributes = 3;
   config->attributes[0].usage = mjVERTEX_ATTRIBUTE_USAGE_POSITION;
   config->attributes[0].type = mjVERTEX_ATTRIBUTE_TYPE_FLOAT3;
   config->attributes[1].usage = mjVERTEX_ATTRIBUTE_USAGE_TANGENTS;
   config->attributes[1].type = mjVERTEX_ATTRIBUTE_TYPE_FLOAT4;
-  if (has_uvs) {
-    config->attributes[2].usage = mjVERTEX_ATTRIBUTE_USAGE_UV;
-    config->attributes[2].type = mjVERTEX_ATTRIBUTE_TYPE_FLOAT2;
-  }
+  config->attributes[2].usage = mjVERTEX_ATTRIBUTE_USAGE_UV;
+  config->attributes[2].type = mjVERTEX_ATTRIBUTE_TYPE_FLOAT2;
 
   data->num_vertices = num_vertices;
   data->num_indices = num_vertices;
   data->indices = nullptr;
   data->vertices[0] = builder->positions.data();
   data->vertices[1] = builder->orientations.data();
-  if (has_uvs) {
-    data->vertices[2] = builder->uvs.data();
-  }
+  data->vertices[2] = builder->uvs.data();
   data->bounds_min[0] = builder->bounds_min.x;
   data->bounds_min[1] = builder->bounds_min.y;
   data->bounds_min[2] = builder->bounds_min.z;
@@ -415,7 +384,7 @@ static void UpdateMeshData(mjrfMeshConfig* config, mjrfMeshData* data,
   data->bounds_max[2] = builder->bounds_max.z;
 }
 
-ModelObjects::ModelObjects(const mjModel* model, mjrfContext* ctx)
+ModelResources::ModelResources(const mjModel* model, mjrfContext* ctx)
     : model_(model), ctx_(ctx) {
 
   for (int i = 0; i < model_->ntex; ++i) {
@@ -436,7 +405,7 @@ ModelObjects::ModelObjects(const mjModel* model, mjrfContext* ctx)
       model_, "filament.phong.emissive_multiplier", emissive_multiplier_);
 }
 
-void ModelObjects::UploadMesh(const mjModel* model, int id) {
+void ModelResources::UploadMesh(const mjModel* model, int id) {
   if (model != model_) {
     mju_error("Model mismatch.");
   }
@@ -453,7 +422,7 @@ void ModelObjects::UploadMesh(const mjModel* model, int id) {
   UpdateMeshData(&config, &data, model, id, MeshType::kNormal);
 
   auto mesh = CreateMesh(ctx_, config);
-  mjrf_setMeshData(mesh.get(), &data);
+  mjrf_uploadMesh(mesh.get(), &data);
   meshes_.insert_or_assign(id, std::move(mesh));
 
   if (model->mesh_graphadr[id] >= 0) {
@@ -465,12 +434,12 @@ void ModelObjects::UploadMesh(const mjModel* model, int id) {
                    MeshType::kConvexHull);
 
     auto convex_hull = CreateMesh(ctx_, convex_hull_config);
-    mjrf_setMeshData(convex_hull.get(), &convex_hull_data);
+    mjrf_uploadMesh(convex_hull.get(), &convex_hull_data);
     convex_hulls_.insert_or_assign(id, std::move(convex_hull));
   }
 }
 
-void ModelObjects::UploadTexture(const mjModel* model, int id) {
+void ModelResources::UploadTexture(const mjModel* model, int id) {
   if (model != model_) {
     mju_error("Model mismatch.");
   }
@@ -512,11 +481,11 @@ void ModelObjects::UploadTexture(const mjModel* model, int id) {
   payload.release = nullptr;
 
   auto texture = CreateTexture(ctx_, config);
-  mjrf_setTextureData(texture.get(), &payload);
+  mjrf_uploadTexture(texture.get(), &payload);
   textures_.insert_or_assign(id, std::move(texture));
 }
 
-void ModelObjects::UploadHeightField(const mjModel* model, int id) {
+void ModelResources::UploadHeightField(const mjModel* model, int id) {
   if (model != model_) {
     mju_error("Model mismatch.");
   }
@@ -533,11 +502,11 @@ void ModelObjects::UploadHeightField(const mjModel* model, int id) {
   UpdateMeshData(&config, &data, model, id, MeshType::kHeightField);
 
   auto mesh = CreateMesh(ctx_, config);
-  mjrf_setMeshData(mesh.get(), &data);
+  mjrf_uploadMesh(mesh.get(), &data);
   height_fields_.insert_or_assign(id, std::move(mesh));
 }
 
-const mjrfMesh* ModelObjects::GetMesh(int data_id) const {
+const mjrfMesh* ModelResources::GetMesh(int data_id) const {
   // As defined by mjv_updateScene:
   //   original mesh: mesh_id * 2
   //   convex hull: (mesh_id * 2) + 1
@@ -551,7 +520,7 @@ const mjrfMesh* ModelObjects::GetMesh(int data_id) const {
   }
 }
 
-const mjrfMesh* ModelObjects::GetHeightField(int hfield_id) const {
+const mjrfMesh* ModelResources::GetHeightField(int hfield_id) const {
   if (auto it = height_fields_.find(hfield_id); it != height_fields_.end()) {
     return it->second.get();
   }
@@ -559,7 +528,7 @@ const mjrfMesh* ModelObjects::GetHeightField(int hfield_id) const {
   return nullptr;
 }
 
-const mjrfTexture* ModelObjects::GetTexture(int tex_id) const {
+const mjrfTexture* ModelResources::GetTexture(int tex_id) const {
   if (auto it = textures_.find(tex_id); it != textures_.end()) {
     return it->second.get();
   }
@@ -567,7 +536,7 @@ const mjrfTexture* ModelObjects::GetTexture(int tex_id) const {
   return nullptr;
 }
 
-const mjrfTexture* ModelObjects::GetSkyboxTexture() const {
+const mjrfTexture* ModelResources::GetSkyboxTexture() const {
   for (auto& iter : textures_) {
     if (model_->tex_type[iter.first] == mjTEXTURE_SKYBOX) {
       return iter.second.get();

@@ -61,7 +61,9 @@ Renderable::Renderable(filament::Engine* engine,
   mjrf_defaultMaterial(&material_);
 }
 
-Renderable::~Renderable() noexcept {
+Renderable::~Renderable() noexcept { ClearParts(); }
+
+void Renderable::ClearParts() {
   filament::Engine* engine = GetEngine();
   utils::EntityManager& em = utils::EntityManager::get();
   for (Part& part : parts_) {
@@ -71,6 +73,9 @@ Renderable::~Renderable() noexcept {
     engine->destroy(part.entity);
     em.destroy(part.entity);
   }
+  parts_.clear();
+  get_transform_fn_ = nullptr;
+  curr_state_ = DrawState{};
 }
 
 void Renderable::SetMesh(const Mesh* mesh, int elem_offset, int elem_count) {
@@ -140,10 +145,13 @@ void Renderable::InitPartEntity(Part& part) {
   } else {
     builder.culling(false);
   }
-  builder.castShadows(params_.cast_shadows);
-  builder.receiveShadows(params_.receive_shadows);
+  builder.castShadows(params_.cast_shadow);
+  builder.receiveShadows(params_.receive_shadow);
   builder.blendOrder(0, params_.blend_order);
   builder.screenSpaceContactShadows(true);
+  if (layer_mask_ != 0) {
+    builder.layerMask(0xff, layer_mask_);
+  }
 
   builder.build(*GetEngine(), part.entity);
   if (assigned_scene_) {
@@ -230,7 +238,7 @@ void Renderable::RemoveFromScene(filament::Scene* scene) {
 
 void Renderable::UpdateMaterial(const mjrfMaterial& material) {
   uint8_t layer_mask = kLayerMask_Object;
-  if (material.decor_ux) {
+  if (material.decor) {
     layer_mask = kLayerMask_Decor;
   }
   if (material.selected) {
@@ -261,9 +269,9 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
     material.selected = false;
 
     draw_state.wireframe = (request->draw_mode == mjDRAW_MODE_WIREFRAME);
-    if (material.decor_ux) {
-      draw_state.cast_shadows = false;
-      draw_state.receive_shadows = false;
+    if (material.decor) {
+      draw_state.cast_shadow = false;
+      draw_state.receive_shadow = false;
     }
 
     if (geom_type_ == mjGEOM_PLANE) {
@@ -273,7 +281,7 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
       const bool is_behind_camera = dot(camera_pos - position, forward) < 0;
       if (is_behind_camera) {
         material.color[3] *= 0.3;
-        draw_state.receive_shadows = false;
+        draw_state.receive_shadow = false;
       }
     }
 
@@ -327,7 +335,7 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
     const auto draw_mode = static_cast<mjrDrawMode>(request->draw_mode);
     const bool reflective =
         request->draw_mode == mjDRAW_MODE_DEFAULT &&
-        request->enable_reflections &&
+        request->reflections &&
         (geom_type_ == mjGEOM_PLANE || geom_type_ == mjGEOM_BOX) &&
         material.reflectance > 0.0;
     if (reflective) {
@@ -361,8 +369,8 @@ void Renderable::BindMaterialInstance(const mjrfRenderRequest& request) {
   }
 
   const DrawState& state = draw_queue_.front();
-  SetCastShadows(state.cast_shadows);
-  SetReceiveShadows(state.receive_shadows);
+  SetCastShadows(state.cast_shadow);
+  SetReceiveShadows(state.receive_shadow);
   SetWireframe(state.wireframe);
   SetMaterialInstance(state.material_key);
   curr_state_ = state;
@@ -408,25 +416,25 @@ std::uint16_t Renderable::SetBlendOrder(std::uint16_t blend_order) {
   return prev;
 }
 
-void Renderable::SetCastShadows(bool cast_shadows) {
-  if (params_.cast_shadows != cast_shadows) {
-    params_.cast_shadows = cast_shadows;
+void Renderable::SetCastShadows(bool cast_shadow) {
+  if (params_.cast_shadow != cast_shadow) {
+    params_.cast_shadow = cast_shadow;
 
     filament::RenderableManager& rm = GetEngine()->getRenderableManager();
     for (Part& part : parts_) {
-      rm.setCastShadows(rm.getInstance(part.entity), params_.cast_shadows);
+      rm.setCastShadows(rm.getInstance(part.entity), params_.cast_shadow);
     }
   }
 }
 
-void Renderable::SetReceiveShadows(bool receive_shadows) {
-  if (params_.receive_shadows != receive_shadows) {
-    params_.receive_shadows = receive_shadows;
+void Renderable::SetReceiveShadows(bool receive_shadow) {
+  if (params_.receive_shadow != receive_shadow) {
+    params_.receive_shadow = receive_shadow;
 
     filament::RenderableManager& rm = GetEngine()->getRenderableManager();
     for (Part& part : parts_) {
       rm.setReceiveShadows(rm.getInstance(part.entity),
-                           params_.receive_shadows);
+                           params_.receive_shadow);
     }
   }
 }
@@ -463,6 +471,7 @@ void Renderable::SetWireframe(bool wireframe) {
 }
 
 void Renderable::SetGeomMesh(mjtGeom type, int nstack, int nslice, int nquad) {
+  ClearParts();
   Builtins* builtins =
       material_mgr_->GetObjectManager()->GetBuiltins(nstack, nslice, nquad);
   geom_type_ = type;
@@ -661,6 +670,7 @@ void Renderable::SetGeomMesh(mjtGeom type, int nstack, int nslice, int nquad) {
       mju_error("Unsupported geom type: %d", type);
       break;
   }
+  UpdateTransform();
 }
 
 filament::Engine* Renderable::GetEngine() { return material_mgr_->GetEngine(); }

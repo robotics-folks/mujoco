@@ -172,6 +172,31 @@ def _strip_weak_type(tree):
   return jax.tree_util.tree_map(f, tree)
 
 
+def _tree_to_float32(tree):
+  """Casts float64 numpy leaves and python floats in `tree` to float32.
+
+  MuJoCo Warp is single precision. Fields taken from MjModel (e.g. public
+  Option and Statistic fields) or allocated with the default JAX float dtype
+  (e.g. Data.history) are float64 if jax_enable_x64 is set, which the MuJoCo
+  Warp FFI rejects.
+
+  Args:
+    tree: A pytree, e.g. an MJX Model or Data before `jax.device_put`.
+
+  Returns:
+    The pytree with float64 leaves cast to float32.
+  """
+
+  def f(leaf):
+    if isinstance(leaf, (np.ndarray, np.generic)) and leaf.dtype == np.float64:
+      return leaf.astype(np.float32)
+    if type(leaf) is float:  # pylint: disable=unidiomatic-typecheck
+      return np.float32(leaf)
+    return leaf
+
+  return jax.tree_util.tree_map(f, tree)
+
+
 def _wp_to_np_type(wp_field: Any, name: str = '') -> Any:
   """Converts a warp type to an MJX compatible numpy type."""
   # warp scalars
@@ -184,6 +209,14 @@ def _wp_to_np_type(wp_field: Any, name: str = '') -> Any:
     return wp_field.numpy()
 
   # static
+  if isinstance(wp_field, (float, np.floating)):
+    return np.float32(wp_field)
+  if isinstance(wp_field, np.ndarray):
+    return (
+        wp_field.astype(np.float32)
+        if np.issubdtype(wp_field.dtype, np.floating)
+        else wp_field
+    )
   static_types = (bool, int, float, np.bool, np.int32, np.int64,
                   np.float32, np.float64)  # fmt: skip
   is_static = lambda x: isinstance(x, static_types)
@@ -273,8 +306,8 @@ def _put_option(
     impl_fields['has_fluid_params'] = has_fluid_params
     return types.Option(**fields, _impl=types.OptionJAX(**impl_fields))
 
-
   if impl == types.Impl.WARP:
+    fields = {k: _wp_to_np_type(v, k) for k, v in fields.items()}
     impl_fields = {
         k: (
             v_np.reshape(v_np.shape[1:])
@@ -295,7 +328,8 @@ def _put_statistic(
   """Puts mujoco.MjStatistic onto a device, resulting in mjx.Statistic."""
   if impl == types.Impl.WARP:
     fields = {
-        f.name: getattr(s, f.name, None) for f in types.StatisticWarp.fields()
+        f.name: _wp_to_np_type(getattr(s, f.name, None), f.name)
+        for f in types.StatisticWarp.fields()
     }
     return types.StatisticWarp(**fields)
   return types.Statistic(
@@ -492,6 +526,7 @@ def _put_model_warp(
       _impl=mjxw.types.ModelWarp(**impl_fields),
   )
 
+  model = _tree_to_float32(model)
   model = jax.device_put(model, device=device)
   return _strip_weak_type(model)
 
@@ -805,6 +840,7 @@ def _make_data_warp(
       _impl=mjxw.types.DataWarp(**impl_fields),
   )
 
+  data = _tree_to_float32(data)
   data = jax.device_put(data, device=device)
 
   return data

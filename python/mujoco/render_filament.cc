@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -30,7 +31,7 @@
 #include <mujoco/mujoco.h>
 #include "render/filament/support/model_decorations.h"
 #include "render/filament/support/model_lights.h"
-#include "render/filament/support/model_objects.h"
+#include "render/filament/support/model_resources.h"
 #include "render/filament/support/model_renderables.h"
 #include "structs.h"
 #include <pybind11/eigen.h>
@@ -63,7 +64,7 @@
 // Then, we bind the functions themselves. In almost all cases, each mjrf
 // function takes a pointer to an object as its first argument. In this case,
 // we actually bind the function as a method of the object itself.  So, e.g.
-// `mjrf_setLightEnabled(mjrfLight*, bool)` becomes `Light.set_enabled(bool)`.
+// `mjrf_setLightActive(mjrfLight*, bool)` becomes `Light.set_active(bool)`.
 //
 // Finally, to bridge the gap between Python tuple/list/numpy array types and
 // the native C types (e.g. float*), we use pybind's Eigen bindings.
@@ -109,7 +110,7 @@ void Init(mjrfLightParams& obj)        { mjrf_defaultLightParams(&obj); }
 void Init(mjrfMaterial& obj)           { mjrf_defaultMaterial(&obj); }
 void Init(mjrfMeshConfig& obj)         { mjrf_defaultMeshConfig(&obj); }
 void Init(mjrfMeshData& obj)           { mjrf_defaultMeshData(&obj); }
-void Init(mjrfReadPixelsRequest& obj)  { mjrf_defaultReadPixelsRequest(&obj); }
+void Init(mjrfReadRequest& obj)        { mjrf_defaultReadRequest(&obj); }
 void Init(mjrfRenderableParams& obj)   { mjrf_defaultRenderableParams(&obj); }
 void Init(mjrfRenderRequest& obj)      { mjrf_defaultRenderRequest(&obj); }
 void Init(mjrfRenderTargetConfig& obj) { mjrf_defaultRenderTargetConfig(&obj); }
@@ -178,7 +179,7 @@ template <> struct is_num_array<Float3> : std::true_type {};
 template <> struct is_num_array<Float4> : std::true_type {};
 template <> struct is_num_array<Float9> : std::true_type {};
 
-void Free(mjrfReadPixelsRequest& data) {
+void Free(mjrfReadRequest& data) {
   data.output = nullptr;
   data.num_bytes = 0;
 }
@@ -320,11 +321,11 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
       py::arg("params"), py::keep_alive<0, 1>());
 
   // memory management
-  // Note: ReadPixelsRequest stores a raw pointer to `buffer`; the caller must
+  // Note: ReadRequest stores a raw pointer to `buffer`; the caller must
   // keep the underlying Python buffer object alive until rendering finishes.
-  mjrf_read_pixels_request.def(
+  mjrf_read_request.def(
       "set_buffer",
-      [](mjrfReadPixelsRequest& req, py::buffer b) {
+      [](mjrfReadRequest& req, py::buffer b) {
         py::buffer_info info = b.request(true);
         if (!PyBuffer_IsContiguous(info.view(), 'C')) {
           throw py::value_error("Buffer must be C-contiguous.");
@@ -460,7 +461,7 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
 
   mjrf_context.def("render",
     [](PyContext& ctx, const std::vector<mjrfRenderRequest>& req,
-        const std::vector<mjrfReadPixelsRequest>& read) {
+        const std::vector<mjrfReadRequest>& read) {
       return mjrf_render(ctx.get(), req.data(), req.size(), read.data(),
                           read.size());
     },
@@ -473,11 +474,11 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
     return material;
   });
 
-  using ModelObjects = mujoco::ModelObjects;
+  using ModelResources = mujoco::ModelResources;
   {
-    py::class_<ModelObjects> cls(m, "ModelObjects", py::module_local());
+    py::class_<ModelResources> cls(m, "ModelResources", py::module_local());
     cls.def(py::init([](PyContext& ctx, const MjModelWrapper& model) {
-              return std::make_unique<ModelObjects>(model.get(), ctx.get());
+              return std::make_unique<ModelResources>(model.get(), ctx.get());
             }),
             py::arg("ctx"), py::arg("model"), py::keep_alive<1, 2>(),
             py::keep_alive<1, 3>());
@@ -487,10 +488,10 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
     using ModelRenderables = mujoco::ModelRenderables;
 
     py::class_<ModelRenderables> cls(m, "ModelRenderables", py::module_local());
-    auto init = [](PyScene& scene, ModelObjects& model_objects) {
-      return std::make_unique<ModelRenderables>(scene.get(), &model_objects);
+    auto init = [](PyScene& scene, ModelResources& model_resources) {
+      return std::make_unique<ModelRenderables>(scene.get(), &model_resources);
     };
-    cls.def(py::init(init), py::arg("scene"), py::arg("model_objects"),
+    cls.def(py::init(init), py::arg("scene"), py::arg("model_resources"),
             py::keep_alive<1, 2>(), py::keep_alive<1, 3>());
     cls.def("update", [](ModelRenderables& self, const MjDataWrapper& data) {
       self.Update(data.get());
@@ -502,21 +503,45 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
           self.SetOptions(*opt.get());
         },
         py::arg("opt"));
+    cls.def(
+        "get_renderable",
+        [](ModelRenderables& self, mjtObj obj_type, int obj_index,
+           int sub_index) -> std::optional<PyRenderable> {
+          mjrfRenderable* renderable =
+              self.GetRenderable(obj_type, obj_index, sub_index);
+          if (renderable) {
+            return PyRenderable(renderable);
+          } else {
+            return std::nullopt;
+          }
+        },
+        py::arg("obj_type"), py::arg("obj_index"), py::arg("sub_index") = -1);
   }
 
   {
     using ModelLights = mujoco::ModelLights;
 
     py::class_<mujoco::ModelLights> cls(m, "ModelLights", py::module_local());
-    auto init = [](PyScene& scene, ModelObjects& model_objects) {
-      return std::make_unique<ModelLights>(scene.get(), &model_objects);
+    auto init = [](PyScene& scene, ModelResources& model_resources) {
+      return std::make_unique<ModelLights>(scene.get(), &model_resources);
     };
-    cls.def(py::init(init), py::arg("scene"), py::arg("model_objects"),
+    cls.def(py::init(init), py::arg("scene"), py::arg("model_resources"),
             py::keep_alive<1, 2>(), py::keep_alive<1, 3>());
     cls.def("update", [](ModelLights& self, const MjDataWrapper& data) {
       self.Update(data.get());
     },
     py::arg("data"));
+    cls.def(
+        "get_light",
+        [](ModelLights& self, int index) -> std::optional<PyLight> {
+          mjrfLight* light = self.GetLight(index);
+          if (light) {
+            return PyLight(light);
+          } else {
+            return std::nullopt;
+          }
+        },
+        py::arg("index"));
   }
 
   {

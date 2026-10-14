@@ -16,6 +16,9 @@
 
 #include "src/engine/engine_sleep.h"
 
+#include <atomic>
+#include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -554,15 +557,117 @@ TEST_F(SleepTest, FreeBodySleepZeroVelocity) {
 static const char* const kInitIslandFailModel =
     "engine/testdata/sleep/init_island_fail.xml";
 
+// trees marked sleep='init' that cannot be slept compile with a warning and
+// start awake
 TEST_F(SleepTest, InitIslandFail) {
   const std::string xml_path = GetTestDataFilePath(kInitIslandFailModel);
+  mock_warning_handler.ExpectWarnings(
+      "3 trees were marked as sleep='init' but only 0 could be slept. Body "
+      "'asleep_init0' (id=1) is the root of the first tree that could not be "
+      "slept.");
   char error[1024];
   mjModel* m = mj_loadXML(xml_path.c_str(), 0, error, sizeof(error));
-  EXPECT_THAT(m, IsNull());
-  EXPECT_THAT(error,
-              HasSubstr("3 trees were marked as sleep='init' but only 0 could "
-                        "be slept.\nBody 'asleep_init0' (id=1) is the root of "
-                        "the first tree that could not be slept."));
+  ASSERT_THAT(m, NotNull()) << error;
+  mjData* d = mj_makeData(m);
+  ASSERT_THAT(d, NotNull());
+  for (int i = 0; i < m->ntree; i++) {
+    EXPECT_LT(d->tree_asleep[i], 0) << i;
+  }
+  mj_deleteData(d);
+  mj_deleteModel(m);
+}
+
+// applied force keeps a tree awake
+void PushControl(const mjModel* m, mjData* d) { d->qfrc_applied[0] = 1; }
+
+// MuJoCo allocations not yet freed, counted by CountingMalloc and CountingFree
+std::atomic<int> live_allocations = 0;
+
+void* CountingMalloc(std::size_t size) {
+  live_allocations++;
+  return std::malloc(size);
+}
+
+void CountingFree(void* block) {
+  live_allocations--;
+  std::free(block);
+}
+
+// passive plugin whose instance data is allocated by init and read by compute
+int RegisterDataPlugin() {
+  mjpPlugin plugin;
+  mjp_defaultPlugin(&plugin);
+  plugin.name = "mujoco.test.sleepdata";
+  plugin.capabilityflags |= mjPLUGIN_PASSIVE;
+  plugin.nstate = +[](const mjModel* m, int instance) { return 1; };
+  plugin.init = +[](const mjModel* m, mjData* d, int instance) {
+    d->plugin_data[instance] =
+        reinterpret_cast<uintptr_t>(mju_malloc(sizeof(mjtNum)));
+    return 0;
+  };
+  plugin.destroy = +[](mjData* d, int instance) {
+    mju_free(reinterpret_cast<void*>(d->plugin_data[instance]));
+    d->plugin_data[instance] = 0;
+  };
+  plugin.reset = +[](const mjModel* m, mjtNum* plugin_state, void* plugin_data,
+                     int instance) { *static_cast<mjtNum*>(plugin_data) = 0; };
+  plugin.compute = +[](const mjModel* m, mjData* d, int instance, int type) {
+    *reinterpret_cast<mjtNum*>(d->plugin_data[instance]) += 1;
+  };
+  return mjp_registerPlugin(&plugin);
+}
+
+// a reset that cannot put sleep='init' trees to sleep warns and leaves them
+// awake, allocating and freeing nothing
+TEST_F(SleepTest, InitFailureWarnsAndLeavesTreesAwake) {
+  static const int plugin_slot = RegisterDataPlugin();
+  ASSERT_GE(plugin_slot, 0);
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.test.sleepdata">
+        <instance name="data"/>
+      </plugin>
+    </extension>
+    <option>
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <body sleep="init">
+        <freejoint/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model, NotNull());
+  mju_user_malloc = CountingMalloc;
+  mju_user_free = CountingFree;
+  mjData* d = mj_makeData(model.get());
+  int allocated = live_allocations;
+  EXPECT_GE(d->tree_asleep[0], 0);
+  mock_warning_handler.ExpectWarnings("could be slept");
+  mjcb_control = PushControl;
+  mj_resetData(model.get(), d);
+  EXPECT_LT(d->tree_asleep[0], 0);
+  EXPECT_EQ(live_allocations, allocated);
+  mj_resetDataKeyframe(model.get(), d, -1);
+  EXPECT_LT(d->tree_asleep[0], 0);
+  EXPECT_EQ(live_allocations, allocated);
+  mjData* d2 = mj_makeData(model.get());
+  EXPECT_THAT(d2, NotNull());
+  if (d2) {
+    EXPECT_LT(d2->tree_asleep[0], 0);
+    mj_step(model.get(), d2);
+    mj_deleteData(d2);
+  }
+  EXPECT_EQ(live_allocations, allocated);
+  mjcb_control = nullptr;
+  mj_deleteData(d);
+  EXPECT_EQ(live_allocations, 0);
+  mju_user_malloc = nullptr;
+  mju_user_free = nullptr;
 }
 
 // Test that a constrained flex eventually goes to sleep.

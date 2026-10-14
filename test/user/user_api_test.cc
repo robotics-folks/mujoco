@@ -29,7 +29,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <absl/strings/str_format.h>
+#include "absl/strings/str_format.h"
 #include <mujoco/mjplugin.h>
 #include <mujoco/mjspec.h>
 #include <mujoco/mujoco.h>
@@ -276,7 +276,7 @@ TEST_F(MujocoTest, AttachedSpecDoesNotInheritURI) {
       .close = close_mock,
   };
 
-  mjp_registerResourceProvider(&provider);
+  mjp_registerProvider(&provider);
 
   std::array<char, 1024> err;
   mjSpec* parent_spec =

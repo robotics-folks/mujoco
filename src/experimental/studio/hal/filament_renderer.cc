@@ -25,10 +25,11 @@
 #include "experimental/studio/ux/imgui_widgets.h"
 #include "experimental/studio/ux/plugin.h"
 #include "render/filament/support/mjrf_ptr.h"
+#include "render/filament/core/imgui_editor.h"
 #include "render/filament/support/imgui_bridge.h"
 #include "render/filament/support/model_decorations.h"
 #include "render/filament/support/model_lights.h"
-#include "render/filament/support/model_objects.h"
+#include "render/filament/support/model_resources.h"
 #include "render/filament/support/model_renderables.h"
 
 namespace mujoco::studio {
@@ -44,7 +45,7 @@ FilamentRenderer::FilamentRenderer(void* native_window, GraphicsMode gfx)
     : native_window_(native_window), gfx_(gfx) {
   g_update_gui_callback = [this]() {
     if (main_scene_) {
-      mjrf_DEBUG_drawImguiEditor(main_scene_.get());
+      DrawSceneEditor(main_scene_.get());
     }
   };
 
@@ -55,7 +56,7 @@ FilamentRenderer::FilamentRenderer(void* native_window, GraphicsMode gfx)
   mjrfContextConfig cfg;
   mjrf_defaultContextConfig(&cfg);
   cfg.native_window = native_window_;
-  cfg.force_software_rendering = IsSoftware(gfx_);
+  cfg.software_rendering = IsSoftware(gfx_);
   cfg.graphics_api = IsOpenGl(gfx_) || IsWebGl(gfx_) ? mjGRAPHICS_API_OPENGL
                                                       : mjGRAPHICS_API_VULKAN;
   filament_context_ = CreateContext(cfg);
@@ -79,7 +80,7 @@ void FilamentRenderer::Init(const mjModel* model) {
   model_decorations_.reset();
   model_renderables_.reset();
   model_lights_.reset();
-  model_objects_.reset();
+  model_resources_.reset();
   main_scene_.reset();
 
   if (model) {
@@ -95,12 +96,13 @@ void FilamentRenderer::Init(const mjModel* model) {
 
     main_scene_ = CreateScene(filament_context_.get(), {});
     mjrf_configureSceneFromModel(main_scene_.get(), model);
-    model_objects_ =
-        std::make_unique<ModelObjects>(model, filament_context_.get());
+    offsamples_ = model->vis.quality.offsamples;
+    model_resources_ =
+        std::make_unique<ModelResources>(model, filament_context_.get());
     model_lights_ =
-        std::make_unique<ModelLights>(main_scene_.get(), model_objects_.get());
+        std::make_unique<ModelLights>(main_scene_.get(), model_resources_.get());
     model_renderables_ = std::make_unique<ModelRenderables>(
-        main_scene_.get(), model_objects_.get());
+        main_scene_.get(), model_resources_.get());
     model_decorations_ = std::make_unique<ModelDecorations>(
         filament_context_.get(), main_scene_.get(), model);
   }
@@ -137,6 +139,11 @@ void FilamentRenderer::Sync(const mjModel* model, mjData* data,
   const mjrCamera gl_camera = mjv_camera2GLCamera(model, data, camera);
 
   model_lights_->Update(data);
+
+  if (model->vis.quality.offsamples != offsamples_) {
+    offsamples_ = model->vis.quality.offsamples;
+    mjrf_setSceneMsaa(main_scene_.get(), offsamples_);
+  }
 
   if (vis_option) {
     model_renderables_->SetOptions(*vis_option);
@@ -180,8 +187,8 @@ void FilamentRenderer::Submit(int width, int height,
     render_requests_[0].target = render_target_.get();
     render_requests_[1].target = render_target_.get();
 
-    mjrfReadPixelsRequest read_request;
-    mjrf_defaultReadPixelsRequest(&read_request);
+    mjrfReadRequest read_request;
+    mjrf_defaultReadRequest(&read_request);
     read_request.target = render_target_.get();
     read_request.output = pixels.data();
     read_request.num_bytes = viewport.width * viewport.height * 3;
@@ -216,8 +223,8 @@ void FilamentRenderer::RenderToTexture(const mjModel* model, mjData* data,
                          mjv_camera2GLCamera(model, data, camera));
   request.target = render_target_.get();
 
-  mjrfReadPixelsRequest read_request;
-  mjrf_defaultReadPixelsRequest(&read_request);
+  mjrfReadRequest read_request;
+  mjrf_defaultReadRequest(&read_request);
   read_request.target = render_target_.get();
   read_request.output = output;
   read_request.num_bytes = width * height * 3;
@@ -261,9 +268,9 @@ void FilamentRenderer::BuildMainRenderRequest(mjrfRenderRequest* request,
   request->draw_mode = draw_mode;
   request->camera = camera;
   request->viewport = viewport;
-  request->enable_shadows = render_flags_[mjRND_SHADOW];
-  request->enable_reflections = render_flags_[mjRND_REFLECTION];
-  request->enable_headlight = vis.headlight.active;
+  request->shadows = render_flags_[mjRND_SHADOW];
+  request->reflections = render_flags_[mjRND_REFLECTION];
+  request->headlight = vis.headlight.active;
   request->headlight_color[0] = vis.headlight.diffuse[0];
   request->headlight_color[1] = vis.headlight.diffuse[1];
   request->headlight_color[2] = vis.headlight.diffuse[2];
@@ -277,9 +284,9 @@ void FilamentRenderer::BuildUxRenderRequest(mjrfRenderRequest* request,
   request->draw_mode = mjDRAW_MODE_DEFAULT;
   request->camera = imgui_bridge_->GetCamera(viewport.width, viewport.height);
   request->viewport = viewport;
-  request->enable_shadows = false;
-  request->enable_reflections = false;
-  request->enable_post_processing = false;
+  request->shadows = false;
+  request->reflections = false;
+  request->post_processing = false;
 }
 }  // namespace mujoco::studio
 

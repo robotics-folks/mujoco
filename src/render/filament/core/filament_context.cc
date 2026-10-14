@@ -83,6 +83,7 @@ FilamentContext::FilamentContext(const mjrfContextConfig* config)
 }
 
 FilamentContext::~FilamentContext() {
+  engine_->flushAndWait();
   material_manager_.reset();
   object_manager_.reset();
   engine_->destroy(renderer_);
@@ -93,7 +94,7 @@ FilamentContext::~FilamentContext() {
 
 mjrfFrameHandle FilamentContext::Render(
     std::span<const mjrfRenderRequest> requests,
-    std::span<const mjrfReadPixelsRequest> read_requests) {
+    std::span<const mjrfReadRequest> read_requests) {
   if (read_requests.size() > 1) {
     mju_error("Only one read request is supported for now.");
   }
@@ -148,7 +149,7 @@ mjrfFrameHandle FilamentContext::Render(
             "pointless.");
       }
 
-      const mjrfReadPixelsRequest& read_request = read_requests[0];
+      const mjrfReadRequest& read_request = read_requests[0];
       if (read_request.num_bytes == 0) {
         mju_error("Output buffer size is zero.");
       }

@@ -228,6 +228,8 @@ void SetupTheme(GuiTheme theme) {
     c[ImGuiCol_TabDimmed] = ImVec4(0.14, 0.15, 0.17, 1.00);
     c[ImGuiCol_TabDimmedSelected] = ImVec4(0.20, 0.21, 0.24, 1.00);
     c[ImGuiCol_DockingPreview] = ImVec4(0.36, 0.41, 0.48, 0.40);
+    c[ImGuiCol_TableRowBg] = ImVec4(0.16, 0.17, 0.19, 1.00);
+    c[ImGuiCol_TableRowBgAlt] = ImVec4(0.20, 0.21, 0.24, 1.00);
   } else if (theme == GuiTheme::kLight) {
     ImGui::StyleColorsLight(&s);
 
@@ -299,6 +301,8 @@ void SetupTheme(GuiTheme theme) {
     c[ImGuiCol_DragDropTarget] = accent;
     c[ImGuiCol_NavCursor] = accent;
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.00, 0.00, 0.00, 0.30);
+    c[ImGuiCol_TableRowBg] = surface;
+    c[ImGuiCol_TableRowBgAlt] = ImVec4(0.92, 0.92, 0.94, 1.00);
   } else {
     ImGui::StyleColorsDark(&s);
     ImVec4 black = ImVec4(0.00, 0.00, 0.00, 1.0);
@@ -506,6 +510,9 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
     ImGui::DockBuilderSplitNode(inspector, ImGuiDir_Down, kPropertiesRelHeight,
                                 &properties, &inspector);
 
+    ImGuiID console = 0;
+    ImGui::DockBuilderSplitNode(main, ImGuiDir_Down, 0.25f, &console, &main);
+
     ImGuiID profiler = 0;
     ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, 0.42f, &profiler, &main);
 
@@ -515,6 +522,7 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
     ImGui::DockBuilderDockWindow("Editor", inspector);
     ImGui::DockBuilderDockWindow("Inspector", inspector);
     ImGui::DockBuilderDockWindow("Properties", properties);
+    ImGui::DockBuilderDockWindow("Console", console);
     ImGui::DockBuilderDockWindow("Profiler", profiler);
     ImGui::DockBuilderFinish(root);
   }
@@ -1173,7 +1181,7 @@ void SimulationGui(const SimulationGuiContext& ctx) {
 
         ImGui::BeginDisabled(*ctx.key_idx < 0 || *ctx.key_idx >= ctx.model->nkey);
         if (ImGui::Button(save_label, ImVec2(btn_w, 0))) {
-          mj_setKeyframe(ctx.model, ctx.data, (*ctx.key_idx));
+          ctx.save_keyframe();
         }
         ImGui::SetItemTooltip("%s", "Save active state to selected keyframe");
         ImGui::EndDisabled();
@@ -1792,6 +1800,14 @@ void VisualizationGui(mjModel* model, mjvOption* vis_options, mjvCamera* camera,
     ImGui_ButtonToggle("BVH active", &vis.global.bvactive);
     ImGui::TreePop();
   }
+  if (SectionHeader("Quality")) {
+    ImGui_LogStepper("Shadow size", &vis.quality.shadowsize, {.min = 8});
+    ImGui_Input("Offsamples", &vis.quality.offsamples, {.min = 0});
+    ImGui_Input("Slices", &vis.quality.numslices, {.min = 1});
+    ImGui_Input("Stacks", &vis.quality.numstacks, {.min = 1});
+    ImGui_Input("Quads", &vis.quality.numquads, {.min = 1});
+    ImGui::TreePop();
+  }
   if (SectionHeader("Mapping")) {
     ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.3f);
     ImGui_Input("Stiffness", &vis.map.stiffness);
@@ -2231,7 +2247,7 @@ void CountsGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
 }
 
 void InfoGui(const mjModel* model, const mjData* data, bool paused, float fps,
-             float gpu_ms) {
+             float gpu_ms, const mjTimerStat* timer_prev) {
   const int num_islands = std::clamp(data->nisland, 1, mjNISLAND);
 
   // compute solver error (maximum over islands)
@@ -2254,7 +2270,13 @@ void InfoGui(const mjModel* model, const mjData* data, bool paused, float fps,
   solver_err = mju_log10(mju_max(mjMINVAL, solver_err));
 
   auto type = paused ? mjTIMER_FORWARD : mjTIMER_STEP;
-  auto cpu = data->timer[type].duration / mjMAX(1, data->timer[type].number);
+  mjtNum duration = data->timer[type].duration;
+  int number = data->timer[type].number;
+  if (timer_prev) {
+    duration -= timer_prev[type].duration;
+    number -= timer_prev[type].number;
+  }
+  auto cpu = duration / mjMAX(1, number);
   auto mempct = 100 * data->maxuse_arena / (double)(data->narena);
   auto memlimit = mju_writeNumBytes(data->narena);
 

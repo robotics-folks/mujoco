@@ -14,6 +14,7 @@
 """Base class and configuration for any viewer."""
 
 import abc
+import contextlib
 import copy
 import dataclasses
 import enum
@@ -84,7 +85,6 @@ class Viewer(abc.ABC):
       endpoint: endpoints.ViewerEndpoint,
       *,
       model: mujoco.MjModel | None = None,
-      model_path: str = '',
       plugins: list[Any] | None = None,
       camera: mujoco.MjvCamera | None = None,
       vis_options: mujoco.MjvOption | None = None,
@@ -100,7 +100,6 @@ class Viewer(abc.ABC):
       model: Optional initial MjModel. If None, an empty model is created from
         an empty MjSpec. The Viewer deep-copies this model and creates its own
         MjData.
-      model_path: Optional path to the model file.
       plugins: Optional list of plugin instances for viewer-side processing.
       camera: Camera parameters. Internal object is created if None.
       vis_options: Visualization options. Internal object is created if None.
@@ -111,6 +110,7 @@ class Viewer(abc.ABC):
     self.config = config
     self._endpoint = endpoint
     self._is_running = True
+    self.exit_reason = ''
 
     # Viewer-owned model and data.
     if model is None:
@@ -118,7 +118,7 @@ class Viewer(abc.ABC):
     self.model: mujoco.MjModel
     self.data: mujoco.MjData
     self.model_path: str = ''
-    self.load_model(model, model_path)
+    self.load_model(model)
 
     # Visual state.
     self.camera = camera or mujoco.MjvCamera()
@@ -139,21 +139,28 @@ class Viewer(abc.ABC):
 
   def close(self) -> None:
     """Closes the viewer, sends an exit event and shuts down the endpoint."""
+    # Only attach exit_reason when the exit originated on the viewer side; if
+    # _on_exit already handled an ExitEvent from the sim, do not echo the sim's
+    # reason back to it.
+    reason = self.exit_reason if self._is_running else ''
+    exit_event = messages.ExitEvent(reason=reason)
     try:
       if self._is_running:
         self._is_running = False
-        self.dispatch(messages.ExitEvent())
+        self.dispatch(exit_event)
     finally:  # Finish the teardown even if an ExitEvent handler raised.
       try:
-        self.send_to_sim(messages.ExitEvent())
+        self.send_to_sim(exit_event)
       except Exception:  # pylint: disable=broad-exception-caught
         pass  # Ignore exceptions, the sim may have already closed.
       self._endpoint.close()
 
   @messages.handler(priority=messages.Priority.CRITICAL)
-  def _on_exit(self, _: messages.ExitEvent) -> None:
+  def _on_exit(self, event: messages.ExitEvent) -> None:
     """Stops the viewer loop when the sim side requests an exit."""
     self._is_running = False
+    if event.reason:
+      self.exit_reason = event.reason
 
   def is_running(self) -> bool:
     """Returns True while the viewer has not been closed."""
@@ -162,6 +169,22 @@ class Viewer(abc.ABC):
   def send_to_sim(self, message: messages.Message) -> None:
     """Sends a message to the simulation process."""
     self._endpoint.send_to_sim(message)
+
+  def send_if_changes(
+      self, *make_messages: messages.MakeMessage
+  ) -> contextlib.AbstractContextManager[None]:
+    """Sends the messages that change during the ``with`` block to the sim.
+
+    Calls each ``make_message()`` on entering and on leaving the block and
+    sends those that differ. Nothing is sent if the viewer stops running or
+    its model is replaced during the block.
+    """
+    model = self.model
+    return messages.send_if_changes(
+        self.send_to_sim,
+        *make_messages,
+        should_send=lambda: self._is_running and self.model is model,
+    )
 
   def get_sim_events(self) -> list[messages.Event]:
     """Returns all pending events from the simulation."""
@@ -193,6 +216,11 @@ class Viewer(abc.ABC):
             model=self.model, data=self.data, path=event.path
         )
     )
+
+  @messages.handler(priority=messages.Priority.CRITICAL)
+  def _on_mjoption(self, event: messages.MjOptionSnapshot) -> None:
+    """Applies incoming simulation physics options to the viewer's model."""
+    self.model.opt = event.opt
 
   @messages.handler(priority=messages.Priority.CRITICAL)
   def _on_state(self, event: messages.StateSnapshot) -> None:
@@ -271,7 +299,8 @@ def run_viewer_loop(viewer: Viewer) -> None:
 
         # Render the scene.
         viewer.sync()
-  except Exception:
+  except Exception as ex:
+    viewer.exit_reason = messages.describe_exception(ex)
     logger.exception(
         'Unhandled exception on the viewer thread; the viewer is closing.'
     )

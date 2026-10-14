@@ -1283,24 +1283,28 @@ def box_box_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between two boxes."""
-  # Call the core function to get contact geometry
-  dist, pos, normal = box_box(
+  # Call the core function to get contact geometry; as in MuJoCo, the collider's acceptance
+  # band is margin + gap
+  ncon, dist, pos, normal = box_box(
     box1.pos,
     box1.rot,
     box1.size,
     box2.pos,
     box2.rot,
     box2.size,
-    margin,
+    margin + gap,
   )
+  if ncon == 0:
+    return
+  frame = make_frame(normal)
 
-  for i in range(8):
+  for i in range(ncon):
     write_contact(
       naconmax_in,
       i,
       dist[i],
       pos[i],
-      make_frame(normal[i]),
+      frame,
       margin,
       gap,
       condim,
@@ -1513,10 +1517,6 @@ def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func
   return primitive_narrowphase
 
 
-_PRIMITIVE_COLLISION_TYPES = []
-_PRIMITIVE_COLLISION_FUNC = []
-
-
 @event_scope
 def primitive_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table: list[tuple[GeomType, GeomType]]):
   """Runs collision detection on primitive geom pairs discovered during broadphase.
@@ -1536,16 +1536,20 @@ def primitive_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_ta
   # TODO(team): keep the overhead of this small - not launching anything
   # for pair types without collisions, as well as updating the launch dimensions.
 
+  # the pair types are computed per call (rather than accumulated globally) so
+  # that pair types of one model do not leak into the kernels of other models
+  primitive_collision_types = []
+  primitive_collision_func = []
   for types, func in _PRIMITIVE_COLLISIONS.items():
     if types not in collision_table:
       continue
     idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
-    if m.geom_pair_type_count[idx] and types not in _PRIMITIVE_COLLISION_TYPES:
-      _PRIMITIVE_COLLISION_TYPES.append(types)
-      _PRIMITIVE_COLLISION_FUNC.append(func)
+    if m.geom_pair_type_count[idx]:
+      primitive_collision_types.append(types)
+      primitive_collision_func.append(func)
 
   wp.launch(
-    _primitive_narrowphase(_PRIMITIVE_COLLISION_TYPES, _PRIMITIVE_COLLISION_FUNC),
+    _primitive_narrowphase(primitive_collision_types, primitive_collision_func),
     dim=d.naconmax,
     inputs=[
       m.geom_type,

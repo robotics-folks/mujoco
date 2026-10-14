@@ -24,6 +24,7 @@
 #include <mujoco/mujoco.h>
 #include <mujoco/experimental/studio/sim/sim_history.h>
 #include <mujoco/experimental/studio/sim/step_control.h>
+#include <mujoco/experimental/studio/ux/console.h>
 #include <mujoco/experimental/studio/ux/gui.h>
 #include <mujoco/experimental/studio/ux/gui_helpers.h>
 #include <mujoco/experimental/studio/ux/interaction.h>
@@ -207,7 +208,8 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       "simulation_gui",
       [](py::object model_obj, py::object data_obj,
          mujoco::studio::StepControl* step_control, UxState& ux_state,
-         py::function reset, py::function reload, py::function align) {
+         py::function reset, py::function reload, py::function align,
+         py::function save_keyframe) {
         mjModel* model =
             py::cast<mujoco::python::MjModelWrapper&>(model_obj).get();
         mjData* data = py::cast<mujoco::python::MjDataWrapper&>(data_obj).get();
@@ -224,13 +226,14 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
         ctx.reset = [&reset]() { reset(); };
         ctx.reload = [&reload]() { reload(); };
         ctx.align = [&align]() { align(); };
+        ctx.save_keyframe = [&save_keyframe]() { save_keyframe(); };
         mujoco::studio::SimulationGui(ctx);
       },
       py::arg("model"), py::arg("data"), py::arg("step_control"),
       py::arg("ux_state"), py::arg("reset"), py::arg("reload"),
-      py::arg("align"),
+      py::arg("align"), py::arg("save_keyframe"),
       "Render the full Simulation panel: reset/reload/align, run/pause, speed, "
-      "the history scrubber, keyframes and thread count. The three callbacks "
+      "the history scrubber, keyframes and thread count. The four callbacks "
       "are invoked for the corresponding buttons.");
 
   m.def(
@@ -507,6 +510,78 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       },
       py::arg("model"), py::arg("data"), py::arg("paused"), py::arg("fps"),
       py::arg("gpu_ms") = 0.0f, "Render the simulation info UI.");
+
+  m.def(
+      "init_console",
+      []() {
+        py::gil_scoped_release no_gil;
+        mujoco::studio::Console::Init();
+      },
+      "Installs a MuJoCo log handler that adds messages to the Studio "
+      "Console and passes them on to the previous handler. Only the first "
+      "call installs it.");
+
+  m.def(
+      "clear_console",
+      []() {
+        py::gil_scoped_release no_gil;
+        mujoco::studio::Console::Get().Clear();
+      },
+      "Clears all messages and resets counts in the Studio Console.");
+
+  m.def(
+      "add_console_message",
+      [](int level, const std::string& message) {
+        py::gil_scoped_release no_gil;
+        mujoco::studio::Console::Get().Add(static_cast<mjtLogLevel>(level),
+                                           message);
+      },
+      py::arg("level"), py::arg("message"),
+      "Adds a message at the given mjtLogLevel to the Studio Console (not "
+      "printed).");
+
+  py::class_<mujoco::studio::ConsoleCounts>(m, "ConsoleCounts")
+      .def_readonly("messages", &mujoco::studio::ConsoleCounts::messages)
+      .def_readonly("warnings", &mujoco::studio::ConsoleCounts::warnings)
+      .def_readonly("errors", &mujoco::studio::ConsoleCounts::errors);
+
+  m.def(
+      "get_console_counts",
+      []() {
+        py::gil_scoped_release no_gil;
+        return mujoco::studio::Console::Get().GetCounts();
+      },
+      "Returns ConsoleCounts (messages, warnings, errors) for the Studio "
+      "Console.");
+
+  m.def(
+      "get_console_lines",
+      []() {
+        py::gil_scoped_release no_gil;
+        return mujoco::studio::Console::Get().GetLines();
+      },
+      "Returns a list of log lines currently in the Studio Console. It "
+      "copies every line, so call it on demand, e.g. in tests and scripts, "
+      "rather than every frame.");
+
+  m.def(
+      "console_gui",
+      []() {
+        py::gil_scoped_release no_gil;
+        mujoco::studio::Console::Get().WindowGui();
+      },
+      "Renders the Studio Console table.");
+
+  m.def(
+      "console_status_gui",
+      [](bool show_console) {
+        py::gil_scoped_release no_gil;
+        mujoco::studio::Console::Get().StatusGui(&show_console);
+        return show_console;
+      },
+      py::arg("show_console"),
+      "Renders the Studio Console status bar summary. Returns updated "
+      "show_console state.");
 
   m.attr("FREE_CAMERA_IDX") = mujoco::studio::kFreeCameraIdx;
   m.attr("TUMBLE_CAMERA_IDX") = mujoco::studio::kTumbleCameraIdx;

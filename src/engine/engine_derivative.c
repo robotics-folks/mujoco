@@ -1580,7 +1580,16 @@ void mjd_flexInterp_cacheKrot(const mjModel* m, mjData* d, mjtNum* K_rot_out) {
 }
 
 
-// compute res += scale * K_bend * vec for standard (non-interp) flex bending
+// Edge bending stencil s*c*c' (s = cos(theta)*stiffness, Wardetzky cotangent vector c):
+// negative semidefinite at rest creases sharper than 90 degrees (s < 0). Keep only convex
+// stencils (trace s*|c|^2 >= 0) in the solver metric so it stays SPD.
+static inline int flexBendConvex(const mjtNum* stencil) {
+  return stencil[0] + stencil[5] + stencil[10] + stencil[15] >= 0;
+}
+
+
+// compute res += scale * K_bend * vec for standard (non-interp) flex bending, over the convex
+// stencils (flexBendConvex)
 //   scale = s1 + s2 * flex_damping[f]  per flex
 //   for stiffness+damping: s1=h^2, s2=h  =>  scale = h^2 + h*damping
 //   for stiffness only:    s1=h,   s2=0  =>  scale = h
@@ -1619,8 +1628,8 @@ void mjd_flexBend_mulRange(const mjModel* m, mjData* d, mjtNum* res, const mjtNu
       const int* flap = m->flex_edgeflap + 2*(e + edgeadr);
       int v[4] = {edge[0], edge[1], flap[0], flap[1]};
 
-      // skip boundary edges (no second flap vertex)
-      if (v[3] == -1) {
+      // skip boundary edges (no second flap vertex) and concave stencils
+      if (v[3] == -1 || !flexBendConvex(b + 17*e)) {
         continue;
       }
 
@@ -1692,7 +1701,7 @@ void mjd_flexStretch_mul(const mjModel* m, mjData* d, mjtNum* res, const mjtNum*
 
 
 // returns true if the interpolated flex is processed by mjd_flexInterp_mul
-static mjtBool flexInterp_processed(const mjModel* m, int f) {
+mjtBool mjd_flexInterp_processed(const mjModel* m, int f) {
   if (!m->flex_interp[f]) {
     return 0;
   }
@@ -1714,7 +1723,7 @@ static mjtBool flexInterp_processed(const mjModel* m, int f) {
 // so the CSR can replace the operator only if it covers them all.
 mjtBool mjd_flexInterpAssemblable(const mjModel* m) {
   for (int f = 0; f < m->nflex; f++) {
-    if (!flexInterp_processed(m, f)) {
+    if (!mjd_flexInterp_processed(m, f)) {
       continue;
     }
     const int* bodyid = m->flex_nodebodyid + m->flex_nodeadr[f];
@@ -1778,7 +1787,7 @@ mjtBool mjd_flexPassiveContact_any(const mjModel* m) {
 // operator-processed interp flex)
 mjtBool mjd_flexStiff_any(const mjModel* m, int flg_interp) {
   for (int f = 0; f < m->nflex; f++) {
-    if (flg_interp && flexInterp_processed(m, f)) {
+    if (flg_interp && mjd_flexInterp_processed(m, f)) {
       return 1;
     }
     if (!m->flex_interp[f] && !m->flex_rigid[f] && m->flex_dim[f] >= 2 &&
@@ -1860,7 +1869,8 @@ mjtNum mjd_flexContactStiffness(const mjModel* m, const mjData* d, const mjConta
 // re-walking stencils and re-unpacking metrics on every apply). Rows/columns exist only on the
 // dofs of unpinned vertices of standard dim>=2 flexes with bending or stretch stiffness.
 // Phase 1 (colind == NULL): fill rownnz/rowadr over nv, return total nnz.
-// Phase 2: fill colind and val (rownnz/rowadr must come from phase 1).
+// Phase 2: fill colind and, unless val is NULL (structure only), val (rownnz/rowadr must come from
+// phase 1).
 // Interp flexes are assembled iff Krot (the mjd_flexInterp_cacheKrot cache) is non-NULL and
 // they qualify for the centered fast path (caller checks mjd_flexInterpAssemblable): rows on
 // node body dofs, corotated 3x3 blocks, with the operator's NEGATED sign convention folded in
@@ -1893,7 +1903,7 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
   // interp nodes participate when the caller supplies the K_rot cache (centered fast path)
   if (Krot) {
     for (int f = 0; f < m->nflex; f++) {
-      if (!flexInterp_processed(m, f)) {
+      if (!mjd_flexInterp_processed(m, f)) {
         continue;
       }
       const int* bodyid = m->flex_nodebodyid + m->flex_nodeadr[f];
@@ -1975,7 +1985,7 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
   // interp stencils: npe-node element cliques (counting)
   if (Krot) {
     for (int f = 0; f < m->nflex; f++) {
-      if (!flexInterp_processed(m, f)) {
+      if (!mjd_flexInterp_processed(m, f)) {
         continue;
       }
       FLEXINTERP_WALK(f, {
@@ -2036,7 +2046,7 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
   // interp stencils: npe-node element cliques (filling)
   if (Krot) {
     for (int f = 0; f < m->nflex; f++) {
-      if (!flexInterp_processed(m, f)) {
+      if (!mjd_flexInterp_processed(m, f)) {
         continue;
       }
       FLEXINTERP_WALK(f, {
@@ -2112,6 +2122,12 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
       }
     }
   }
+
+  // structure only
+  if (!val) {
+    mj_freeStack(d);
+    return nnz;
+  }
   mju_zero(val, nnz);
 
 // block accumulation helper data: find neighbor position by binary search on dofadr
@@ -2148,6 +2164,7 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
         const int* edge = m->flex_edge + 2*(e + m->flex_edgeadr[f]);
         const int* flap = m->flex_edgeflap + 2*(e + m->flex_edgeadr[f]);
         if (flap[1] == -1) continue;
+        if (!flexBendConvex(b + 17*e)) continue;   // values only: the pattern keeps the stencil
         int v[4] = {edge[0], edge[1], flap[0], flap[1]};
         for (int i = 0; i < 4; i++) {
           int si = vslot[m->flex_vertadr[f] + v[i]];
@@ -2239,7 +2256,7 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
   // the negation is folded in here and one CSR replaces all three operators uniformly.
   if (Krot) {
     for (int f = 0; f < m->nflex; f++) {
-      if (!flexInterp_processed(m, f)) {
+      if (!mjd_flexInterp_processed(m, f)) {
         continue;
       }
       mjtNum iscale = -(s1 + s2*m->flex_damping[f]);

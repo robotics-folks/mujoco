@@ -350,6 +350,8 @@
       <xs:enumeration value="pos"/>
       <xs:enumeration value="normal"/>
       <xs:enumeration value="tangent"/>
+      <xs:enumeration value="linvel"/>
+      <xs:enumeration value="angvel"/>
     </xs:restriction>
   </xs:simpleType>
   <xs:simpleType name="kwlist_condata">
@@ -403,6 +405,13 @@
       <xs:enumeration value="warning"/>
       <xs:enumeration value="merge"/>
       <xs:enumeration value="error"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="kw_scaling">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="similar"/>
+      <xs:enumeration value="geometry"/>
     </xs:restriction>
   </xs:simpleType>
 
@@ -471,6 +480,12 @@
       <xs:enumeration value="supersphere"/>
       <xs:enumeration value="wedge"/>
       <xs:enumeration value="plate"/>
+      <xs:enumeration value="grid"/>
+      <xs:enumeration value="box"/>
+      <xs:enumeration value="cylinder"/>
+      <xs:enumeration value="ellipsoid"/>
+      <xs:enumeration value="square"/>
+      <xs:enumeration value="disc"/>
     </xs:restriction>
   </xs:simpleType>
 
@@ -2143,6 +2158,9 @@
     <xs:attribute name="xyaxes" type="double6"/>
     <xs:attribute name="zaxis" type="double3"/>
     <xs:attribute name="euler" type="double3"/>
+    <xs:attribute name="scale" type="double1to3" default="1 1 1"/>
+    <xs:attribute name="scaling" type="kw_scaling" default="similar"/>
+    <xs:attribute name="massscale" type="xs:double" default="0"/>
   </xs:complexType>
 
   <xs:complexType name="replicate">
@@ -2400,6 +2418,7 @@
     <xs:attribute name="inertiabox" type="xs:double"/>
     <xs:attribute name="scale" type="double3"/>
     <xs:attribute name="file" type="xs:string"/>
+    <xs:attribute name="mesh" type="xs:string"/>
     <xs:attribute name="point" type="doublelist"/>
     <xs:attribute name="element" type="doublelist"/>
     <xs:attribute name="texcoord" type="doublelist"/>

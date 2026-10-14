@@ -160,7 +160,7 @@ void TimelineScrubberGui(const mjModel* model, mjData* data,
 // the caller and edited in place; the callbacks perform application actions the
 // panel cannot do on its own.
 struct SimulationGuiContext {
-  mjModel* model = nullptr;  // non-const: saving a keyframe writes to the model
+  const mjModel* model = nullptr;
   mjData* data = nullptr;
   StepControl* step_control = nullptr;
   SimulationTimelineState* timeline = nullptr;
@@ -168,9 +168,10 @@ struct SimulationGuiContext {
   int* key_idx = nullptr;
   int* nthread = nullptr;
   bool* update_threadpool = nullptr;
-  std::function<void()> reset;   // reset the physics state
-  std::function<void()> reload;  // reload the model
-  std::function<void()> align;   // recenter the camera on the model
+  std::function<void()> reset;          // reset the physics state
+  std::function<void()> reload;         // reload the model
+  std::function<void()> align;          // recenter the camera on the model
+  std::function<void()> save_keyframe;  // save active state to key_idx
 };
 
 // The Simulation panel: reset / reload / align, a pause-run toggle, the speed
@@ -262,7 +263,7 @@ void ProfilerGui(const mjModel* model, mjData* data, SimProfiler* profiler,
 // FPS and GPU frame time need to be tracked by the caller and passed here to be
 // displayed.
 void InfoGui(const mjModel* model, const mjData* data, bool paused, float fps,
-             float gpu_ms);
+             float gpu_ms, const mjTimerStat* timer_prev = nullptr);
 
 }  // namespace mujoco::studio
 

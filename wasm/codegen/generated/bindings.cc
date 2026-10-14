@@ -16,6 +16,7 @@
 
 // NOLINTBEGIN(whitespace/line_length)
 // NOLINTBEGIN(whitespace/semicolon)
+// NOLINTBEGIN(misc-include-cleaner)
 
 #include "wasm/codegen/generated/bindings.h"
 
@@ -3990,6 +3991,8 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjCONDATA_POS", mjCONDATA_POS)
     .value("mjCONDATA_NORMAL", mjCONDATA_NORMAL)
     .value("mjCONDATA_TANGENT", mjCONDATA_TANGENT)
+    .value("mjCONDATA_LINVEL", mjCONDATA_LINVEL)
+    .value("mjCONDATA_ANGVEL", mjCONDATA_ANGVEL)
     .value("mjNCONDATA", mjNCONDATA);
   enum_<mjtCone>("mjtCone")
     .value("mjCONE_PYRAMIDAL", mjCONE_PYRAMIDAL)
@@ -4255,7 +4258,13 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjMESH_BUILTIN_SUPERSPHERE", mjMESH_BUILTIN_SUPERSPHERE)
     .value("mjMESH_BUILTIN_SUPERTORUS", mjMESH_BUILTIN_SUPERTORUS)
     .value("mjMESH_BUILTIN_WEDGE", mjMESH_BUILTIN_WEDGE)
-    .value("mjMESH_BUILTIN_PLATE", mjMESH_BUILTIN_PLATE);
+    .value("mjMESH_BUILTIN_PLATE", mjMESH_BUILTIN_PLATE)
+    .value("mjMESH_BUILTIN_GRID", mjMESH_BUILTIN_GRID)
+    .value("mjMESH_BUILTIN_BOX", mjMESH_BUILTIN_BOX)
+    .value("mjMESH_BUILTIN_CYLINDER", mjMESH_BUILTIN_CYLINDER)
+    .value("mjMESH_BUILTIN_ELLIPSOID", mjMESH_BUILTIN_ELLIPSOID)
+    .value("mjMESH_BUILTIN_SQUARE", mjMESH_BUILTIN_SQUARE)
+    .value("mjMESH_BUILTIN_DISC", mjMESH_BUILTIN_DISC);
   enum_<mjtMeshInertia>("mjtMeshInertia")
     .value("mjMESH_INERTIA_CONVEX", mjMESH_INERTIA_CONVEX)
     .value("mjMESH_INERTIA_EXACT", mjMESH_INERTIA_EXACT)
@@ -4352,6 +4361,9 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjSAMEFRAME_INERTIA", mjSAMEFRAME_INERTIA)
     .value("mjSAMEFRAME_BODYROT", mjSAMEFRAME_BODYROT)
     .value("mjSAMEFRAME_INERTIAROT", mjSAMEFRAME_INERTIAROT);
+  enum_<mjtScaling>("mjtScaling")
+    .value("mjSCALING_SIMILAR", mjSCALING_SIMILAR)
+    .value("mjSCALING_GEOMETRY", mjSCALING_GEOMETRY);
   enum_<mjtSection>("mjtSection")
     .value("mjSECT_CLOSED", mjSECT_CLOSED)
     .value("mjSECT_OPEN", mjSECT_OPEN)
@@ -4988,6 +5000,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("efm0_L_rowadr", &MjModel::efm0_L_rowadr)
     .property("efm0_L_rownnz", &MjModel::efm0_L_rownnz)
     .property("efm0_dofid", &MjModel::efm0_dofid)
+    .property("efmC_perm", &MjModel::efmC_perm)
     .property("eq_active0", &MjModel::eq_active0)
     .property("eq_data", &MjModel::eq_data)
     .property("eq_obj1id", &MjModel::eq_obj1id)
@@ -5247,6 +5260,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("nconmax", &MjModel::nconmax, &MjModel::set_nconmax)
     .property("nefm0L", &MjModel::nefm0L, &MjModel::set_nefm0L)
     .property("nefm0dof", &MjModel::nefm0dof, &MjModel::set_nefm0dof)
+    .property("nefmCvert", &MjModel::nefmCvert, &MjModel::set_nefmCvert)
     .property("nemax", &MjModel::nemax, &MjModel::set_nemax)
     .property("neq", &MjModel::neq, &MjModel::set_neq)
     .property("nexclude", &MjModel::nexclude, &MjModel::set_nexclude)
@@ -5850,8 +5864,11 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("childclass", &MjsFrame::childclass, &MjsFrame::set_childclass, reference())
     .property("element", &MjsFrame::element, reference())
     .property("info", &MjsFrame::info, &MjsFrame::set_info, reference())
+    .property("massscale", &MjsFrame::massscale, &MjsFrame::set_massscale)
     .property("pos", &MjsFrame::pos)
-    .property("quat", &MjsFrame::quat);
+    .property("quat", &MjsFrame::quat)
+    .property("scale", &MjsFrame::scale)
+    .property("scaling", &MjsFrame::scaling, &MjsFrame::set_scaling);
   emscripten::class_<MjsGeom>("MjsGeom")
     .property("adhesion", &MjsGeom::adhesion, &MjsGeom::set_adhesion)
     .property("alt", &MjsGeom::alt, reference())
@@ -6860,5 +6877,6 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
 }
 
 }  // namespace mujoco::wasm
+// NOLINTEND(misc-include-cleaner)
 // NOLINTEND(whitespace/semicolon)
 // NOLINTEND(whitespace/line_length)
