@@ -128,11 +128,14 @@ static void bufread(void* dest, mjtSize num, mjtSize szbuf, const void* buf, mjt
 }
 
 
-// number of bytes to be skipped to achieve 64-byte alignment
+// alignment of the arrays in the mjModel and mjData buffers
+#define BUFFER_ALIGN 64
+
+
+// number of bytes to be skipped to achieve BUFFER_ALIGN-byte alignment
 static inline unsigned int SKIP(intptr_t offset) {
-  const unsigned int align = 64;
   // compute skipped bytes
-  return (align - (offset % align)) % align;
+  return (BUFFER_ALIGN - (offset % BUFFER_ALIGN)) % BUFFER_ALIGN;
 }
 
 
@@ -154,14 +157,17 @@ static void mj_setPtrModel(mjModel* m) {
   MJMODEL_POINTERS
 #undef X
 
-  // check size
-  ptrdiff_t sz = ptr - (char*)m->buffer;
+  // check size, nbuffer includes the largest possible padding before the first array
+  ptrdiff_t sz = ptr - (char*)m->buffer - SKIP((intptr_t)m->buffer) + BUFFER_ALIGN - 1;
   if (m->nbuffer != sz) {
     mjERROR(
         "mjModel buffer size mismatch, "
         "expected size: %" PRIu64 ",  actual size: %td",
         m->nbuffer, sz);
   }
+
+  // poison unused bytes at the end of the buffer
+  ASAN_POISON_MEMORY_REGION(ptr, PTRDIFF((char*)m->buffer + m->nbuffer, ptr));
 }
 
 
@@ -231,7 +237,7 @@ void mj_makeModel(mjModel** dest,
     mjtSize nC, mjtSize nD, mjtSize ngeom, mjtSize nsite, mjtSize ncam, mjtSize nlight,
     mjtSize nflex, mjtSize nflexnode, mjtSize nflexvert, mjtSize nflexedge, mjtSize nflexelem,
     mjtSize nflexelemdata, mjtSize nflexstiffness, mjtSize nflexbending,
-    mjtSize nefm0dof, mjtSize nefm0L, mjtSize nflexelemedge,
+    mjtSize nefm0dof, mjtSize nefm0L, mjtSize nefmCvert, mjtSize nflexelemedge,
     mjtSize nflexshelldata, mjtSize nflextexcoord, mjtSize nJfe, mjtSize nJfv,
     mjtSize nmesh, mjtSize nmeshvert, mjtSize nmeshnormal, mjtSize nmeshtexcoord, mjtSize nmeshface,
     mjtSize nmeshgraph, mjtSize nmeshpoly, mjtSize nmeshpolyvert, mjtSize nmeshpolymap,
@@ -327,6 +333,7 @@ void mj_makeModel(mjModel** dest,
   m->nflexbending = nflexbending;
   m->nefm0dof = nefm0dof;
   m->nefm0L = nefm0L;
+  m->nefmCvert = nefmCvert;
   m->nflexelemedge = nflexelemedge;
   m->nflexshelldata = nflexshelldata;
   m->nflextexcoord = nflextexcoord;
@@ -389,8 +396,8 @@ void mj_makeModel(mjModel** dest,
   m->nnames_map = mjLOAD_MULTIPLE * nnames_map;
   m->npaths = npaths;
 
-  // compute buffer size
-  m->nbuffer = 0;
+  // compute buffer size, including padding to align the first array at any buffer address
+  m->nbuffer = BUFFER_ALIGN - 1;
 #define X(type, name, nr, nc)                                                \
   if (!safeAddToBufferSize(&offset, &m->nbuffer, sizeof(type), m->nr, nc)) { \
     if (allocate) mju_free(m);                                               \
@@ -438,7 +445,8 @@ mjModel* mj_copyModel(mjModel* dest, const mjModel* src) {
         src->nbvhdynamic, src->noct, src->njnt, src->ntree, src->nM, src->nB, src->nC, src->nD,
         src->ngeom, src->nsite, src->ncam, src->nlight, src->nflex, src->nflexnode, src->nflexvert,
         src->nflexedge, src->nflexelem, src->nflexelemdata, src->nflexstiffness,
-        src->nflexbending, src->nefm0dof, src->nefm0L, src->nflexelemedge, src->nflexshelldata,
+        src->nflexbending, src->nefm0dof, src->nefm0L, src->nefmCvert, src->nflexelemedge,
+        src->nflexshelldata,
         src->nflextexcoord, src->nJfe, src->nJfv, src->nmesh, src->nmeshvert, src->nmeshnormal,
         src->nmeshtexcoord, src->nmeshface, src->nmeshgraph, src->nmeshpoly, src->nmeshpolyvert,
         src->nmeshpolymap, src->nskin, src->nskinvert, src->nskintexvert, src->nskinface,
@@ -544,6 +552,7 @@ void mj_saveModel(const mjModel* m, const char* filename, void* buffer, mjtSize 
   bufwrite((void*)&m->stat, sizeof(mjStatistic), buffer_sz, buffer, &ptrbuf);
   bufwrite(&m->flg_gravcomp, sizeof(mjtBool), buffer_sz, buffer, &ptrbuf);
   bufwrite(&m->flg_surfacevel, sizeof(mjtBool), buffer_sz, buffer, &ptrbuf);
+  bufwrite(&m->flg_adhesion, sizeof(mjtBool), buffer_sz, buffer, &ptrbuf);
   {
     MJMODEL_POINTERS_PREAMBLE(m)
     #define X(type, name, nr, nc)  \
@@ -619,8 +628,7 @@ mjModel* mj_loadModelBuffer(const void* buffer, mjtSize buffer_sz) {
                sizes[56], sizes[57], sizes[58], sizes[59], sizes[60], sizes[61], sizes[62],
                sizes[63], sizes[64], sizes[65], sizes[66], sizes[67], sizes[68], sizes[69],
                sizes[70], sizes[71], sizes[72], sizes[73], sizes[74], sizes[75], sizes[76],
-               sizes[77], sizes[78], sizes[79], sizes[80], sizes[81],
-               sizes[82]);
+               sizes[77], sizes[78], sizes[79], sizes[80], sizes[81], sizes[82], sizes[83]);
 
   // mj_makeModel may fail if the input buffer has invalid sizes
   if (!m) {
@@ -646,7 +654,7 @@ mjModel* mj_loadModelBuffer(const void* buffer, mjtSize buffer_sz) {
 
   // read options and buffer
   if (ptrbuf + sizeof(mjOption) + sizeof(mjVisual) + sizeof(mjStatistic) +
-      sizeof(mjtBool) * 2 > buffer_sz) {
+      sizeof(mjtBool) * 3 > buffer_sz) {
     mju_warning("Truncated model file - ran out of data while reading structs");
     return NULL;
   }
@@ -655,6 +663,7 @@ mjModel* mj_loadModelBuffer(const void* buffer, mjtSize buffer_sz) {
   bufread((void*)&m->stat, sizeof(mjStatistic), buffer_sz, buffer, &ptrbuf);
   bufread(&m->flg_gravcomp, sizeof(mjtBool), buffer_sz, buffer, &ptrbuf);
   bufread(&m->flg_surfacevel, sizeof(mjtBool), buffer_sz, buffer, &ptrbuf);
+  bufread(&m->flg_adhesion, sizeof(mjtBool), buffer_sz, buffer, &ptrbuf);
   {
     MJMODEL_POINTERS_PREAMBLE(m)
     #define X(type, name, nr, nc)                                           \
@@ -705,7 +714,7 @@ mjtSize mj_sizeModel(const mjModel* m) {
     + sizeof(mjOption)
     + sizeof(mjVisual)
     + sizeof(mjStatistic)
-    + sizeof(mjtBool)*2);
+    + sizeof(mjtBool)*3);
 
   MJMODEL_POINTERS_PREAMBLE(m)
 #define X(type, name, nr, nc)         \
@@ -1000,14 +1009,17 @@ static void mj_setPtrData(const mjModel* m, mjData* d) {
   MJDATA_POINTERS
 #undef X
 
-  // check size
-  ptrdiff_t sz = ptr - (char*)d->buffer;
+  // check size, nbuffer includes the largest possible padding before the first array
+  ptrdiff_t sz = ptr - (char*)d->buffer - SKIP((intptr_t)d->buffer) + BUFFER_ALIGN - 1;
   if (d->nbuffer != sz) {
     mjERROR(
         "mjData buffer size mismatch, "
         "expected size: %" PRIu64 ",  actual size: %td",
         d->nbuffer, sz);
   }
+
+  // poison unused bytes at the end of the buffer
+  ASAN_POISON_MEMORY_REGION(ptr, PTRDIFF((char*)d->buffer + d->nbuffer, ptr));
 
   // zero-initialize arena pointers
 #define X(type, name, nr, nc) d->name = NULL;
@@ -1074,8 +1086,8 @@ void mj_makeRawData(mjData** dest, const mjModel* m) {
   // prevent spurious timing print from mj_resetData before _resetData zeroes the struct
   d->timer[mjTIMER_STEP].number = 0;
 
-  // compute buffer size
-  d->nbuffer = 0;
+  // compute buffer size, including padding to align the first array at any buffer address
+  d->nbuffer = BUFFER_ALIGN - 1;
   d->buffer = d->arena = NULL;
 #define X(type, name, nr, nc)                                                \
   if (!safeAddToBufferSize(&offset, &d->nbuffer, sizeof(type), m->nr, nc)) { \
@@ -1286,10 +1298,10 @@ mjData* mjv_copyData(mjData* dest, const mjModel* m, const mjData* src) {
 
 // clear data, set defaults
 static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
-  // error early if history buffers cannot be initialized
+  // warn if history buffers cannot be initialized
   mjtNum dt = m->opt.timestep;
   if (m->nhistory && dt <= 0) {
-    mjERROR("history buffers require positive timestep, got %g", dt);
+    mju_warning("history buffers require positive timestep, got %g", dt);
   }
 
   //------------------------------ save plugin state and data
@@ -1449,7 +1461,7 @@ static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
         mjtNum t0 = (phase == 0) ? -period : phase;
         for (int j = 0; j < n; j++) {
           mjtNum continuous_t = t0 - (n-1-j)*period;
-          times[j] = mju_ceil(continuous_t / dt) * dt;
+          times[j] = dt > 0 ? mju_ceil(continuous_t / dt) * dt : continuous_t;
         }
       } else {
         // no period: timestamps at [-n*dt, ..., -dt]
@@ -1467,6 +1479,24 @@ static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
   // copy qpos0 from model
   if (m->qpos0) {
     mju_copy(d->qpos, m->qpos0, m->nq);
+  }
+
+  // restore pluginstate and plugindata
+  if (d->nplugin) {
+    memcpy(d->plugin_state, plugin_state, sizeof(mjtNum) * m->npluginstate);
+    mju_free(plugin_state);
+    memcpy(d->plugin_data, plugindata, sizeof(uintptr_t) * m->nplugin);
+    mju_free(plugindata);
+
+    // restore the plugin array back into d and reset the instances
+    for (int i = 0; i < m->nplugin; ++i) {
+      d->plugin[i] = m->plugin[i];
+      const mjpPlugin* plugin = mjp_getPluginAtSlot(m->plugin[i]);
+      if (plugin->reset) {
+        plugin->reset(m, &d->plugin_state[m->plugin_stateadr[i]],
+                      (void*)(d->plugin_data[i]), i);
+      }
+    }
   }
 
   static int kAwake = -(1+mjMINAWAKE);  // tree_asleep value for fully awake tree
@@ -1505,26 +1535,23 @@ static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
 
       int nslept = mj_sleep(m, d);
 
-      // raise error if any failed to sleep
+      // warn if any failed to sleep, leave them awake
       if (nslept != num_asleep_init) {
-        // find root body of the first tree that could not be slept
+        // find root body of the first tree that could not be slept, wake the others
         int root = -1;
         for (int i=0; i < m->ntree; i++) {
           if (m->tree_sleep_policy[i] == mjSLEEP_INIT && d->tree_asleep[i] < 0) {
-            root = m->tree_bodyadr[i];
-            break;
+            if (root < 0) root = m->tree_bodyadr[i];
+            d->tree_asleep[i] = kAwake;
           }
         }
 
-        // free all memory held by d just before aborting
-        mj_deleteData(d);
-
-        // raise error and abort
+        // warn and continue
         const char* hasname = mj_id2name(m, mjOBJ_BODY, root);
         const char* name = hasname ? hasname : "";
-        mjERROR("%d trees were marked as sleep='init' but only %d could be slept.\n"
-                "Body '%s' (id=%d) is the root of the first tree that could not be slept.",
-                num_asleep_init, nslept, name, root);
+        mju_warning("%d trees were marked as sleep='init' but only %d could be slept. "
+                    "Body '%s' (id=%d) is the root of the first tree that could not be slept.",
+                    num_asleep_init, nslept, name, root);
       }
 
       // clear arrays to avoid MSAN errors upon mid-step wake
@@ -1557,24 +1584,6 @@ static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
 
   // check consistency of sparse matrix representations
   checkDBSparse(m);
-
-  // restore pluginstate and plugindata
-  if (d->nplugin) {
-    memcpy(d->plugin_state, plugin_state, sizeof(mjtNum) * m->npluginstate);
-    mju_free(plugin_state);
-    memcpy(d->plugin_data, plugindata, sizeof(uintptr_t) * m->nplugin);
-    mju_free(plugindata);
-
-    // restore the plugin array back into d and reset the instances
-    for (int i = 0; i < m->nplugin; ++i) {
-      d->plugin[i] = m->plugin[i];
-      const mjpPlugin* plugin = mjp_getPluginAtSlot(m->plugin[i]);
-      if (plugin->reset) {
-        plugin->reset(m, &d->plugin_state[m->plugin_stateadr[i]],
-                      (void*)(d->plugin_data[i]), i);
-      }
-    }
-  }
 
   // copy signature from model
   d->signature = m->signature;
@@ -1679,6 +1688,9 @@ void mj_resetDataDebug(const mjModel* m, mjData* d, unsigned char debug_value) {
 
 // Reset data. If 0 <= key < nkey, set fields from specified keyframe.
 void mj_resetDataKeyframe(const mjModel* m, mjData* d, int key) {
+  // emit step timing diagnostics before timers are cleared
+  mj_logTimingDiagnostics(d);
+
   _resetData(m, d, 0);
 
   // copy keyframe data if key is valid

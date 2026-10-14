@@ -14,6 +14,7 @@
 
 #include "render/filament/core/scene_view.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -152,7 +153,7 @@ SceneView::SceneView(ObjectManager* object_mgr, MaterialManager* material_mgr,
   mjrfLightParams headlight_params;
   mjrf_defaultLightParams(&headlight_params);
   headlight_params.type = mjLIGHT_DIRECTIONAL;
-  headlight_params.cast_shadows = 0;
+  headlight_params.cast_shadow = 0;
   headlight_params.intensity = 0.0f;
   headlight_ = std::make_unique<Light>(engine, headlight_params);
   headlight_->AddToScene(scene_);
@@ -275,8 +276,8 @@ void SceneView::Render(filament::Renderer* renderer,
     view = depth_segment_view_;
   }
   view->setViewport(viewport);
-  view->setShadowingEnabled(request.enable_shadows);
-  view->setPostProcessingEnabled(request.enable_post_processing);
+  view->setShadowingEnabled(request.shadows);
+  view->setPostProcessingEnabled(request.post_processing);
 
   filament::MultiSampleAntiAliasingOptions options =
       view->getMultiSampleAntiAliasingOptions();
@@ -292,7 +293,7 @@ void SceneView::Render(filament::Renderer* renderer,
   // Aim the headlight along this request's camera. Filament re-gathers the
   // scene's lights for each render() call, so requests batched into one frame
   // each see their own headlight.
-  if (request.enable_headlight) {
+  if (request.headlight) {
     const float3 forward = ReadFloat3(request.camera.forward);
     // Sit slightly behind the eye to avoid clipping artifacts.
     const float3 position = ReadFloat3(request.camera.pos) - 0.05f * forward;
@@ -450,7 +451,17 @@ static filament::ShadowType ShadowTypeFromString(std::string_view name) {
 }
 
 
+void SceneView::SetMsaa(int samples) {
+  samples = std::clamp(samples, 1, 255);
+  auto msaa = main_view_->getMultiSampleAntiAliasingOptions();
+  msaa.enabled = samples > 1;
+  msaa.sampleCount = static_cast<uint8_t>(samples);
+  main_view_->setMultiSampleAntiAliasingOptions(msaa);
+}
+
 void SceneView::Configure(const mjModel* model) {
+  SetMsaa(model->vis.quality.offsamples);
+
   auto cg = color_grading_options_;
   cg.exposure = ReadElement(model, "filament.cg.exposure", cg.exposure);
   cg.contrast = ReadElement(model, "filament.cg.contrast", cg.contrast);
@@ -493,10 +504,6 @@ void SceneView::Configure(const mjModel* model) {
   ao.bilateralThreshold =
       ReadElement(model, "filament.ao.bilateral_threshold", 0.5f);
   main_view_->setAmbientOcclusionOptions(ao);
-
-  auto msaa = main_view_->getMultiSampleAntiAliasingOptions();
-  msaa.enabled = ReadElement(model, "filament.msaa.enabled", true);
-  main_view_->setMultiSampleAntiAliasingOptions(msaa);
 
   auto shadow_type = main_view_->getShadowType();
   shadow_type = ShadowTypeFromString(

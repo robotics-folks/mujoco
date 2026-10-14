@@ -275,6 +275,13 @@ that create a new :ref:`mjModel` instance: ``mujoco.MjModel.from_xml_string``, `
 functions accept the path to either an XML or MJB model file. All three functions optionally accept a Python
 dictionary which is converted into a MuJoCo :ref:`Virtualfilesystem` for use during model compilation.
 
+Assigning to a struct attribute writes into the underlying C memory rather than rebinding the attribute. For array
+fields, ``model.opt.gravity = value`` is equivalent to ``model.opt.gravity[:] = value``. Likewise, the sub-struct
+attributes of ``MjModel`` (``opt``, ``vis``, ``stat``) and ``MjVisual`` (``global_``, ``quality``, ``headlight``,
+``map``, ``scale``, ``rgba``) can be assigned to, for example ``model.opt = new_opt``, which copies the fields of
+``new_opt`` into the model's own ``mjOption`` struct in place. Any existing references and NumPy array views into the
+destination struct remain valid and reflect the new values; later modifications to ``new_opt`` do not propagate.
+
 
 
 .. _PyFunctions:
@@ -449,16 +456,66 @@ The Python ``mjrf`` module exposes the ``mjrf_`` :ref:`C API<FilamentRenderingAp
   references such that python will not manage their lifetimes.
 
 - In cases where the ``mjrf_`` C function takes a pointer to an object as its first argument, we bind the function as a
-  method of the object itself. So, for example, :ref:`mjrf_setLightEnabled(mjrfLight*, bool)<mjrf_setLightEnabled>`
-  becomes ``Light.set_enabled(bool)``.
+  method of the object itself. So, for example, :ref:`mjrf_setLightActive(mjrfLight*, bool)<mjrf_setLightActive>`
+  becomes ``Light.set_active(bool)``.
 
-- Some functions (e.g. ``mjrf.ReadPixelsRequest.set_buffer``) require users to provide a buffer. Users are responsible
+- Some functions (e.g. ``mjrf.ReadRequest.set_buffer``) require users to provide a buffer. Users are responsible
   for ensuring the lifetime of the buffer outlives the request to which it is associated.
 
-Additionally, a `Renderer
-<https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/rendering/filament/renderer.py>`__ class is available
-under ``mujoco.rendering.filament``. This class can be used to manage the lifetimes of key objects (such as the
+We also provide a `ModelScene
+<https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/rendering/filament/model_scene.py>`__ helper class
+under ``mujoco.rendering.filament``. This class can be used to add and update :ref:`mjrfRenderable` and :ref:`mjrfLight`
+objects in an :ref:`mjrfScene` based on the contents of an :ref:`mjModel` and :ref:`mjData`.
+
+Similarly, we also provide a `Renderer
+<https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/rendering/filament/renderer.py>`__ class under
+``mujoco.rendering.filament``. This class can be used to manage the lifetimes of key objects (such as the
 :ref:`mjrfContext` and :ref:`mjrfScene`) and provides useful functions for controlling the camera and reading pixels.
+
+Here is a mimimal example for rendering an mjModel with the filament renderer:
+
+.. code-block:: python
+
+   import mujoco
+   from mujoco import mjrf
+   from mujoco.rendering.filament import model_scene
+   from mujoco.rendering.filament import renderer
+   import numpy as np
+
+   def render(model: mujoco.MjModel, data: MjData, width: int, height: int) -> np.ndarray:
+     # create the rendering context
+     ctx = mjrf.Context(mjrf.ContextConfig())
+
+     # create a renderer
+     r = renderer.Renderer(ctx)
+
+     # add lights and renderables defined in the model to a scene in the renderer
+     ms = model_scene.ModelScene(ctx, model, r.scene("scn"))
+
+     # create the pixel buffer into which we'll render the image
+     pixels = np.empty((height, width, 3), dtype=np.uint8)
+
+     # associate the pixel buffer with a render target
+     r.target("out", pixels)
+
+     # define a view that connects the scene we want to render to an output target
+     r.view("v1", scene="scn", target="out")
+
+     # define the camera for the view we want to render
+     vcam = mujoco.MjvCamera()
+     mujoco.mjv_defaultFreeCamera(model, vcam)
+     vcam.type = int(mujoco.mjtCamera.mjCAMERA_FIXED)
+     vcam.fixedcamid = 0
+     r.update_camera("v1", mujoco.mjv_camera2GLCamera(model, data, vcam))
+
+     # update the lights and renderables with the current `data` state
+     ms.update(data)
+
+     # render the scene; blocks until the render has completed writing to the render target
+     r.render()
+
+     # return the pixels
+     return pixels
 
 .. _PyClassicRender:
 
@@ -965,6 +1022,8 @@ Therefore, non-increasing time values can be used to detect diverged rollouts.
 
 The ``rollout`` function is designed to be computationally stateless, so all inputs of the stepping pipeline are set and
 any values already present in the given ``MjData`` instance will have no effect on the output.
+
+``rollout`` threads across rollouts, so an ``MjData`` with a :ref:`mju_threadpool` installed is rejected.
 
 By default ``rollout.rollout`` creates a new thread pool every call if ``len(data) > 1``. To reuse the thread pool
 over multiple calls use the ``persistent_pool`` argument. ``rollout.rollout`` is not thread safe when using

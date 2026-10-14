@@ -336,11 +336,13 @@ build_python_bindings() {
     # temp-dir churn without affecting header content detection.
     # On Windows (Git Bash / MSYS2), TMPDIR is an MSYS path (/c/Temp) that MSYS2
     # does not auto-convert in custom env vars passed to native Win32 processes,
-    # so convert it to a Windows path (C:/Temp) for ccache.exe.
+    # so convert it to a Windows path (C:/Temp) for ccache.exe. On macOS, /tmp is
+    # a symlink to /private/tmp, so resolve symlinks with pwd -P to match the
+    # canonicalized compiler paths in pip's temp build directory.
     if command -v cygpath >/dev/null 2>&1; then
         export CCACHE_BASEDIR="$(cygpath -m "${TMPDIR}")"
     else
-        export CCACHE_BASEDIR="${TMPDIR}"
+        export CCACHE_BASEDIR="$(cd "${TMPDIR}" && pwd -P)"
     fi
     export CCACHE_NOHASHDIR=1
     export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
@@ -356,7 +358,8 @@ build_python_bindings() {
 install_python_bindings() {
     echo "Installing Python bindings..."
     source ${TMPDIR}/venv/bin/activate &&
-    pip install --no-index mujoco-*.whl
+    pip install --no-deps --no-index mujoco-*.whl &&
+    pip check
 }
 
 
@@ -448,7 +451,8 @@ install_mjx() {
     else
         pip install --require-hashes -r requirements.txt
     fi
-    pip install --no-index dist/mujoco_mjx-*.whl
+    pip install --no-deps --no-index dist/mujoco_mjx-*.whl
+    pip check
 }
 
 
@@ -534,7 +538,7 @@ _build_python_wheel() {
     if command -v cygpath >/dev/null 2>&1; then
         export CCACHE_BASEDIR="$(cygpath -m "${TMPDIR:-$(pwd)}")"
     else
-        export CCACHE_BASEDIR="${TMPDIR:-$(pwd)}"
+        export CCACHE_BASEDIR="$(cd "${TMPDIR:-$(pwd)}" && pwd -P)"
     fi
     export CCACHE_NOHASHDIR=1
     export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
@@ -555,13 +559,16 @@ _install_python_wheel() {
     fi
     echo "Building and installing the Python bindings against ${prefix}..."
     _build_python_wheel "${prefix}"
-    # --force-reinstall --no-deps replaces whatever mujoco is installed with the
-    # one just built, without disturbing the rest of the environment. It also
-    # installs none of the wheel's runtime dependencies, so the plain install
-    # that follows adds those (websockets, which the web viewer server needs,
-    # among them) and leaves the freshly installed mujoco alone.
-    pip install --force-reinstall --no-deps python/dist/mujoco-*.whl
-    pip install python/dist/mujoco-*.whl
+    # Install build/runtime dependencies (including websockets for the web
+    # viewer server) with hash verification, then --force-reinstall --no-deps
+    # --no-index to replace whatever mujoco is installed with the one just built
+    # without disturbing the rest of the environment.
+    if command -v uv > /dev/null 2>&1; then
+        uv pip install --require-hashes -r python/build_requirements.txt
+    else
+        pip install --require-hashes -r python/build_requirements.txt
+    fi
+    pip install --force-reinstall --no-deps --no-index python/dist/mujoco-*.whl
 }
 
 
@@ -832,9 +839,9 @@ build_simulate_app() {
 
 
 # The Python Studio viewer: platform libraries, SDK, then the Studio Python
-# modules (ux, sim, renderer, window, dear_imgui, implot, headless_ui,
-# state_payload, _render_filament) built into a wheel and installed. The
-# browser client and the C++ app are not built.
+# modules (ux, sim, window, dear_imgui, implot, headless_ui, state_payload,
+# _render_filament) built into a wheel and installed. The browser client and
+# the C++ app are not built.
 build_studio_python() {
     echo "Building the Studio platform for Python..."
     build_studio_platform_libs
@@ -864,6 +871,17 @@ build_wheel() {
     install_studio_platform
     build_studio_wasm
     _build_python_wheel "$(cd build/mujoco_install && pwd)"
+}
+
+
+test_bazel() {
+    echo "Building and testing MuJoCo with Bazel..."
+    bazel test --test_output=errors //...
+
+    echo "Building standalone sample Bzlmod module..."
+    pushd sample > /dev/null
+    bazel build //...
+    popd > /dev/null
 }
 
 

@@ -30,6 +30,7 @@ target_sources(${MUJOCO_FILAMENT_TARGET_NAME}
         core/filament_context.h
         core/filament_platform_factory.cc
         core/filament_platform_factory.h
+        core/imgui_editor.h
         core/imgui_editor.cc
         core/light.cc
         core/light.h
@@ -63,10 +64,10 @@ target_sources(${MUJOCO_FILAMENT_TARGET_NAME}
         support/model_decorations.cc
         support/model_lights.h
         support/model_lights.cc
-        support/model_objects.h
-        support/model_objects.cc
         support/model_renderables.h
         support/model_renderables.cc
+        support/model_resources.h
+        support/model_resources.cc
 )
 
 target_include_directories(${MUJOCO_FILAMENT_TARGET_NAME}

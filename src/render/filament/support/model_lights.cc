@@ -28,7 +28,7 @@
 #include <mujoco/mujoco.h>
 #include "render/filament/support/mjrf_ptr.h"
 #include "render/filament/support/filament_util.h"
-#include "render/filament/support/model_objects.h"
+#include "render/filament/support/model_resources.h"
 
 namespace mujoco {
 
@@ -69,13 +69,13 @@ static UniquePtr<mjrfTexture> CreateFallbackIndirectLightTexture(
       +[](void* user_data) { mju_closeResource((mjResource*)user_data); };
   payload.user_data = resource;
 
-  mjrf_setTextureData(texture.get(), &payload);
+  mjrf_uploadTexture(texture.get(), &payload);
   return texture;
 }
 
-ModelLights::ModelLights(mjrfScene* scene, ModelObjects* model_objects)
-    : scene_(scene), model_objects_(model_objects) {
-  const mjModel* model = model_objects->GetModel();
+ModelLights::ModelLights(mjrfScene* scene, ModelResources* model_resources)
+    : scene_(scene), model_resources_(model_resources) {
+  const mjModel* model = model_resources->GetModel();
   shadowsize_ = model->vis.quality.shadowsize;
   fallback_head_light_intensity_ =
       ReadElement(model, "filament.fallback.head_light_intensity",
@@ -91,22 +91,22 @@ ModelLights::ModelLights(mjrfScene* scene, ModelObjects* model_objects)
 
 ModelLights::~ModelLights() {
   for (auto& iter : lights_) {
-    mjrf_removeLightFromScene(scene_, iter.get());
+    mjrf_removeSceneLight(scene_, iter.get());
   }
   lights_.clear();
   if (fallback_ibl_) {
-    mjrf_removeLightFromScene(scene_, fallback_ibl_.get());
+    mjrf_removeSceneLight(scene_, fallback_ibl_.get());
   }
   fallback_ibl_.reset();
   if (fallback_directional_) {
-    mjrf_removeLightFromScene(scene_, fallback_directional_.get());
+    mjrf_removeSceneLight(scene_, fallback_directional_.get());
   }
   fallback_directional_.reset();
 }
 
 void ModelLights::Prepare() {
-  mjrfContext* ctx = model_objects_->GetContext();
-  const mjModel* model = model_objects_->GetModel();
+  mjrfContext* ctx = model_resources_->GetContext();
+  const mjModel* model = model_resources_->GetModel();
 
   // Default to the shadow map resolution in mjVisual, like the classic
   // renderer. Filament clamps shadow map sizes to 2048.
@@ -126,10 +126,10 @@ void ModelLights::Prepare() {
       mjrfLightParams params;
       mjrf_defaultLightParams(&params);
       params.type = mjLIGHT_IMAGE;
-      params.texture = model_objects_->GetTexture(model->light_texid[i]);
+      params.texture = model_resources_->GetTexture(model->light_texid[i]);
       params.intensity = model->light_intensity[i];
       auto light_obj = CreateLight(ctx, params);
-      mjrf_addLightToScene(scene_, light_obj.get());
+      mjrf_addSceneLight(scene_, light_obj.get());
       lights_.emplace_back(std::move(light_obj));
       has_image_based_light = true;
     } else {
@@ -139,18 +139,18 @@ void ModelLights::Prepare() {
       params.color[1] = model->light_diffuse[1];
       params.color[2] = model->light_diffuse[2];
       params.type = (mjtLightType)model->light_type[i];
-      params.cast_shadows = model->light_castshadow[i];
+      params.cast_shadow = model->light_castshadow[i];
       params.bulb_radius = model->light_bulbradius[i];
       params.range = model->light_range[i];
       params.intensity = model->light_intensity[i];
       params.shadow_map_size = default_shadow_map_size;
       if (params.type == mjLIGHT_SPOT) {
-        params.spot_cone_angle = model->light_cutoff[i];
-        params.spot_softness = model->light_softness[i];
+        params.cutoff = model->light_cutoff[i];
+        params.softness = model->light_softness[i];
       }
 
       auto light_obj = CreateLight(ctx, params);
-      mjrf_addLightToScene(scene_, light_obj.get());
+      mjrf_addSceneLight(scene_, light_obj.get());
       lights_.emplace_back(std::move(light_obj));
     }
   }
@@ -166,10 +166,10 @@ void ModelLights::Prepare() {
     mjrfLightParams params;
     mjrf_defaultLightParams(&params);
     params.type = mjLIGHT_DIRECTIONAL;
-    params.cast_shadows = 0;
+    params.cast_shadow = 0;
     params.intensity = 0.0f;
     fallback_directional_ = CreateLight(ctx, params);
-    mjrf_addLightToScene(scene_, fallback_directional_.get());
+    mjrf_addSceneLight(scene_, fallback_directional_.get());
   }
 
   if (!has_image_based_light && total_light_intensity > 0.0f) {
@@ -180,7 +180,7 @@ void ModelLights::Prepare() {
     params.type = mjLIGHT_IMAGE;
     params.intensity = 10.0f;
     fallback_ibl_ = CreateLight(ctx, params);
-    mjrf_addLightToScene(scene_, fallback_ibl_.get());
+    mjrf_addSceneLight(scene_, fallback_ibl_.get());
   }
 
   // There are no "physical" lights in the scene which means we're likely
@@ -196,7 +196,7 @@ void ModelLights::Prepare() {
     params.texture = fallback_ibl_texture_.get();
     params.intensity = fallback_environment_light_intensity_;
     fallback_ibl_ = CreateLight(ctx, params);
-    mjrf_addLightToScene(scene_, fallback_ibl_.get());
+    mjrf_addSceneLight(scene_, fallback_ibl_.get());
 
     // The headlight is a render request option, not a scene light; publish its
     // intensity for the renderer to pass along.
@@ -213,11 +213,11 @@ void ModelLights::Prepare() {
     }
   }
 
-  mjrf_setSceneSkybox(scene_, model_objects_->GetSkyboxTexture());
+  mjrf_setSceneSkybox(scene_, model_resources_->GetSkyboxTexture());
 }
 
 void ModelLights::UpdateShadowMapSize() {
-  const mjModel* model = model_objects_->GetModel();
+  const mjModel* model = model_resources_->GetModel();
   if (model->vis.quality.shadowsize != shadowsize_) {
     shadowsize_ = model->vis.quality.shadowsize;
     shadow_map_size_ = std::min(shadowsize_, 2048);
@@ -232,7 +232,7 @@ void ModelLights::Update(const mjData* data) {
   if (data == nullptr) {
     return;
   }
-  const mjModel* model = model_objects_->GetModel();
+  const mjModel* model = model_resources_->GetModel();
   float total_light_intensity = 0.0f;
   for (int i = 0; i < model->nlight; ++i) {
     total_light_intensity += model->light_intensity[i];
@@ -242,19 +242,19 @@ void ModelLights::Update(const mjData* data) {
     mjrfLight* light = lights_[i].get();
     const float3 pos = ReadFloat3(data->light_xpos, i);
     const float3 dir = ReadFloat3(data->light_xdir, i);
-    mjrf_setLightTransform(light, pos.v, dir.v);
+    mjrf_setLightPose(light, pos.v, dir.v);
 
     const float3 color = ReadFloat3(model->light_diffuse, i);
-    mjrf_setLightEnabled(light, model->light_active[i]);
+    mjrf_setLightActive(light, model->light_active[i]);
     mjrf_setLightColor(light, color.v);
     mjrf_setLightIntensity(light, total_light_intensity > 0.0f
                                       ? model->light_intensity[i]
                                       : fallback_intensity_);
     mjrf_setLightRange(light, model->light_range[i]);
-    mjrf_setLightCutoffAngle(light, model->light_cutoff[i]);
+    mjrf_setLightCutoff(light, model->light_cutoff[i]);
     mjrf_setLightSoftness(light, model->light_softness[i]);
     mjrf_setLightBulbRadius(light, model->light_bulbradius[i]);
-    mjrf_setLightShadowsEnabled(light, model->light_castshadow[i]);
+    mjrf_setLightCastShadow(light, model->light_castshadow[i]);
   }
 }
 

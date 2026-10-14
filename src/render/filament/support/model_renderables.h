@@ -26,7 +26,7 @@
 #include <mujoco/mjvisualize.h>
 #include <mujoco/mujoco.h>
 #include "render/filament/support/mjrf_ptr.h"
-#include "render/filament/support/model_objects.h"
+#include "render/filament/support/model_resources.h"
 
 namespace mujoco {
 
@@ -34,7 +34,7 @@ namespace mujoco {
 class ModelRenderables {
  public:
   // Populates the mjrScene with the renderables from the model.
-  ModelRenderables(mjrfScene* scene, ModelObjects* model_objects);
+  ModelRenderables(mjrfScene* scene, ModelResources* model_resources);
   ~ModelRenderables();
 
   // Updates the state of the renderables in the scene.
@@ -49,9 +49,9 @@ class ModelRenderables {
   mjrfRenderable* GetRenderable(mjtObj obj_type, int obj_index,
                                 int sub_index = -1);
 
-  // Returns the material for the given object as defined in the mjModel/mjData.
-  mjrfMaterial GetMaterial(mjtObj obj_type, int obj_index,
-                           const mjData* data = nullptr);
+  // Returns the object type and index corresponding to the given
+  // segmentation ID.
+  std::pair<mjtObj, int> GetObjectFromSegmentationId(int segmentation_id) const;
 
   // Marks the given object as "selected", unmarking any previously selected
   // object.
@@ -65,13 +65,6 @@ class ModelRenderables {
   // - switches meshes to convex hull mode if mjVIS_CONVEXHULL is enabled
   void SetOptions(const mjvOption& opt);
 
-  // Returns the object type and index corresponding to the given
-  // segmentation ID.
-  std::pair<mjtObj, int> GetObjectFromSegmentationId(int segmentation_id) const;
-
-  // Returns the current visualization options.
-  const mjvOption& GetOptions() const { return vopts_; }
-
   ModelRenderables(const ModelRenderables&) = delete;
   ModelRenderables& operator=(const ModelRenderables&) = delete;
 
@@ -82,6 +75,7 @@ class ModelRenderables {
   void AddSkinGeoms();
   void AddSliderCrankGeoms();
 
+  void UpdateQuality();
   void UpdateSpatialTendons(const mjData* data, int tendon_id);
   void AppendSegmentToTendon(int tendon_id);
   void RemoveSegmentFromTendon(int tendon_id);
@@ -91,10 +85,16 @@ class ModelRenderables {
 
   void SetVisibility(mjtObj obj_type, int idx, bool visible);
 
+  mjrfMaterial GetMaterial(mjtObj obj_type, int obj_index,
+                           const mjData* data = nullptr);
+
   mjrfScene* scene_;
-  ModelObjects* model_objects_;
+  ModelResources* model_resources_;
 
   mjvOption vopts_;
+  int numstacks_ = 0;
+  int numslices_ = 0;
+  int numquads_ = 0;
   mjtObj selected_obj_type_ = mjOBJ_UNKNOWN;
   int selected_obj_index_ = -1;
 

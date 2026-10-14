@@ -352,8 +352,10 @@ inline constexpr mjMap condata_map[] = {
   {"pos",      mjCONDATA_POS},
   {"normal",   mjCONDATA_NORMAL},
   {"tangent",  mjCONDATA_TANGENT},
+  {"linvel",   mjCONDATA_LINVEL},
+  {"angvel",   mjCONDATA_ANGVEL},
 };
-inline constexpr int condata_sz = 7;
+inline constexpr int condata_sz = 9;
 
 // enum raydata
 inline constexpr mjMap raydata_map[] = {
@@ -392,6 +394,13 @@ inline constexpr mjMap conflict_map[] = {
   {"error",    mjCONFLICT_ERROR},
 };
 inline constexpr int conflict_sz = 3;
+
+// enum scaling
+inline constexpr mjMap scaling_map[] = {
+  {"similar",   mjSCALING_SIMILAR},
+  {"geometry",  mjSCALING_GEOMETRY},
+};
+inline constexpr int scaling_sz = 2;
 
 // enum lrmode
 inline constexpr mjMap lrmode_map[] = {
@@ -455,8 +464,14 @@ inline constexpr mjMap meshbuiltin_map[] = {
   {"supersphere",  mjMESH_BUILTIN_SUPERSPHERE},
   {"wedge",        mjMESH_BUILTIN_WEDGE},
   {"plate",        mjMESH_BUILTIN_PLATE},
+  {"grid",         mjMESH_BUILTIN_GRID},
+  {"box",          mjMESH_BUILTIN_BOX},
+  {"cylinder",     mjMESH_BUILTIN_CYLINDER},
+  {"ellipsoid",    mjMESH_BUILTIN_ELLIPSOID},
+  {"square",       mjMESH_BUILTIN_SQUARE},
+  {"disc",         mjMESH_BUILTIN_DISC},
 };
-inline constexpr int meshbuiltin_sz = 8;
+inline constexpr int meshbuiltin_sz = 14;
 
 // enum fcomp
 inline constexpr mjMap fcomp_map[] = {

@@ -43,7 +43,7 @@ class CompatContext {
 
   // The headlight is a render request option; fill it in from the bridge.
   void SetHeadlight(mjrfRenderRequest* req) const {
-    req->enable_headlight = scene_bridge_->IsHeadlightEnabled();
+    req->headlight = scene_bridge_->IsHeadlightEnabled();
     const float* color = scene_bridge_->GetHeadlightColor();
     req->headlight_color[0] = color[0];
     req->headlight_color[1] = color[1];
@@ -144,8 +144,8 @@ void CompatContext::ReadPixels(mjrRect viewport, unsigned char* rgb,
     req.target = color_target_.get();
     SetHeadlight(&req);
 
-    mjrfReadPixelsRequest read_req;
-    mjrf_defaultReadPixelsRequest(&read_req);
+    mjrfReadRequest read_req;
+    mjrf_defaultReadRequest(&read_req);
     read_req.target = color_target_.get();
     read_req.output = rgb;
     read_req.num_bytes = viewport.width * viewport.height * 3;
@@ -172,8 +172,8 @@ void CompatContext::ReadPixels(mjrRect viewport, unsigned char* rgb,
     req.viewport = viewport;
     req.target = depth_target_.get();
 
-    mjrfReadPixelsRequest read_req;
-    mjrf_defaultReadPixelsRequest(&read_req);
+    mjrfReadRequest read_req;
+    mjrf_defaultReadRequest(&read_req);
     read_req.target = depth_target_.get();
     read_req.output = reinterpret_cast<uint8_t*>(depth);
     read_req.num_bytes = viewport.width * viewport.height * sizeof(float);

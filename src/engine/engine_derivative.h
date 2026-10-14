@@ -73,7 +73,8 @@ size_t mjd_flexInterp_mulBytes(const mjModel* m);
 // precompute unscaled K_rot for all elements into cache (same layout as m->flex_stiffness)
 MJAPI void mjd_flexInterp_cacheKrot(const mjModel* m, mjData* d, mjtNum* K_rot_out);
 
-// compute res += scale * K_bend * vec for standard (non-interp) flex bending
+// compute res += scale * K_bend * vec for standard (non-interp) flex bending, over the convex
+// stencils
 //   scale = s1 + s2 * flex_damping[f]  per flex
 MJAPI void mjd_flexBend_mul(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* vec,
                             mjtNum s1, mjtNum s2);
@@ -86,8 +87,9 @@ MJAPI void mjd_flexStretch_mul(const mjModel* m, mjData* d, mjtNum* res, const m
 
 // assemble the standard-flex implicit stiffness (s1 + s2*damping)*(K_bend + K_stretch) into
 // dof-level CSR; phase 1 (colind==NULL) fills rownnz/rowadr and returns total nnz, phase 2
-// fills colind/val. Interp flexes are assembled iff Krot (mjd_flexInterp_cacheKrot cache) is
-// non-NULL and the centered fast path applies (check mjd_flexInterpAssemblable first).
+// fills colind and, unless val is NULL (structure only), val. Interp flexes are assembled iff
+// Krot (mjd_flexInterp_cacheKrot cache) is non-NULL and the centered fast path applies (check
+// mjd_flexInterpAssemblable first).
 // The flex-contact law, shared by the passive penalty and the IPC contact mode. A pair with
 // normal row `row` and stiffness `scale` costs
 //
@@ -140,7 +142,11 @@ mjtBool mjd_flexPassiveContact_any(const mjModel* m);
 // does this standard flex contribute implicit stiffness under the given term flags?
 mjtBool mjd_flexStiff_active(const mjModel* m, int f, int flg_bend, int flg_stretch);
 
-// compute res += scale * K_bend * vec for standard (non-interp) flex bending
+// is this interpolated flex processed by mjd_flexInterp_mul?
+mjtBool mjd_flexInterp_processed(const mjModel* m, int f);
+
+// compute res += scale * K_bend * vec for standard (non-interp) flex bending, over the convex
+// stencils
 //   scale = s1 + s2 * flex_damping[f]  per flex
 //   for stiffness+damping: s1=h^2, s2=h  =>  scale = h^2 + h*damping
 //   for stiffness only:    s1=h,   s2=0  =>  scale = h

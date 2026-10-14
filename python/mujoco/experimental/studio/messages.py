@@ -13,6 +13,8 @@
 # limitations under the License.
 """Messages and Channels for Studio."""
 
+from collections.abc import Iterator
+import contextlib
 import dataclasses
 import enum
 import inspect
@@ -21,6 +23,17 @@ from typing import Any, Callable, Protocol, get_type_hints, runtime_checkable
 import mujoco
 from mujoco.experimental.studio import sim
 import numpy as np
+
+# The mjtState signature of KeyframeEvent.state, matching MjModel keyframes.
+KEYFRAME_STATE_SIG = (
+    mujoco.mjtState.mjSTATE_TIME.value
+    | mujoco.mjtState.mjSTATE_QPOS.value
+    | mujoco.mjtState.mjSTATE_QVEL.value
+    | mujoco.mjtState.mjSTATE_ACT.value
+    | mujoco.mjtState.mjSTATE_CTRL.value
+    | mujoco.mjtState.mjSTATE_MOCAP_POS.value
+    | mujoco.mjtState.mjSTATE_MOCAP_QUAT.value
+)
 
 # -----------------------------------------------------------------------------
 # Message and Channel types for passing data between the sim and the viewer.
@@ -96,12 +109,60 @@ class EventChannel(Protocol):
     ...
 
 
+# Builds a message for send_if_changes, or None to send nothing.
+MakeMessage = Callable[[], Message | None]
+
+
+@contextlib.contextmanager
+def send_if_changes(
+    send_fn: Callable[[Message], None],
+    *make_messages: MakeMessage,
+    should_send: Callable[[], bool] | None = None,
+) -> Iterator[None]:
+  """Sends the messages that change during the ``with`` block.
+
+  Calls each ``make_message()`` on entering and on leaving the block and sends
+  those that differ. Pass lambdas so their expressions are re-read on each
+  call, e.g. ``lambda: messages.ThreadPoolEvent(nthread=ux_state.nthread)``.
+
+  Args:
+    send_fn: Called with each message that changed during the block.
+    *make_messages: Callables building the messages to compare; a callable may
+      return None to send nothing.
+    should_send: Optional predicate evaluated after the block; when it returns
+      False nothing is sent (e.g. because the owner stopped running or its model
+      was replaced during the block).
+
+  Yields:
+    Nothing; the block runs between the two rounds of ``make_message()``
+    calls.
+  """
+  before = [fn() for fn in make_messages]
+  yield
+  if should_send is not None and not should_send():
+    return
+  for fn, prev in zip(make_messages, before):
+    after = fn()
+    if after is not None and after != prev:
+      send_fn(after)
+
+
 # -----------------------------------------------------------------------------
 # Concrete Event and Snapshot types.
 # -----------------------------------------------------------------------------
 
 
-@dataclasses.dataclass(frozen=True)
+def _get_state(
+    model: mujoco.MjModel, data: mujoco.MjData, state_sig: int
+) -> np.ndarray:
+  """Returns the selected components of ``data`` as a flat state array."""
+  size = mujoco.mj_stateSize(model, state_sig)
+  state = np.empty(size, np.float64)
+  mujoco.mj_getState(model, data, state, state_sig)
+  return state
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
 class StateSnapshot(Snapshot):
   """A snapshot message that transports a MuJoCo state.
 
@@ -113,19 +174,33 @@ class StateSnapshot(Snapshot):
   state: np.ndarray
   state_sig: int
 
+  def __eq__(self, other: object) -> bool:
+    if not isinstance(other, StateSnapshot):
+      return NotImplemented
+    return self.state_sig == other.state_sig and np.array_equal(
+        self.state, other.state
+    )
 
-@dataclasses.dataclass(frozen=True)
-class PerturbSnapshot(StateSnapshot):
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class PerturbSnapshot(Snapshot):
   """Carries perturbation forces from the viewer to the simulation.
 
-  A distinct StateSnapshot subclass so that snapshot channels track its
-  latest-wins slot independently of other state snapshots, and sim-side
-  handlers can subscribe specifically to perturbation forces (applying
-  mj_setState without running mj_forward).
+  Sim-side handlers apply ``mj_setState`` without running ``mj_forward``.
   """
 
+  state: np.ndarray
+  state_sig: int
 
-@dataclasses.dataclass(frozen=True)
+  def __eq__(self, other: object) -> bool:
+    if not isinstance(other, PerturbSnapshot):
+      return NotImplemented
+    return self.state_sig == other.state_sig and np.array_equal(
+        self.state, other.state
+    )
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
 class StateEvent(Event):
   """A reliable event that transports a MuJoCo state.
 
@@ -138,6 +213,25 @@ class StateEvent(Event):
   state: np.ndarray
   state_sig: int
 
+  @classmethod
+  def from_data(
+      cls,
+      model: mujoco.MjModel,
+      data: mujoco.MjData,
+      state_sig: int,
+  ) -> 'StateEvent | None':
+    """Packs the selected components of ``data`` into a ``StateEvent``."""
+    if not state_sig:
+      return None
+    return cls(state=_get_state(model, data, state_sig), state_sig=state_sig)
+
+  def __eq__(self, other: object) -> bool:
+    if not isinstance(other, StateEvent):
+      return NotImplemented
+    return self.state_sig == other.state_sig and np.array_equal(
+        self.state, other.state
+    )
+
 
 @dataclasses.dataclass(frozen=True)
 class ModelEvent(Event):
@@ -145,10 +239,30 @@ class ModelEvent(Event):
 
   Attributes:
     model: The compiled MuJoCo model.
-    path: Optional file path the model was loaded from.
+    path: The file that produced ``model`` (e.g. via ``LoadModelEvent``), or
+      empty for an in-memory model. Reloading the same ``path`` preserves
+      viewer UI state (such as camera and pause); a different ``path`` (or
+      empty) resets it.
   """
 
   model: mujoco.MjModel
+  path: str = ''
+
+
+@dataclasses.dataclass(frozen=True)
+class LoadModelEvent(Event):
+  """Asks ``ViewerHandle`` to load a model file and publish a ``ModelEvent``.
+
+  Sent from viewer to sim or dispatched on the sim thread. Without a ``path``
+  this is **Reload**, which re-creates the current model from its ``path``.
+  With a ``path`` it loads that model file (e.g. provided on startup or
+  drag-dropped in the viewer) and makes it the current model.
+
+  Attributes:
+    path: The model file to load, or empty to reload the current model; see
+      ``ModelEvent.path``.
+  """
+
   path: str = ''
 
 
@@ -165,7 +279,7 @@ class PostModelEvent(Event):
   Attributes:
     model: The newly loaded model (sim-side MjModel or viewer's deep copy).
     data: The newly created and forwarded MjData for the model.
-    path: Optional file path the model was loaded from.
+    path: The file that produced ``model``, or empty; see ``ModelEvent.path``.
   """
 
   model: mujoco.MjModel
@@ -180,10 +294,11 @@ class SingleStepEvent(Event):
 
 @dataclasses.dataclass(frozen=True)
 class RequestPauseEvent(Event):
-  """Sent to the sim to request a pause state change.
+  """Requests a pause state change on the sim or the viewer.
 
-  Any physics plugin should handle this event. This keeps the pause mechanism
-  decoupled from a specific physics implementation.
+  Dispatched on the sim to ask the active physics plugin to pause or unpause,
+  or sent from the sim to the viewer to update the viewer's pause state
+  without constructing a full ``StepControlSnapshot``.
 
   Attributes:
     pause_state: The desired pause state.
@@ -202,6 +317,45 @@ class ResetEvent(Event):
   """
 
   key: int | None = None
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class KeyframeEvent(Event):
+  """Carries a keyframe saved in the viewer to the simulation model.
+
+  Attributes:
+    key: Index of the keyframe to overwrite.
+    state: The keyframe state, which must have signature KEYFRAME_STATE_SIG.
+  """
+
+  key: int
+  state: np.ndarray
+
+  @classmethod
+  def from_model(
+      cls, model: mujoco.MjModel, key: int
+  ) -> 'KeyframeEvent | None':
+    """Packs keyframe ``key`` of ``model`` into a ``KeyframeEvent``."""
+    if not 0 <= key < model.nkey:
+      return None
+    data = mujoco.MjData(model)
+    mujoco.mj_resetDataKeyframe(model, data, key)
+    return cls(
+        key=key,
+        state=_get_state(model, data, KEYFRAME_STATE_SIG),
+    )
+
+  def __eq__(self, other: object) -> bool:
+    if not isinstance(other, KeyframeEvent):
+      return NotImplemented
+    return self.key == other.key and np.array_equal(self.state, other.state)
+
+
+@dataclasses.dataclass(frozen=True)
+class ThreadPoolEvent(Event):
+  """An event requesting to resize the simulation's MuJoCo thread pool."""
+
+  nthread: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -270,24 +424,57 @@ class BuildGuiEvent(Event):
 
 @dataclasses.dataclass(frozen=True)
 class MjOptionSnapshot(Snapshot):
-  """A snapshot sending mjOption state from viewer to sim each frame."""
+  """Bidirectional snapshot carrying mjOption state between sim and viewer."""
 
   opt: mujoco.MjOption
 
 
 @dataclasses.dataclass(frozen=True)
 class StepControlSnapshot(Snapshot):
-  """A snapshot sending step control state from viewer to sim each frame."""
+  """Bidirectional snapshot carrying step control state between sim and viewer."""
 
   pause_state: sim.PauseState
   speed: float
   noise_scale: float
   noise_rate: float
 
+  @classmethod
+  def from_step_control(
+      cls, step_control: sim.StepControl
+  ) -> 'StepControlSnapshot':
+    """Packs the settings of ``step_control`` into a snapshot."""
+    noise_scale, noise_rate = step_control.get_noise_parameters()
+    return cls(
+        pause_state=step_control.get_pause_state(),
+        speed=step_control.get_speed(),
+        noise_scale=noise_scale,
+        noise_rate=noise_rate,
+    )
+
 
 @dataclasses.dataclass(frozen=True)
 class ExitEvent(Event):
-  """An event requesting to exit."""
+  """An event requesting to exit.
+
+  Attributes:
+    reason: A one-line summary of the exception that ended the sending side
+      (see describe_exception), or empty for a normal exit.
+  """
+
+  reason: str = ''
+
+
+def describe_exception(ex: BaseException | None) -> str:
+  """Formats an error exception as a single line.
+
+  For example, `"ValueError: Invalid actuator id 'wrist_roll'"`.
+  Returns `''` for `None` and for non-error exits such as `KeyboardInterrupt`
+  and `SystemExit`.
+  """
+  if not isinstance(ex, Exception):
+    return ''
+  text = f'{type(ex).__name__}: {ex}' if str(ex) else type(ex).__name__
+  return ' '.join(text.split())
 
 
 # ---------------------------------------------------------------------------

@@ -29,13 +29,13 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <absl/base/attributes.h>
-#include <absl/base/const_init.h>
-#include <absl/base/thread_annotations.h>
-#include <absl/strings/match.h>
-#include <absl/strings/str_cat.h>
-#include <absl/strings/str_join.h>
-#include <absl/synchronization/mutex.h>
+#include "absl/base/attributes.h"
+#include "absl/base/const_init.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
+#include "absl/synchronization/mutex.h"
 #include <mujoco/mjmodel.h>
 #include <mujoco/mujoco.h>
 #include "src/xml/xml_global.h"
@@ -172,7 +172,7 @@ std::string GetRunfilesPrefix(std::string_view subpath) {
 }  // namespace
 
 const std::string GetTestDataFilePath(std::string_view path) {  // NOLINT
-  std::string prefix = GetRunfilesPrefix("third_party/mujoco/test/");
+  std::string prefix = GetRunfilesPrefix("test/");
   if (prefix.empty()) {
     return std::string(path);
   }
@@ -180,7 +180,7 @@ const std::string GetTestDataFilePath(std::string_view path) {  // NOLINT
 }
 
 const std::string GetModelPath(std::string_view path) {  // NOLINT
-  std::string prefix = GetRunfilesPrefix("third_party/mujoco/model/");
+  std::string prefix = GetRunfilesPrefix("model/");
   if (prefix.empty()) {
     return absl::StrCat("../model/", path);
   }
@@ -328,12 +328,12 @@ std::vector<mjtNum> GetCtrlNoise(const mjModel* m, int nsteps,
 MockFilesystem::MockFilesystem(std::string unit_test_name) {
   prefix_ = absl::StrCat("MjMock.", unit_test_name);
   dir_ = "/";
-  if (mjp_getResourceProvider(prefix_.c_str()) != nullptr) {
+  if (mjp_findProvider(prefix_.c_str()) != nullptr) {
     return;
   }
 
   mjpResourceProvider resourceProvider;
-  mjp_defaultResourceProvider(&resourceProvider);
+  mjp_defaultProvider(&resourceProvider);
   resourceProvider.prefix = prefix_.c_str();
   resourceProvider.data = (void*)this;
 
@@ -350,7 +350,7 @@ MockFilesystem::MockFilesystem(std::string unit_test_name) {
   };
 
   resourceProvider.close = +[](mjResource* resource) {};
-  mjp_registerResourceProvider(&resourceProvider);
+  mjp_registerProvider(&resourceProvider);
 }
 
 bool MockFilesystem::AddFile(std::string filename, const unsigned char* data,

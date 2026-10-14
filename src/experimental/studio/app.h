@@ -15,6 +15,7 @@
 #ifndef MUJOCO_SRC_EXPERIMENTAL_STUDIO_APP_H_
 #define MUJOCO_SRC_EXPERIMENTAL_STUDIO_APP_H_
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -165,7 +166,8 @@ class App {
     bool picture_in_picture = false;
     bool options_panel = true;
     bool toolbar = false;
-    bool status_bar = false;
+    bool status_bar = true;
+    bool console = false;
     bool inspector_panel = true;
     bool editor_panel = false;
     bool full_screen = false;
@@ -238,6 +240,7 @@ class App {
   void SwitchGraphicsMode(int width, int height, GraphicsMode mode);
 
   void SetLoadError(std::string error);
+  void RecordLoadError(std::string_view error);
   void UpdateFilePaths(const std::string& resolved_path);
 
   void ResetPhysics();
@@ -296,8 +299,6 @@ class App {
   ModelKind model_kind_ = kEmptyModel;
   std::string model_path_;
   std::string load_error_;
-  std::string step_error_;
-  std::string edit_error_;
 
   // Cached previous state.
   std::vector<std::byte> last_buffer_;
@@ -325,6 +326,7 @@ class App {
   // pending until their window is first created.
   KeyValues window_state_storage_;
 
+  mjVFS vfs_;
   mjvCamera camera_;
   mjvPerturb perturb_;
   mjvOption vis_options_;
@@ -333,6 +335,7 @@ class App {
   std::vector<std::string> search_paths_;
   std::vector<std::byte> pixels_;
 
+  std::array<mjTimerStat, mjNTIMER> timer_prev_ = {};
   UiState ui_;
   UiTempState tmp_;
 };

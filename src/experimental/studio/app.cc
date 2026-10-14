@@ -51,6 +51,7 @@
 #include "experimental/studio/hal/window.h"
 #include "experimental/studio/sim/model_holder.h"
 #include "experimental/studio/sim/step_control.h"
+#include "experimental/studio/ux/console.h"
 #include "experimental/studio/ux/file_dialog.h"
 #include "experimental/studio/ux/gui.h"
 #include "experimental/studio/ux/gui_helpers.h"
@@ -151,6 +152,7 @@ static constexpr const char* ICON_REDO_SPEC = ICON_FA_REPEAT;
 App::App(Config config)
     : app_title_(std::move(config.title)),
       ini_path_(std::move(config.ini_path)) {
+  Console::Init();
   SwitchGraphicsMode(config.width, config.height, config.gfx_mode);
 
   if (config.initial_theme.has_value()) {
@@ -158,6 +160,7 @@ App::App(Config config)
   }
 
   ImPlot::CreateContext();
+  mj_defaultVFS(&vfs_);
   mjv_defaultPerturb(&perturb_);
   mjv_defaultCamera(&camera_);
   mjv_defaultOption(&vis_options_);
@@ -191,6 +194,8 @@ App::~App() {
   // and outlives this body.
   SaveSettings();
   mjv_freeScene(&plugin_scene_);
+  model_holder_.reset();
+  mj_deleteVFS(&vfs_);
 }
 
 #ifndef __EMSCRIPTEN__
@@ -366,9 +371,14 @@ void App::UpdateFilePaths(const std::string& resolved_path) {
 
 void App::SetLoadError(std::string error) {
   BuildModel(EmptyModel{});
-  load_error_ = std::move(error);
-  step_error_ = "";
-  edit_error_ = "";
+  RecordLoadError(error);
+}
+
+void App::RecordLoadError(std::string_view error) {
+  load_error_ = error;
+  if (!load_error_.empty()) {
+    Console::Get().Log(mjLOG_ERROR, load_error_);
+  }
 }
 
 void App::ResetPhysics() {
@@ -381,8 +391,8 @@ void App::ResetPhysics() {
   }
   ResetHistory(sim_history_, timeline_, has_model() ? model() : nullptr,
                has_data() ? data() : nullptr);
-  step_error_ = "";
-  edit_error_ = "";
+  timer_prev_ = {};
+  profiler_.ResetTimers();
 }
 
 void App::UpdatePhysics() {
@@ -414,30 +424,18 @@ void App::UpdatePhysics() {
       mjv_applyPerturbPose(model(), data(), &perturb_, 1);
     }
 
-    if (has_data()) {
-      for (int i = 0; i < mjNTIMER; i++) {
-        data()->timer[i].duration = 0;
-        data()->timer[i].number = 0;
-      }
-    }
-
     StepControl::Status status =
         step_control_.Advance(model(), data());
     if (status == StepControl::Status::kPaused) {
       profiler_.Update(model(), data());
     } else if (status == StepControl::Status::kOk) {
       stepped = true;
-      // If we are adding to the history we didn't have a divergence error
-      step_error_ = "";
     } else if (status == StepControl::Status::kAutoReset) {
       ResetPhysics();
     } else if (status == StepControl::Status::kDiverged) {
+      // The engine reported the divergence with mju_warning, which adds it to
+      // the Console.
       stepped = true;
-      for (mjtWarning w : StepControl::kDivergedWarnings) {
-        if (data()->warning[w].number > 0) {
-          step_error_ = mju_warningText(w, data()->warning[w].lastinfo);
-        }
-      }
     }
   }
 
@@ -516,13 +514,6 @@ bool App::Update() {
 
   ProcessPendingLoads();
 
-  if (has_data()) {
-    for (int i = 0; i < mjNTIMER; i++) {
-      data()->timer[i].duration = 0;
-      data()->timer[i].number = 0;
-    }
-  }
-
   PauseState current_pause = step_control_.GetPauseState();
   if (current_pause != last_pause_state_) {
     load_error_ = "";
@@ -567,14 +558,14 @@ void App::BuildModel(const BuildModelInfo& info) {
   if (std::holds_alternative<RecompileFromSpec>(info)) {
     const KeyframeSelection saved_key =
         CaptureKeyframeSelection(/*is_reload=*/true);
-    auto tmp_holder = spec_editor_.Compile();
+    auto tmp_holder = spec_editor_.Compile(&vfs_);
     if (tmp_holder->ok()) {
       preserve_camera_on_load_ = true;
       model_holder_ = std::move(tmp_holder);
       RestoreKeyframeSelection(saved_key);
       OnModelLoaded("", model_kind_);
     } else {
-      load_error_ = std::move(tmp_holder->error());
+      RecordLoadError(tmp_holder->error());
     }
   } else if (std::holds_alternative<RecompileModel>(info)) {
     const KeyframeSelection saved_key =
@@ -589,8 +580,13 @@ void App::BuildModel(const BuildModelInfo& info) {
     renderer_->Init(model());
     ResetHistory(sim_history_, timeline_, has_model() ? model() : nullptr,
                   has_data() ? data() : nullptr);
+    timer_prev_ = {};
+    profiler_.ResetTimers();
   } else if (std::holds_alternative<EmptyModel>(info)) {
-    model_holder_ = ModelHolder::FromSpec(mj_makeSpec());
+    model_holder_.reset();
+    mj_deleteVFS(&vfs_);
+    mj_defaultVFS(&vfs_);
+    model_holder_ = ModelHolder::FromSpec(mj_makeSpec(), &vfs_);
     tmp_.key_idx = -1;
     last_buffer_.clear();
     last_content_type_.clear();
@@ -601,7 +597,10 @@ void App::BuildModel(const BuildModelInfo& info) {
     const std::string resolved_file = ResolveFile(load.filepath, search_paths_);
     const KeyframeSelection saved_key =
         CaptureKeyframeSelection(preserve_camera_on_load_);
-    model_holder_ = ModelHolder::FromFile(resolved_file);
+    model_holder_.reset();
+    mj_deleteVFS(&vfs_);
+    mj_defaultVFS(&vfs_);
+    model_holder_ = ModelHolder::FromFile(resolved_file, &vfs_);
     if (model_holder_->ok()) {
       last_buffer_.clear();
       last_content_type_.clear();
@@ -630,8 +629,11 @@ void App::BuildModel(const BuildModelInfo& info) {
     auto& load = std::get<BufferModel>(info);
     const KeyframeSelection saved_key =
         CaptureKeyframeSelection(preserve_camera_on_load_);
-    model_holder_ =
-        ModelHolder::FromBuffer(load.buffer, load.content_type, load.name);
+    model_holder_.reset();
+    mj_deleteVFS(&vfs_);
+    mj_defaultVFS(&vfs_);
+    model_holder_ = ModelHolder::FromBuffer(load.buffer, load.content_type,
+                                            load.name, &vfs_);
     if (model_holder_->ok()) {
       last_buffer_.assign(load.buffer.begin(), load.buffer.end());
       last_content_type_ = std::string(load.content_type);
@@ -650,8 +652,9 @@ void App::BuildModel(const BuildModelInfo& info) {
 
 void App::OnModelLoaded(std::string_view filename, ModelKind model_kind) {
   load_error_ = "";
-  step_error_ = "";
-  edit_error_ = "";
+
+  timer_prev_ = {};
+  profiler_.Clear();
 
   if (!model_holder_->warning().empty()) {
     load_error_ = model_holder_->warning();
@@ -1302,6 +1305,16 @@ void App::BuildGui() {
     ImGui::End();
   }
 
+  if (tmp_.console) {
+    if (ImGui::Begin("Console", &tmp_.console)) {
+      Console::Get().WindowGui();
+    } else if (ImGui::IsWindowCollapsed()) {
+      ImGui::SetWindowCollapsed(false);
+      tmp_.console = false;
+    }
+    ImGui::End();
+  }
+
   if (tmp_.picture_in_picture) {
     if (ImGui::Begin("Picture-in-Picture", &tmp_.picture_in_picture)) {
       PipGui(model(), data(), window_->GetAspectRatio(),
@@ -1364,9 +1377,12 @@ void App::BuildGui() {
                                workspace_rect, 180.0f * scale)) {
       InfoGui(model(), data(),
               step_control_.GetPauseState() == PauseState::kNormalPaused, fps_,
-              renderer_->GetGpuFrameMs());
+              renderer_->GetGpuFrameMs(), timer_prev_.data());
     }
     EndOverlay();
+  }
+  if (has_data()) {
+    std::copy_n(data()->timer, mjNTIMER, timer_prev_.begin());
   }
 
   // pause overlay
@@ -1494,6 +1510,8 @@ void App::ModelOptionsGui() {
               mjv_defaultFreeCamera(model(), &camera_);
             }
           },
+      .save_keyframe =
+          [this] { mj_setKeyframe(model(), data(), tmp_.key_idx); },
   };
   SimulationGui(sim_ctx);
   ApplyTimelineScrub();
@@ -2071,7 +2089,9 @@ void App::ToolBarGui() {
 }
 
 void App::StatusBarGui() {
-  if (ImGui::BeginTable("##StatusBarTable", 1)) {
+  if (ImGui::BeginTable("##StatusBarTable", 2)) {
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableNextColumn();
 
     if (!has_model()) {
@@ -2082,13 +2102,8 @@ void App::StatusBarGui() {
       ImGui::Text("Running");
     }
 
-    if (!step_error_.empty()) {
-      ImGui::SameLine();
-      ImGui::Text(" | Step Error: %s", step_error_.c_str());
-    } else if (!edit_error_.empty()) {
-      ImGui::SameLine();
-      ImGui::Text(" | Edit Error: %s", edit_error_.c_str());
-    }
+    ImGui::TableNextColumn();
+    Console::Get().StatusGui(&tmp_.console);
 
     ImGui::EndTable();
   }
@@ -2235,6 +2250,9 @@ void App::MainMenuGui() {
         } else {
           tmp_.profiler = false;
         }
+      }
+      if (ImGui::MenuItem("Console", nullptr, tmp_.console)) {
+        ToggleWindow(tmp_.console);
       }
       ImGui::Separator();
 

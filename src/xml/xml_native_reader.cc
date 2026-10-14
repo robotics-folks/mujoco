@@ -1501,15 +1501,19 @@ void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, const mjVFS* vfs) {
   } else {
     fcomp.file = "";
   }
+  ReadAttrTxt(elem, "mesh", fcomp.mesh);
+  if (!fcomp.mesh.empty() && !fcomp.file.empty()) {
+    throw mjXError(elem, "both 'file' and 'mesh' specified");
+  }
+  if (!fcomp.mesh.empty() && !elem->Attribute("type")) { fcomp.type = mjFCOMPTYPE_MESH; }
   if (ReadAttrTxt(elem, "material", material)) { mjs_setString(dflex.material, material.c_str()); }
   ReadAttr(elem, "rgba", 4, dflex.rgba, text);
   if (MapValue(elem, "flatskin", &n, bool_map, 2)) { dflex.flatskin = (n == 1); }
   if (ReadAttrInt(elem, "dim", &dflex.dim)) { fcomp.has_dim = true; }
   ReadAttr(elem, "radius", 1, &dflex.radius, text);
   ReadAttrInt(elem, "group", &dflex.group);
-  if (!ReadAttr(elem, "origin", 3, fcomp.origin, text) &&
-      fcomp.type == mjFCOMPTYPE_MESH &&
-      dflex.dim == 3) {
+  fcomp.has_origin = ReadAttr(elem, "origin", 3, fcomp.origin, text);
+  if (!fcomp.has_origin && fcomp.type == mjFCOMPTYPE_MESH && fcomp.mesh.empty() && dflex.dim == 3) {
     throw mjXError(elem, "origin must be specified for mesh flexcomps if dim=3");
   }
 
@@ -2317,6 +2321,14 @@ void mjXReader::Body(XMLElement* section, mjsBody* body, mjsFrame* frame, const 
       ReadAttr(elem, "pos", 3, pframe->pos, text);
       ReadQuat(elem, "quat", pframe->quat, text);
       ReadAlternative(elem, pframe->alt);
+      int nscale = ReadAttr(elem, "scale", 3, pframe->scale, text, false, false);
+      if (nscale == 1) {
+        pframe->scale[1] = pframe->scale[2] = pframe->scale[0];
+      } else if (nscale == 2) {
+        throw mjXError(elem, "attribute 'scale' must have 1 or 3 values");
+      }
+      MapValue(elem, "scaling", &pframe->scaling, scaling_map, scaling_sz);
+      ReadAttr(elem, "massscale", 1, &pframe->massscale, text);
 
       stack.push_back({FirstChildElement(elem), body, pframe});
     }
