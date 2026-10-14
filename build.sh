@@ -57,6 +57,30 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [ "$SHOW_HELP" == "true" ]; then
+    cat <<EOF
+
+Build MuJoCo engine and any bindings requested
+Usage: ./build.sh [OPTIONS]
+
+Options:
+    -h, --help          Display this help message
+    --configure         Configure the build process (cmake -S . -B build ...)
+    --build             Builds the engine and any other targets (cmake -b build ...)
+    --install           Install the engine artifacts into an install directory (cmake --install build)
+    --debug             Configure the build in Debug mode
+    --rel-with-deb      Configure the build in Release with Debug Info (RelWithDebInfo)
+    --filament          Build with Filament support for the new renderer
+    --vulkan            Build with Vulkan support for Filament
+    --studio            Build Studio app (new version of Simulate)
+    --samples           Build the samples that come with the engine
+    --python            Build the Python bindings
+    --njobs             Number of parallel jobs used for the build process
+    --fresh             Use this to clean the Cmake cache and re-configure without rm -f the build dir
+EOF
+    exit 0
+fi
+
 if [[ "${build_filament}" == "ON" ]]; then
     build_simulate=OFF
 fi
