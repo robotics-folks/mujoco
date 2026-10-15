@@ -1,0 +1,8 @@
+ipython
+ipdb
+pillow
+ruff
+ty
+pybind11-stubgen
+tyro
+rich

@@ -1,0 +1,9 @@
+[environment]
+extra-paths = [
+    "./typings/",
+    "./.venv/lib/python3.11/site-packages/mujoco/experimental/studio/"
+]
+[src]
+include = [
+    "./.venv/lib/python3.11/site-packages/mujoco/experimental/studio/",
+]
