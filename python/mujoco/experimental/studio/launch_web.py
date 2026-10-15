@@ -16,12 +16,14 @@
 Launches the web viewer without depending on desktop windowing or Filament.
 """
 
+from collections.abc import Iterable
 from typing import Any
 
 import mujoco
 from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import launch_thread
 from mujoco.experimental.studio import messages
+from mujoco.experimental.studio import plugin
 from mujoco.experimental.studio import viewer_handle
 from mujoco.experimental.studio import viewer_protocol
 
@@ -51,8 +53,7 @@ def run_web_viewer(
 def launch(
     config: viewer_protocol.ViewerConfig | None = None,
     *,
-    viewer_plugins: list[Any] | None = None,
-    sim_plugins: list[Any] | None = None,
+    plugins: Iterable[plugin.Plugin] | None = None,
 ) -> viewer_handle.ViewerHandle:
   """Launches the WebViewer in a daemon thread without blocking.
 
@@ -61,14 +62,14 @@ def launch(
 
   Args:
     config: Optional ViewerConfig (defaults to ViewerConfig(gfx='web')).
-    viewer_plugins: Optional list of viewer-side plugin instances.
-    sim_plugins: Optional list of sim-side plugin instances.
+    plugins: Optional viewer and sim plugins.
 
   Returns:
     A ViewerHandle for interacting with the viewer.
   """
   if config is None:
     config = viewer_protocol.ViewerConfig(gfx='web')
+  viewer_plugins, sim_plugins = plugin.split_plugins(plugins)
 
   def target(endpoint: endpoints.ViewerEndpoint) -> None:
     run_web_viewer(
@@ -86,29 +87,23 @@ def run(
     model: mujoco.MjModel | None = None,
     data: mujoco.MjData | None = None,
     model_path: str | None = None,
-    viewer_plugins: list[Any] | None = None,
-    sim_plugins: list[Any] | None = None,
+    plugins: Iterable[plugin.Plugin] | None = None,
 ) -> None:
   """Launches the WebViewer and runs the blocking simulation sync loop.
 
   Args:
     config: Optional ViewerConfig (defaults to ViewerConfig(gfx='web')).
-    model_path: Model file to load.
     model: In-memory model to publish instead.
     data: The data for ``model``; a fresh one is created when None.
-    viewer_plugins: Optional list of viewer-side plugin instances.
-    sim_plugins: Optional list of sim-side plugin instances.
+    model_path: Model file to load.
+    plugins: Optional viewer and sim plugins.
 
   Raises:
     ValueError: If both ``model`` and ``model_path`` are given.
   """
   if model is not None and model_path:
     raise ValueError('Pass either model_path or model, not both.')
-  with launch(
-      config,
-      viewer_plugins=viewer_plugins,
-      sim_plugins=sim_plugins,
-  ) as handle:
+  with launch(config, plugins=plugins) as handle:
     if model is not None:
       handle.set_model(model, data=data)
     elif model_path:

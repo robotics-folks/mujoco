@@ -17,10 +17,11 @@ Launches the viewer in a daemon thread and returns a ``ViewerHandle``
 that the calling thread uses to push simulation state into the viewer.
 """
 
-from typing import Any
+from collections.abc import Iterable
 
 import mujoco
 from mujoco.experimental.studio import messages
+from mujoco.experimental.studio import plugin
 from mujoco.experimental.studio import viewer_handle
 from mujoco.experimental.studio import viewer_protocol
 
@@ -28,8 +29,7 @@ from mujoco.experimental.studio import viewer_protocol
 def launch(
     config: viewer_protocol.ViewerConfig,
     *,
-    viewer_plugins: list[Any] | None = None,
-    sim_plugins: list[Any] | None = None,
+    plugins: Iterable[plugin.Plugin] | None = None,
 ) -> viewer_handle.ViewerHandle:
   """Launches the viewer in a daemon thread without blocking.
 
@@ -39,11 +39,8 @@ def launch(
 
   Args:
     config: Viewer window configuration.
-    viewer_plugins: Optional list of viewer-side plugin instances, which are
-      classes with methods decorated with ``@handler``.
-    sim_plugins: Optional list of sim-side plugin instances, which are classes
-      with methods decorated with ``@handler``. Include a plugin that handles
-      ``StepEvent`` (e.g. ``step_control.StepControl()``) to advance the
+    plugins: Optional viewer and sim plugins. Include a ``SimPlugin`` that
+      handles ``StepEvent`` (e.g. ``step_control.StepControl()``) to advance the
       physics and, at minimum, pace each ``sync`` call.
 
   Returns:
@@ -52,18 +49,10 @@ def launch(
   if config.gfx in ('web', 'webgl'):
     from mujoco.experimental.studio import launch_web  # pylint: disable=g-import-not-at-top
 
-    return launch_web.launch(
-        config,
-        viewer_plugins=viewer_plugins,
-        sim_plugins=sim_plugins,
-    )
+    return launch_web.launch(config, plugins=plugins)
   from mujoco.experimental.studio import launch_native  # pylint: disable=g-import-not-at-top
 
-  return launch_native.launch(
-      config,
-      viewer_plugins=viewer_plugins,
-      sim_plugins=sim_plugins,
-  )
+  return launch_native.launch(config, plugins=plugins)
 
 
 def run(
@@ -72,29 +61,23 @@ def run(
     model: mujoco.MjModel | None = None,
     data: mujoco.MjData | None = None,
     model_path: str | None = None,
-    viewer_plugins: list[Any] | None = None,
-    sim_plugins: list[Any] | None = None,
+    plugins: Iterable[plugin.Plugin] | None = None,
 ) -> None:
   """Launches the viewer and runs the blocking simulation sync loop.
 
   Args:
     config: Viewer window configuration.
-    model_path: Model file to load.
     model: In-memory model to publish instead.
     data: The data for ``model``; a fresh one is created when None.
-    viewer_plugins: Optional list of viewer-side plugin instances.
-    sim_plugins: Optional list of sim-side plugin instances.
+    model_path: Model file to load.
+    plugins: Optional viewer and sim plugins.
 
   Raises:
     ValueError: If both ``model`` and ``model_path`` are given.
   """
   if model is not None and model_path:
     raise ValueError('Pass either model_path or model, not both.')
-  with launch(
-      config,
-      viewer_plugins=viewer_plugins,
-      sim_plugins=sim_plugins,
-  ) as handle:
+  with launch(config, plugins=plugins) as handle:
     if model is not None:
       handle.set_model(model, data=data)
     elif model_path:
