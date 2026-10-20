@@ -1380,7 +1380,7 @@ class SpecsTest(absltest.TestCase):
 
   def test_texture_by_reference(self):
     # a file texture under the passthrough policy has no pixels in the model
-    png = os.path.join(absltest.get_default_test_tmpdir(), 'tiny.png')
+    png = os.path.join(self.create_tempdir().full_path, 'tiny.png')
     with open(png, 'wb') as f:
       f.write(_TINY_PNG)
     xml = textwrap.dedent(f"""\
@@ -1407,7 +1407,8 @@ class SpecsTest(absltest.TestCase):
     self.assertEqual(byref.colorspace[0], mujoco.mjtColorSpace.mjCOLORSPACE_AUTO)
     self.assertEqual(byref.contenttypeadr[0], -1)
     path = model.paths[byref.pathadr[0] :].split(b'\0')[0]
-    self.assertEqual(path, png.encode())
+    # mujoco joins with '/', os.path with the platform separator
+    self.assertEqual(os.path.normpath(path.decode()), os.path.normpath(png))
     kept = model.texture('kept')
     self.assertGreaterEqual(kept.adr[0], 0)
     self.assertEqual(kept.data.shape, (2, 3, 3))
