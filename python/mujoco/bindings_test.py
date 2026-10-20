@@ -23,6 +23,7 @@ import pickle
 import sys
 import weakref
 
+from absl import flags
 from absl.testing import absltest
 from absl.testing import parameterized
 import mujoco
@@ -138,6 +139,9 @@ class MuJoCoBindingsTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
+    # Mark flags as parsed to avoid pytest errors about unparsed flags.
+    # This is needed for `create_tempdir()` calls below.
+    flags.FLAGS.mark_as_parsed()
     self.model: mujoco.MjModel = mujoco.MjModel.from_xml_string(TEST_XML)
     self.data = mujoco.MjData(self.model)
 
@@ -2237,7 +2241,7 @@ Euler integrator, semi-implicit in velocity.
 
     # a by-reference texture: the decoded file, with the colorspace resolved;
     # the array outlives the model
-    png = os.path.join(self.create_tempdir('test_mj_loadTexture'), 'tiny.png')
+    png = os.path.join(self.create_tempdir().full_path, 'load_texture.png')
     with open(png, 'wb') as f:
       f.write(_TINY_PNG)
     xml = f"""
@@ -2266,11 +2270,11 @@ Euler integrator, semi-implicit in velocity.
     with self.assertRaisesRegex(ValueError, 'out of range'):
       mujoco.mj_loadTexture(model, 2)
     os.remove(png)
-    with self.assertRaisesRegex(ValueError, 'tiny.png'):
+    with self.assertRaisesRegex(ValueError, 'load_texture.png'):
       mujoco.mj_loadTexture(model, model.tex('byref').id)
 
   def test_mj_embedAssets(self):  # pylint: disable=invalid-name
-    png = os.path.join(self.create_tempdir('test_mj_embedAssets'), 'tiny.png')
+    png = os.path.join(self.create_tempdir().full_path, 'embed_assets.png')
     with open(png, 'wb') as f:
       f.write(_TINY_PNG)
     xml = f"""
@@ -2307,7 +2311,7 @@ Euler integrator, semi-implicit in velocity.
     # a file that does not resolve
     byref = mujoco.MjModel.from_xml_string(xml)
     os.remove(png)
-    with self.assertRaisesRegex(ValueError, 'texture 0: .*tiny.png'):
+    with self.assertRaisesRegex(ValueError, 'texture 0: .*embed_assets.png'):
       mujoco.mj_embedAssets(byref)
 
   def test_xml_dependencies(self):
