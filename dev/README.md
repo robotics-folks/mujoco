@@ -49,7 +49,7 @@ docker run -it --rm -v $PWD/python/dist/:/mujoco/python/dist/ mujoco-ai2-manylin
 
 ```bash
 # From within the container
-./build_manylinux_wheel.sh --filament --vulkan --studio --njobs 5 --py-version py311
+./build_manylinux_wheel.sh --all --filament --studio --fresh --njobs 5 --py-version py311
 ```
 
 ## Using the wheels

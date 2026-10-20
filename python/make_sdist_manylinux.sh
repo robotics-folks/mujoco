@@ -41,7 +41,9 @@ else
   readonly tmp_dir="$(mktemp -d)"
 fi
 
-${py_bin} -m pip install --no-build-isolation --upgrade --require-hashes \
+${py_bin} -m pip install --no-build-isolation \
+    --index-url "${PYPI_INDEX_URL:-https://pypi.org/simple/}" \
+    --upgrade --require-hashes \
     -r ${package_dir}/make_sdist_requirements.txt
 pushd ${tmp_dir}
 cp -r "${package_dir}"/* .
