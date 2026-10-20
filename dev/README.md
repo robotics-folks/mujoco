@@ -1,4 +1,3 @@
-
 # How to build with filament support
 
 Currently we support only making wheels for Linux (haven't fully tested on MacOS, we're working
@@ -16,12 +15,9 @@ can use the `build.sh` helper script:
     --studio \
     --njobs 5
 ```
-The supported flags are the following:
-    - `--filament`: whether or not to build with filament as the renderer of choice.
-    - `--vulkan`: whether or not to use vulkan as rendering backend (for Linux). Metal support
-      for MacOS is not yet supported, only OpenGL is available for this platform.
-    - `--studio`: whether or not to build the studio app (successor to the `simulate` app).
-    - `--njobs`: number of threads to use for parallel build.
+
+The supported flags are the following: - `--filament`: whether or not to build with filament as the renderer of choice. - `--vulkan`: whether or not to use vulkan as rendering backend (for Linux). Metal support
+for MacOS is not yet supported, only OpenGL is available for this platform. - `--studio`: whether or not to build the studio app (successor to the `simulate` app). - `--njobs`: number of threads to use for parallel build.
 
 ## Build Python wheels for Linux
 
@@ -63,3 +59,14 @@ uv pip install python/dist/mujoco-3.7.1-cp311-cp311-manylinux_2_27_x86_64.manyli
 We cannot host it on `PyPI` or `TestPyPI` because it will require to have a different package name,
 like `mujoco-filament` or similar, and that messes up some stuff when trying to install this wheel
 while having the original MuJoCo wheels from PyPI, making the installation fails sometimes.
+
+## MolmoSpaces assets
+
+If you want to try out the `MolmoSpaces` assets, you can download them like this:
+
+```bash
+molmospaces-download --type mjcf --mode batch \
+    --batch.objects thor \
+    --batch.robots franka_droid g1 i2rt_yam \
+    --batch.scenes ithor procthor-10k-val
+```

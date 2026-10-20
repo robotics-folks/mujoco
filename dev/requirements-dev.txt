@@ -6,3 +6,4 @@ ty
 pybind11-stubgen
 tyro
 rich
+molmospaces-resources @ git+https://codeberg.org/robotics-folks/molmospaces-resources.git
