@@ -434,9 +434,16 @@ class mjCBase : public mjCBase_ {
                                   const std::string& filename,
                                   const mjVFS*       vfs);
 
+  // path of an asset file as LoadResource opens it: modelfiledir of the spec that owns this
+  // element, then dir, then file; file is returned as is if absolute or with a scheme
+  std::string ResolvePath(const std::string& dir, const std::string& file) const;
+
   // Get and sanitize content type from raw_text if not empty, otherwise parse
   // content type from resource_name; throw on failure
   static std::string GetAssetContentType(std::string_view resource_name, std::string_view raw_text);
+
+  // the file of an asset of the spec as compilation resolves it; empty if there is no file
+  std::string ResolvedSpecFile(const std::string& dir, std::string file) const;
 
   // Add frame transformation
   void SetFrame(mjCFrame* _frame);
@@ -1380,6 +1387,9 @@ class mjCMesh : public mjCMesh_, private mjsMesh {
   void PointToLocal(void);
   void NameSpace(const mjCModel* m);
 
+  // what compilation reads from the spec, names excluded: the key of mjs_dedupAssets
+  std::string AssetKey() const;
+
   // make a mesh of a predefined shape
   void MakeHemisphere(int res, bool make_faces, bool make_cap);
   void MakeSphere(int subdiv, bool make_faces);
@@ -1400,6 +1410,7 @@ class mjCMesh : public mjCMesh_, private mjsMesh {
   const mjsPlugin&           Plugin() const { return plugin; }
   const std::string&         ContentType() const { return content_type_; }
   const std::string&         File() const { return file_; }
+  std::string                ResolvedFilePath() const;  // modelfiledir + meshdir + file
   const double*              Refpos() const { return refpos; }
   const double*              Refquat() const { return refquat; }
   const double*              Scale() const { return scale; }
@@ -1615,6 +1626,7 @@ class mjCSkin : public mjCSkin_, private mjsSkin {
   using mjCBase::info;
 
   const std::string&                     File() const { return file_; }
+  std::string                            ResolvedFilePath() const;  // modelfiledir + meshdir + file
   const std::string&                     get_material() const { return material_; }
   const std::vector<float>&              get_vert() const { return vert_; }
   const std::vector<float>&              get_texcoord() const { return texcoord_; }
@@ -1682,6 +1694,7 @@ class mjCHField : public mjCHField_, private mjsHField {
   void PointToLocal(void);
 
   std::string File() const { return file_; }
+  std::string ResolvedFilePath() const;  // modelfiledir + meshdir + file
 
   // getter for user data
   std::vector<float>& get_userdata() { return userdata_; }
@@ -1709,15 +1722,17 @@ class mjCTexture_ : public mjCBase {
   std::string              spec_file_;
   std::string              spec_content_type_;
   std::vector<std::string> spec_cubefiles_;
+  bool                     byref_ = false;  // compiled by reference: no payload in the model
 };
 
 class mjCTexture : public mjCTexture_, private mjsTexture {
+  friend class mjCDef;
   friend class mjCModel;
   friend class mjXReader;
   friend class mjXWriter;
 
  public:
-  explicit mjCTexture(mjCModel*);
+  explicit mjCTexture(mjCModel* = nullptr, mjCDef* = nullptr);
   mjCTexture(const mjCTexture& other);
   mjCTexture& operator=(const mjCTexture& other);
   ~mjCTexture();
@@ -1730,13 +1745,30 @@ class mjCTexture : public mjCTexture_, private mjsTexture {
   void   Compile(const mjVFS* vfs);
   double texture_time_ = 0;
 
+  // what compilation reads from the spec, names excluded: the key of mjs_dedupAssets
+  std::string AssetKey() const;
+
   std::string              File() const { return file_; }
+  std::string              ResolvedFilePath() const;  // modelfiledir + texturedir + file
   std::string              get_content_type() const { return content_type_; }
   std::vector<std::string> get_cubefiles() const { return cubefiles_; }
+  bool                     ByReference() const { return byref_; }
+
+  // decode a texture file as compilation stores it: a PNG to the given channels, a KTX as the raw
+  // blob of height 1, which requires channels 1; obj is only for error messages and may be null
+  static void Decode(const mjCBase*          obj,
+                     mjResource*             resource,
+                     const std::string&      mime_type,
+                     int                     channels,
+                     std::vector<std::byte>& image,
+                     unsigned int&           w,
+                     unsigned int&           h,
+                     bool&                   is_srgb);
 
  private:
   // store texture into asset cache
   std::string GetCacheId(const mjResource* resource, const std::string& asset_type);
+  const char* Ineligible(const mjVFS* vfs) const;              // why not by reference, or nullptr
   void        Builtin2D(void);                                 // make builtin 2D
   void        BuiltinCube(void);                               // make builtin cube
   void        Load2D(std::string filename, const mjVFS* vfs);  // load 2D from file
@@ -1753,16 +1785,20 @@ class mjCTexture : public mjCTexture_, private mjsTexture {
                 unsigned int&           h,
                 bool&                   is_srgb);
 
-  void LoadPNG(mjResource*             resource,
-               std::vector<std::byte>& image,
-               unsigned int&           w,
-               unsigned int&           h,
-               bool&                   is_srgb);
-  void LoadKTX(mjResource*             resource,
-               std::vector<std::byte>& image,
-               unsigned int&           w,
-               unsigned int&           h,
-               bool&                   is_srgb);
+  static void LoadPNG(const mjCBase*          obj,
+                      mjResource*             resource,
+                      int                     channels,
+                      std::vector<std::byte>& image,
+                      unsigned int&           w,
+                      unsigned int&           h,
+                      bool&                   is_srgb);
+  static void LoadKTX(const mjCBase*          obj,
+                      mjResource*             resource,
+                      int                     channels,
+                      std::vector<std::byte>& image,
+                      unsigned int&           w,
+                      unsigned int&           h,
+                      bool&                   is_srgb);
 };
 
 
@@ -2415,6 +2451,7 @@ class mjCDef : public mjsElement {
   mjCLight&    Light() { return light_; }
   mjCFlex&     Flex() { return flex_; }
   mjCMesh&     Mesh() { return mesh_; }
+  mjCTexture&  Texture() { return texture_; }
   mjCMaterial& Material() { return material_; }
   mjCPair&     Pair() { return pair_; }
   mjCEquality& Equality() { return equality_; }
@@ -2445,6 +2482,7 @@ class mjCDef : public mjsElement {
   mjCLight    light_;
   mjCFlex     flex_;
   mjCMesh     mesh_;
+  mjCTexture  texture_;
   mjCMaterial material_;
   mjCPair     pair_;
   mjCEquality equality_;

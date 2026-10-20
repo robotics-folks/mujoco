@@ -266,6 +266,9 @@
          .. grid-item::
             :ref:`conflict<compiler-conflict>`
 
+         .. grid-item::
+            :ref:`passthrough<compiler-passthrough>`
+
 
       .. dropdown:: :ref:`lengthrange<compiler-lengthrange>` :octicon:`dot`
 
@@ -546,6 +549,9 @@
                :ref:`name<asset-texture-name>`
 
             .. grid-item::
+               :ref:`class<asset-texture-class>`
+
+            .. grid-item::
                :ref:`type<asset-texture-type>`
 
             .. grid-item::
@@ -613,6 +619,9 @@
 
             .. grid-item::
                :ref:`nchannel<asset-texture-nchannel>`
+
+            .. grid-item::
+               :ref:`embed<asset-texture-embed>`
 
 
       .. dropdown:: :ref:`material<asset-material>` |*|
@@ -1580,6 +1589,12 @@
                .. grid-item::
                   :ref:`elastic2d<flexcomp-elasticity-elastic2d>`
 
+               .. grid-item::
+                  :ref:`section<flexcomp-elasticity-section>`
+
+               .. grid-item::
+                  :ref:`sectionsize<flexcomp-elasticity-sectionsize>`
+
 
          .. dropdown:: :ref:`contact<flexcomp-contact>` :octicon:`dot`
 
@@ -1801,6 +1816,12 @@
 
                .. grid-item::
                   :ref:`elastic2d<flex-elasticity-elastic2d>`
+
+               .. grid-item::
+                  :ref:`section<flex-elasticity-section>`
+
+               .. grid-item::
+                  :ref:`sectionsize<flex-elasticity-sectionsize>`
 
 
       .. dropdown:: :ref:`skin<deformable-skin>` |*|
@@ -5530,6 +5551,60 @@
 
             .. grid-item::
                :ref:`inertia<default-mesh-inertia>`
+
+
+      .. dropdown:: :ref:`texture<default-texture>` :octicon:`dot`
+
+         .. grid:: 2 3 4 4
+            :gutter: 0
+
+            .. grid-item::
+               :ref:`type<default-texture-type>`
+
+            .. grid-item::
+               :ref:`colorspace<default-texture-colorspace>`
+
+            .. grid-item::
+               :ref:`gridsize<default-texture-gridsize>`
+
+            .. grid-item::
+               :ref:`gridlayout<default-texture-gridlayout>`
+
+            .. grid-item::
+               :ref:`builtin<default-texture-builtin>`
+
+            .. grid-item::
+               :ref:`rgb1<default-texture-rgb1>`
+
+            .. grid-item::
+               :ref:`rgb2<default-texture-rgb2>`
+
+            .. grid-item::
+               :ref:`mark<default-texture-mark>`
+
+            .. grid-item::
+               :ref:`markrgb<default-texture-markrgb>`
+
+            .. grid-item::
+               :ref:`random<default-texture-random>`
+
+            .. grid-item::
+               :ref:`width<default-texture-width>`
+
+            .. grid-item::
+               :ref:`height<default-texture-height>`
+
+            .. grid-item::
+               :ref:`hflip<default-texture-hflip>`
+
+            .. grid-item::
+               :ref:`vflip<default-texture-vflip>`
+
+            .. grid-item::
+               :ref:`nchannel<default-texture-nchannel>`
+
+            .. grid-item::
+               :ref:`embed<default-texture-embed>`
 
 
       .. dropdown:: :ref:`material<default-material>` :octicon:`dot`

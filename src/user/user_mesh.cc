@@ -32,6 +32,7 @@
 #include <vector>
 
 #include <mujoco/mjspec.h>
+#include <mujoco/mjspecmacro.h>
 #include "user/user_api.h"
 
 #ifdef MUJOCO_TINYOBJLOADER_IMPL
@@ -294,6 +295,44 @@ void mjCMesh::NameSpace(const mjCModel* m) {
 }
 
 
+// the key under which meshes which would compile to the same asset are deduplicated: every field
+// of the spec which compilation reads, names excluded, with the file resolved as the compiler
+// resolves it, and the sizes of the arrays, whose contents are compared separately; a mesh with a
+// plugin is not deduplicated
+std::string mjCMesh::AssetKey() const {
+#define X(type, name, dim) +1
+#define XVEC(type, name, dim) +1
+  static_assert((0 MJSMESH_FIELDS) == 22,
+                "a field was added to mjsMesh: decide whether AssetKey reads it");
+#undef X
+#undef XVEC
+  const mjsMesh& s = spec;
+  std::string    key;
+  mjuu_addkey(key, ResolvedSpecFile(mjs_getString(compiler->meshdir), spec_file_));
+  mjuu_addkey(key, spec_content_type_);
+  mjuu_addkey(key, spec_material_);
+  mjuu_addkey(key, s.refpos);
+  mjuu_addkey(key, s.refquat);
+  mjuu_addkey(key, s.scale);
+  mjuu_addkey(key, s.inertia);
+  mjuu_addkey(key, s.smoothnormal);
+  mjuu_addkey(key, s.needsdf);
+  mjuu_addkey(key, s.maxhullvert);
+  mjuu_addkey(key, s.octree_maxdepth);
+  for (size_t size : {spec_vert_.size(),
+                      spec_normal_.size(),
+                      spec_texcoord_.size(),
+                      spec_face_.size(),
+                      spec_facenormal_.size(),
+                      spec_facetexcoord_.size(),
+                      spec_node_.size(),
+                      spec_tet_.size()}) {
+    mjuu_addkey(key, size);
+  }
+  return key;
+}
+
+
 void mjCMesh::CopyFromSpec() {
   *static_cast<mjsMesh*>(this) = spec;
   if (InstanceDiagonal()) {
@@ -339,6 +378,12 @@ void mjCMesh::CopyPlugin() {
 mjCMesh::~mjCMesh() {
   if (center_) mju_free(center_);
   if (graph_) mju_free(graph_);
+}
+
+
+// file as opened by Compile, which has already applied strippath to file_
+std::string mjCMesh::ResolvedFilePath() const {
+  return ResolvePath(mjs_getString(compiler->meshdir), file_);
 }
 
 
@@ -745,6 +790,9 @@ void mjCMesh::TryCompile(const mjVFS* vfs) {
     mjSpec*  owning_spec = model->FindSpec(compiler);
     FilePath filename    = meshdir_ + FilePath(file_);
     resource_            = LoadResource(owning_spec->modelfiledir->c_str(), filename.Str(), vfs);
+
+    // set content type before the cache lookup, so it does not depend on a cache hit
+    content_type_ = GetAssetContentType(resource_->name, content_type_);
 
     // try loading from cache
     if (cache != nullptr && LoadCachedMesh(cache, resource_)) {
@@ -3348,12 +3396,6 @@ void MeshPolygon::InsertFace(int v1, int v2, int v3) {
 // return the transverse vertices of the polygon, multiple paths possible if not connected
 std::vector<std::vector<int>> MeshPolygon::Paths() const {
   std::vector<std::vector<int>> paths;
-  // shortcut if polygon is just a triangular face
-  if (edges_.size() == 3) {
-    return {
-        {edges_[0].first, edges_[1].first, edges_[2].first}
-    };
-  }
 
   // go through each connected component of the polygon
   for (int i = 0; i < nisland_; ++i) {
@@ -3564,6 +3606,12 @@ mjCSkin::~mjCSkin() {
   spec_vertid_.clear();
   spec_vertweight_.clear();
   bodyid.clear();
+}
+
+
+// file as opened by Compile, which has already applied strippath to file_
+std::string mjCSkin::ResolvedFilePath() const {
+  return ResolvePath(mjs_getString(compiler->meshdir), file_);
 }
 
 

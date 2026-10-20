@@ -512,7 +512,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
   mjSpec.def(
       "fuse_static",
       [](MjSpec& self, std::optional<MjVfs*> vfs) {
-        self.FuseStatic(vfs.has_value() ? (*vfs)->get() : nullptr);
+        return self.FuseStatic(vfs.has_value() ? (*vfs)->get() : nullptr);
       },
       py::arg("vfs") = py::none(),
       R"mydelimiter(
@@ -520,7 +520,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
 
     Each fused body becomes a frame in its parent, holding what the body held.
     Objects referring to the fused bodies must not be used afterwards. Assets
-    are read as in compile().
+    are read as in compile(). Returns the number of bodies fused.
 
     Parameters
     ----------
@@ -530,7 +530,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
   mjSpec.def(
       "discard_visual",
       [](MjSpec& self, std::optional<MjVfs*> vfs) {
-        self.DiscardVisual(vfs.has_value() ? (*vfs)->get() : nullptr);
+        return self.DiscardVisual(vfs.has_value() ? (*vfs)->get() : nullptr);
       },
       py::arg("vfs") = py::none(),
       R"mydelimiter(
@@ -540,12 +540,24 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
     collide and are not referenced, and the meshes which are then not used.
     Objects referring to the discarded elements must not be used afterwards.
     Assets are read as in compile(), and only if body inertia is inferred from
-    a discarded geom.
+    a discarded geom. Returns the number of elements discarded.
 
     Parameters
     ----------
     vfs : MjVfs, optional
         A VFS to read assets from. Cannot be used with assets.
+    )mydelimiter");
+  mjSpec.def(
+      "dedup_assets", [](MjSpec& self) { return self.DedupAssets(); },
+      R"mydelimiter(
+    Merges the duplicate textures and meshes of the spec.
+
+    Textures and meshes which would compile to the same asset, with the same
+    resolved file or buffers and the same parameters, are merged: the first of
+    each group keeps its name, every reference to the others is rewritten to it
+    and the others are deleted. Objects referring to the deleted elements must
+    not be used afterwards. Nothing is read from disk. Returns the number of
+    assets merged.
     )mydelimiter");
   mjSpec.def(
       "adopt_inertial",
@@ -1968,6 +1980,15 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
       throw pybind11::value_error(mjs_getError(self.ptr));
     }
   });
+  mjsTexture.def_property(
+      "classname",
+      [](raw::MjsTexture& self) -> raw::MjsDefault* {
+        return mjs_getDefault(self.element);
+      },
+      [](raw::MjsTexture& self, raw::MjsDefault& default_) -> void {
+        mjs_setDefault(self.element, &default_);
+      },
+      py::return_value_policy::reference_internal);
 
   // ============================= MJSKEY ======================================
   mjSpec.def("delete", [](MjSpec& self, raw::MjsKey& obj) {

@@ -472,7 +472,7 @@ Similarly, we also provide a `Renderer
 ``mujoco.rendering.filament``. This class can be used to manage the lifetimes of key objects (such as the
 :ref:`mjrfContext` and :ref:`mjrfScene`) and provides useful functions for controlling the camera and reading pixels.
 
-Here is a mimimal example for rendering an mjModel with the filament renderer:
+Here is a minimal example for rendering an mjModel with the filament renderer:
 
 .. code-block:: python
 
@@ -990,6 +990,10 @@ provides the ``mujoco`` package, so Python targets in your own Bazel module can 
        srcs = ["simulate_model.py"],
        deps = ["@mujoco//python/mujoco"],
    )
+
+As in the wheel, the bindings link MuJoCo dynamically (``@mujoco//:mujoco_shared``), and the bundled plugins are
+separate shared libraries that ``mujoco`` loads when it is imported. C++ code in the same process that links MuJoCo the
+same way shares the engine with the bindings.
 
 To run the bindings' tests from the root of the cloned repository, use ``bazel test //python/...``.
 

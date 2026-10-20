@@ -33,11 +33,6 @@
 
 namespace mujoco {
 
-template <class T>
-static void Combine(uint64_t& seed, const T* v) {
-  seed ^= std::hash<T>()(*v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-}
-
 static void Combine(uint64_t& seed, const mjrfTexture* texture) {
   if (texture) {
     const uint64_t id = Texture::downcast(texture)->Id();
@@ -326,13 +321,20 @@ void MaterialManager::UpdateMaterialInstance(
   const auto wrap_mode = material.decor
                              ? filament::TextureSampler::WrapMode::CLAMP_TO_EDGE
                              : filament::TextureSampler::WrapMode::REPEAT;
+  // UI textures are drawn at their native size, and Dear ImGui rasterizes
+  // glyphs with horizontal oversampling (2 atlas texels per pixel), so a
+  // mipmapped minification filter would sample text from a half-resolution
+  // mip level. Sample them without mipmaps, like Dear ImGui's own backends.
+  const auto min_filter =
+      material.decor
+          ? filament::TextureSampler::MinFilter::LINEAR
+          : filament::TextureSampler::MinFilter::LINEAR_MIPMAP_LINEAR;
   filament::TextureSampler sampler;
   sampler.setWrapModeR(wrap_mode);
   sampler.setWrapModeS(wrap_mode);
   sampler.setWrapModeT(wrap_mode);
   sampler.setMagFilter(filament::TextureSampler::MagFilter::LINEAR);
-  sampler.setMinFilter(
-      filament::TextureSampler::MinFilter::LINEAR_MIPMAP_LINEAR);
+  sampler.setMinFilter(min_filter);
 
   auto TrySetTexture = [&](const char* name, const mjrfTexture* texture,
                            mjtTextureRole role) {

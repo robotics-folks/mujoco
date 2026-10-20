@@ -1162,17 +1162,6 @@ static void solveIslandTask(const mjModel* m, mjData* d, void* arg, int thread_i
 }
 
 
-// any flex with metric terms (stiffness or passive contact)
-static int effFlexAny(const mjModel* m) {
-  for (int f=0; f < m->nflex; f++) {
-    if (mj_effFlexPossible(m, f)) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-
 // discrete: reinstate the free-body gyroscopic derivative for decoupled standalone free
 // bodies, re-solving their rows of qacc against the local unsymmetric metric. Guarded by
 // mjd_freeGyroPossible: no constraint Jacobian support and no off-diagonal metric coupling
@@ -1233,15 +1222,8 @@ static void fwdConstraint(const mjModel* m, mjData* d, mjtSolver solver, int flg
   warmstart(m, d);
   mju_zeroInt(d->solver_niter, mjNISLAND);
 
-  // check if islands are supported
-  // islands are supported under the discrete metric: findEdges unions the trees of
-  // metric-coupled tendons, and the solver contexts see an island-local view (gathered
-  // shift, mapped products, gathered M+diag backbone factor). Only flex with metric terms
-  // still forces a monolithic solve: the flex operators (stencils, 3x3 block factors)
-  // have no island-local form.
-  // TODO: island-local flex operators, then remove the flex condition.
-  int islands_supported = flg_island && nisland > 0 &&
-                          !(mj_isMetric(m) && effFlexAny(m));
+  // check if islands are supported (IPC folds its subproblem monolithically)
+  int islands_supported = flg_island && nisland > 0 && !mjENABLED(mjENBL_IPC);
 
   // run solver over constraint islands
   if (islands_supported) {
@@ -1753,10 +1735,10 @@ void mj_checkDiscrete(const mjModel* m) {
 
     // until the discrete integrator, flex elasticity was integrated implicitly under
     // implicit and implicitfast; those models need the metric. Euler and RK4 always
-    // integrated it explicitly and still do
+    // integrated it explicitly and still do, as do all integrators for 1D rod bending
     if (m->opt.integrator == mjINT_IMPLICIT || m->opt.integrator == mjINT_IMPLICITFAST) {
       for (int f=0; f < m->nflex; f++) {
-        if (mj_effFlexStiffPossible(m, f)) {
+        if (m->flex_dim[f] > 1 && mj_effFlexStiffPossible(m, f)) {
           mjERROR("flex elasticity is no longer integrated implicitly under "
                   "integrator='implicit' and 'implicitfast': set "
                   "integrator='discrete'");
@@ -1783,16 +1765,13 @@ void mj_checkDiscrete(const mjModel* m) {
     // (mj_effCouplings), and the backbone IS the metric; under a primal solver, the
     // noslip post-pass consumes the backbone AR as an approximation. Flex cannot be
     // excluded: explicit flex elasticity is the divergence the metric exists to prevent
-    if (effFlexAny(m)) {
+    if (mj_effFlexAny(m)) {
       mjERROR("discrete integrator: PGS and noslip not yet supported with flex");
     }
   }
   if (mjENABLED(mjENBL_SLEEP)) {
     if (mjDISABLED(mjDSBL_ISLAND)) {
       mjERROR("discrete integrator: sleep without islands not yet supported");
-    }
-    if (effFlexAny(m)) {
-      mjERROR("discrete integrator: sleep with flex not yet supported");
     }
   }
 }

@@ -31,7 +31,6 @@ from mujoco.mjx.third_party.mujoco_warp._src import warp_util
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const as set_const
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_0 as set_const_0
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_fixed as set_const_fixed
-from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_spring as set_const_spring
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_length_range as set_length_range
 
 wp.set_module_options({"default_grid_stride": False})
@@ -202,6 +201,26 @@ def _flex_simple(mjm: mujoco.MjModel, f: int) -> bool:
     if mjm.body_dofnum[b] != 0 and not _flex_body_simple(mjm, b):
       return False
   return True
+
+
+def _eff_flex_stiff_possible(mjm: mujoco.MjModel, f: int) -> bool:
+  """Whether flex f contributes elastic stiffness to the metric, see mj_effFlexStiffPossible."""
+  if mjm.flex_rigid[f]:
+    return False
+  badr = int(mjm.flex_bendingadr[f])
+  if mjm.flex_dim[f] == 1:
+    return badr >= 0
+  sadr = int(mjm.flex_stiffnessadr[f])
+  if sadr >= 0 and mjm.flex_stiffness[sadr] != 0 and mjm.flex_edgeequality[f] != 3:
+    return True
+  if badr < 0:
+    return False
+  end = mjm.nflexbending
+  for g in range(f + 1, mjm.nflex):
+    if mjm.flex_bendingadr[g] >= 0:
+      end = int(mjm.flex_bendingadr[g])
+      break
+  return bool(np.any(mjm.flex_bending[badr:end] != 0))
 
 
 def _get_efm_data(mjm: mujoco.MjModel) -> mujoco.MjData | None:
@@ -455,8 +474,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     else:
       setattr(opt, f.name, f.type(getattr(opt, f.name)))
 
-  # create stat
-  stat = types.Statistic(meaninertia=_create_array([mjm.stat.meaninertia], types.array("*", float), {"*": 1}))
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
@@ -485,7 +502,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
         m.tendon_dampingpoly[trnid] += poly_k * gear2
 
   m.opt = opt
-  m.stat = stat
   m.callback = types.Callback()
 
   m.nv_pad = _get_padded_sizes(
@@ -509,6 +525,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       raise NotImplementedError("Flex internal collisions are not implemented.")
     if (mjm.flex_rigid != 0).any():
       raise NotImplementedError("Rigid flexes are not implemented.")
+    # TODO(team): skip element pairs driven by a common grid node, as in mjc_ElemSharedNode
+    if np.any((mjm.flex_interp != 0) & (mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0)):
+      raise NotImplementedError("Self-collision of interpolated flexes (dof=trilinear or quadratic) is not implemented.")
   m.nmaxcondim = np.concatenate(condim_arrays).max()
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
@@ -540,12 +559,21 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     and any(
       mjm.flex_interp[f] == 0
       and not mjm.flex_rigid[f]
-      and mjm.flex_dim[f] >= 2
       and not flex_simple[f]
-      and (mjm.flex_bendingadr[f] >= 0 or (mjm.flex_stiffnessadr[f] >= 0 and mjm.flex_stiffness[mjm.flex_stiffnessadr[f]] != 0))
+      and (
+        (mjm.flex_dim[f] == 1 and mjm.flex_bendingadr[f] >= 0)
+        or (
+          mjm.flex_dim[f] >= 2
+          and (
+            mjm.flex_bendingadr[f] >= 0 or (mjm.flex_stiffnessadr[f] >= 0 and mjm.flex_stiffness[mjm.flex_stiffnessadr[f]] != 0)
+          )
+        )
+      )
       for f in range(mjm.nflex)
     )
   )
+  # 1D rod bending is integrated explicitly under implicit and implicitfast, unlike 2D and 3D
+  m.has_flex_stiff_dim23 = bool(any(mjm.flex_dim[f] > 1 and _eff_flex_stiff_possible(mjm, f) for f in range(mjm.nflex)))
   if (
     mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
     and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
@@ -1238,6 +1266,17 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
         flex_face_map.append((fi, face_idx))
       face_offset += nfaces
 
+  # 1D rod bending hinges: (flex id, address of the hinge data in flex_bending)
+  flex_rodhinge_map = []
+  for fi in range(mjm.nflex):
+    bendingadr = int(mjm.flex_bendingadr[fi])
+    if mjm.flex_dim[fi] != 1 or mjm.flex_interp[fi] != 0 or mjm.flex_rigid[fi] or bendingadr < 0:
+      continue
+    for h in range(int(mjm.flex_bending[bendingadr])):
+      flex_rodhinge_map.append((fi, bendingadr + 1 + types.ROD_HINGE_SIZE * h))
+  m.nflexrodhinge = len(flex_rodhinge_map)
+  m.flex_rodhinge_map = np.array(flex_rodhinge_map, dtype=np.int32).reshape(-1, 2)
+
   if not flex_bend_interp_map:
     m.nflexbend_interp = 0
     m.flex_bend_interp_map = np.zeros((0, 2), dtype=np.int32)
@@ -1702,8 +1741,6 @@ def _allocate_island_arrays(
 
 
 _COMPACT_DATA_FIELDS: tuple[str, ...] = (
-  "ctol",
-  "cls_tol",
   "cdof_tri_row",
   "cdof_tri_col",
   "cM",
@@ -1731,7 +1768,7 @@ def _allocate_compact_arrays(
   """Allocate workspace for the compacted dense factor/solve (when nvmax is requested).
 
   Mirrors the island-local ``i*`` Data fields with a ``c*`` (compact) prefix. The
-  constant model-shadows (tolerances, dof-pair indices) are derived on the host since
+  constant dof-pair indices are derived on the host since
   they depend only on nvmax_pad; the workspace shadows are sized by nvmax_pad so the
   blocked Cholesky never reads out of bounds on its partial tile. When the user does not
   request compaction (nvmax is None) everything is allocated empty.
@@ -1745,21 +1782,12 @@ def _allocate_compact_arrays(
   njp = njmax_pad if compact else 0
 
   if compact:
-    # match the float32 tolerance clamp applied in put_model; rescale by nv/nvmax_pad so
-    # the solver's nv-normalized convergence test matches the full-model baseline.
-    scale = float(mjm.nv) / float(nvmax_pad)
-    tol = max(float(mjm.opt.tolerance), 1e-6)
-    ls_tol = float(mjm.opt.ls_tolerance)
-    d.ctol = wp.array([tol * scale], dtype=float)
-    d.cls_tol = wp.array([ls_tol * scale], dtype=float)
     # all (i, j) DOF pairs of the nvmax_pad-wide compacted Hessian (the global dof_tri,
     # triu over full nv, would index out of bounds).
     idx = np.arange(nvmax_pad, dtype=np.int32)
     d.cdof_tri_row = wp.array(np.repeat(idx, nvmax_pad), dtype=int)
     d.cdof_tri_col = wp.array(np.tile(idx, nvmax_pad), dtype=int)
   else:
-    d.ctol = wp.empty(0, dtype=float)
-    d.cls_tol = wp.empty(0, dtype=float)
     d.cdof_tri_row = wp.empty(0, dtype=int)
     d.cdof_tri_col = wp.empty(0, dtype=int)
 

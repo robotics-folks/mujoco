@@ -1644,6 +1644,41 @@ int mj_tendonHasDamping(const mjModel* m, int i) {
 }
 
 
+// flex f has a nonzero stretch stiffness record (raw stiffness, or the strain equality
+// eigenmodes). Volume-mode interpolated flexes store one dense block per cell and empty cells
+// (no mesh content) keep an all-zero block, so the first block alone is not representative
+int mj_flexHasStiffness(const mjModel* m, int f) {
+  int adr = m->flex_stiffnessadr[f];
+  if (adr < 0) {
+    return 0;
+  }
+  const mjtNum* k = m->flex_stiffness + adr;
+
+  // standard flex: every element has stiffness if any does
+  // shell-mode interpolated flex (interp < 0): keep the first-block check; shells have no empty
+  // cells, and their first block (a membrane quad on the x=0 face) has a zero first entry, so
+  // interpolated shell stretch is currently never applied (to be revisited with MJWarp)
+  int order = m->flex_interp[f];
+  if (order <= 0) {
+    return k[0] != 0;
+  }
+
+  // volume-mode interpolated flex: any 3D cell counts
+  int cx = m->flex_cellnum[3*f+0];
+  int cy = m->flex_cellnum[3*f+1];
+  int cz = m->flex_cellnum[3*f+2];
+  int npe = (order+1)*(order+1)*(order+1);
+  int nelem = cx*cy*cz;
+  int stride = 9*npe*npe;
+  for (int e=0; e < nelem; e++) {
+    if (k[(size_t)e*stride] != 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+
 // does flex f use the penalty form of passive contact: a standard deformable flex of dim >= 2
 // that asks for it, and not under the ipc flag, which solves the same law for every supported
 // flex itself (running both would apply each pair's force twice)
@@ -1657,15 +1692,19 @@ int mj_effFlexContactPossible(const mjModel* m, int f) {
 // mjd_flexStiff_active (engine_derivative.c), interpolated flexes are included: their
 // stiffness is carried matrix-free
 int mj_effFlexStiffPossible(const mjModel* m, int f) {
-  // rigid or 1D flexes do not contribute stiffness
-  if (m->flex_rigid[f] || m->flex_dim[f] < 2) {
+  // rigid flexes do not contribute stiffness
+  if (m->flex_rigid[f]) {
     return 0;
+  }
+
+  // 1D flexes: rod bending
+  if (m->flex_dim[f] == 1) {
+    return m->flex_bendingadr[f] >= 0;
   }
 
   // stretch stiffness present (the strain equality mode stores its constraint
   // eigenmodes in this block instead)
-  int sadr = m->flex_stiffnessadr[f];
-  if (sadr >= 0 && m->flex_stiffness[sadr] != 0 && m->flex_edgeequality[f] != 3) {
+  if (m->flex_edgeequality[f] != 3 && mj_flexHasStiffness(m, f)) {
     return 1;
   }
 
@@ -1689,6 +1728,17 @@ int mj_effFlexStiffPossible(const mjModel* m, int f) {
 // does flex f need the implicit metric treatment: elastic stiffness or passive contact
 int mj_effFlexPossible(const mjModel* m, int f) {
   return mj_effFlexStiffPossible(m, f) || mj_effFlexContactPossible(m, f);
+}
+
+
+// does any flex need the implicit metric treatment: elastic stiffness or passive contact
+int mj_effFlexAny(const mjModel* m) {
+  for (int f=0; f < m->nflex; f++) {
+    if (mj_effFlexPossible(m, f)) {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 
@@ -1839,6 +1889,77 @@ void mj_flexHessianMul(const mjModel* m, const mjData* d, int f, mjtNum* res,
     for (int r=0; r < 3; r++) {
       res[3*v[0]+r] += scale*(a[3*r]*y[0] + a[3*r+1]*y[1] + a[3*r+2]*y[2]);
       res[3*v[1]+r] += scale*(a[r]*x[0] + a[3+r]*x[1] + a[6+r]*x[2]);
+    }
+  }
+}
+
+
+//-------------------------- 1D rod bending --------------------------------------------------------
+
+// curvature binormal of a rod hinge and its Jacobian, see Bergou et al., "Discrete Elastic Rods"
+int mj_rodHinge(const mjtNum xa[3], const mjtNum xv[3], const mjtNum xb[3],
+                mjtNum kb[3], mjtNum J[27]) {
+  mjtNum e0[3], e1[3];
+  mji_sub3(e0, xv, xa);
+  mji_sub3(e1, xb, xv);
+  mjtNum l0 = mju_norm3(e0), l1 = mju_norm3(e1);
+  mjtNum denom = l0*l1 + mju_dot3(e0, e1);
+  if (l0 < mjMINVAL || l1 < mjMINVAL || denom < mjMINVAL) {
+    return 0;
+  }
+  mjtNum cross[3];
+  mji_cross(cross, e0, e1);
+  mji_scl3(kb, cross, 2/denom);
+  if (!J) {
+    return 1;
+  }
+
+  // gradients of denom with respect to e0 and e1
+  mjtNum g0[3], g1[3];
+  mji_scl3(g0, e0, l1/l0);
+  mji_addTo3(g0, e1);
+  mji_scl3(g1, e1, l0/l1);
+  mji_addTo3(g1, e0);
+
+  // A0 = d(kb)/d(e0) = (-2[e1]x - kb g0') / denom,  A1 = d(kb)/d(e1) = (2[e0]x - kb g1') / denom
+  mjtNum A0[9] = {0, e1[2], -e1[1], -e1[2], 0, e1[0], e1[1], -e1[0], 0};
+  mjtNum A1[9] = {0, -e0[2], e0[1], e0[2], 0, -e0[0], -e0[1], e0[0], 0};
+  for (int r=0; r < 3; r++) {
+    for (int c=0; c < 3; c++) {
+      A0[3*r+c] = (2*A0[3*r+c] - kb[r]*g0[c]) / denom;
+      A1[3*r+c] = (2*A1[3*r+c] - kb[r]*g1[c]) / denom;
+    }
+  }
+
+  // J = [-A0, A0 - A1, A1]
+  for (int r=0; r < 3; r++) {
+    for (int c=0; c < 3; c++) {
+      J[9*r+c]   = -A0[3*r+c];
+      J[9*r+3+c] = A0[3*r+c] - A1[3*r+c];
+      J[9*r+6+c] = A1[3*r+c];
+    }
+  }
+  return 1;
+}
+
+
+// gradient, Hessian, and damping weights of k |kb|^2 in kb space
+void mj_rodHingeWeights(mjtNum g[3], mjtNum Wk[9], mjtNum Wd[9],
+                        const mjtNum kb[3], mjtNum k) {
+  // gradient 2k kb
+  if (g) mji_scl3(g, kb, 2*k);
+
+  // Hessian 2k I; damping 2k n n' with n = kb/|kb|, isotropic at a straight hinge
+  mjtNum r = mju_norm3(kb);
+  mjtNum n[3] = {0, 0, 0};
+  if (r >= mjMINVAL) {
+    mji_scl3(n, kb, 1/r);
+  }
+  for (int i=0; i < 3; i++) {
+    for (int j=0; j < 3; j++) {
+      mjtNum w = (i == j) ? 2*k : 0;
+      if (Wk) Wk[3*i+j] = w;
+      if (Wd) Wd[3*i+j] = r < mjMINVAL ? w : 2*k*n[i]*n[j];
     }
   }
 }

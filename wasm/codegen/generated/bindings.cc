@@ -1086,7 +1086,7 @@ void MjsSensor::set(mjsSensor* ptr) {
   ptr_ = ptr;
 }
 
-MjsDefault::MjsDefault(mjsDefault *ptr) : ptr_(ptr), element(ptr_->element), joint(ptr_->joint), geom(ptr_->geom), site(ptr_->site), camera(ptr_->camera), light(ptr_->light), flex(ptr_->flex), mesh(ptr_->mesh), material(ptr_->material), pair(ptr_->pair), equality(ptr_->equality), tendon(ptr_->tendon), actuator(ptr_->actuator) {}
+MjsDefault::MjsDefault(mjsDefault *ptr) : ptr_(ptr), element(ptr_->element), joint(ptr_->joint), geom(ptr_->geom), site(ptr_->site), camera(ptr_->camera), light(ptr_->light), flex(ptr_->flex), mesh(ptr_->mesh), texture(ptr_->texture), material(ptr_->material), pair(ptr_->pair), equality(ptr_->equality), tendon(ptr_->tendon), actuator(ptr_->actuator) {}
 mjsDefault* MjsDefault::get() const {
   return ptr_;
 }
@@ -1422,6 +1422,15 @@ int mj_setLengthRange_wrapper(const MjModel& m, const MjData& d, int index, cons
     mju_error("%s", error.data());
   }
   return result;
+}
+
+std::unique_ptr<MjModel> mj_embedAssets_wrapper(const MjModel& m) {
+  std::array<char, 1024> error;
+  mjModel* model = mj_embedAssets(m.get(), error.data(), error.size());
+  if (!model) {
+    mju_error("%s", error.data());
+  }
+  return std::unique_ptr<MjModel>(new MjModel(model));
 }
 
 void mju_info_wrapper(int topic, const String& msg) {
@@ -2301,8 +2310,8 @@ std::optional<MjsText> mjs_addText_wrapper(MjSpec& s) {
   return MjsText(result);
 }
 
-std::optional<MjsTexture> mjs_addTexture_wrapper(MjSpec& s) {
-  mjsTexture* result = mjs_addTexture(s.get());
+std::optional<MjsTexture> mjs_addTexture_wrapper(MjSpec& s, const MjsDefault& def) {
+  mjsTexture* result = mjs_addTexture(s.get(), def.get());
   if (result == nullptr) {
     return std::nullopt;
   }
@@ -2521,6 +2530,10 @@ std::optional<MjsElement> mjs_attach_wrapper(MjsElement& parent, const MjsElemen
     return std::nullopt;
   }
   return MjsElement(result);
+}
+
+int mjs_dedupAssets_wrapper(MjSpec& s) {
+  return mjs_dedupAssets(s.get());
 }
 
 void mjs_defaultActuator_wrapper(MjsActuator& actuator) {
@@ -4065,6 +4078,10 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjDYN_DCMOTOR", mjDYN_DCMOTOR)
     .value("mjDYN_PID", mjDYN_PID)
     .value("mjDYN_USER", mjDYN_USER);
+  enum_<mjtEmbed>("mjtEmbed")
+    .value("mjEMBED_FALSE", mjEMBED_FALSE)
+    .value("mjEMBED_TRUE", mjEMBED_TRUE)
+    .value("mjEMBED_AUTO", mjEMBED_AUTO);
   enum_<mjtEnableBit>("mjtEnableBit")
     .value("mjENBL_OVERRIDE", mjENBL_OVERRIDE)
     .value("mjENBL_ENERGY", mjENBL_ENERGY)
@@ -4093,6 +4110,9 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjEVENT_RESIZE", mjEVENT_RESIZE)
     .value("mjEVENT_REDRAW", mjEVENT_REDRAW)
     .value("mjEVENT_FILESDROP", mjEVENT_FILESDROP);
+  enum_<mjtFlexSection>("mjtFlexSection")
+    .value("mjFLEXSECTION_CIRCLE", mjFLEXSECTION_CIRCLE)
+    .value("mjFLEXSECTION_BOX", mjFLEXSECTION_BOX);
   enum_<mjtFlexSelf>("mjtFlexSelf")
     .value("mjFLEXSELF_NONE", mjFLEXSELF_NONE)
     .value("mjFLEXSELF_NARROW", mjFLEXSELF_NARROW)
@@ -4318,6 +4338,9 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjORIENTATION_XYAXES", mjORIENTATION_XYAXES)
     .value("mjORIENTATION_ZAXIS", mjORIENTATION_ZAXIS)
     .value("mjORIENTATION_EULER", mjORIENTATION_EULER);
+  enum_<mjtPassthrough>("mjtPassthrough")
+    .value("mjPASSTHROUGH_NONE", mjPASSTHROUGH_NONE)
+    .value("mjPASSTHROUGH_TEXTURES", mjPASSTHROUGH_TEXTURES);
   enum_<mjtPertBit>("mjtPertBit")
     .value("mjPERT_TRANSLATE", mjPERT_TRANSLATE)
     .value("mjPERT_ROTATE", mjPERT_ROTATE);
@@ -4570,16 +4593,19 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
 
   // Bindings for the MjData accessor classes.
   #define X(type, prefix, var, dim0, dim1) .property(#var, &Accessor::get_##var, &Accessor::set_##var)
+  #define XC(name) .property(#name, &Accessor::get_##name)
   #define X_ACCESSOR(NAME, Name, OBJTYPE, field, nfield)       \
     {                                                          \
       using Accessor = MjData##Name##Accessor;                 \
       emscripten::class_<Accessor>("MjData" #Name "Accessor")  \
           .property("id", &Accessor::id)                       \
           .property("name", &Accessor::name)                   \
-          MJDATA_##NAME;                                       \
+          MJDATA_##NAME                                        \
+          MJDATA_COMPUTED_##NAME;                              \
     }
     MJDATA_ACCESSORS
   #undef X
+  #undef XC
   #undef X_ACCESSOR
 
   emscripten::class_<MjContact>("MjContact")
@@ -5451,6 +5477,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("tendon_width", &MjModel::tendon_width)
     .property("tex_adr", &MjModel::tex_adr)
     .property("tex_colorspace", &MjModel::tex_colorspace)
+    .property("tex_contenttypeadr", &MjModel::tex_contenttypeadr)
     .property("tex_data", &MjModel::tex_data)
     .property("tex_height", &MjModel::tex_height)
     .property("tex_nchannel", &MjModel::tex_nchannel)
@@ -5780,6 +5807,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("inertiafromgeom", &MjsCompiler::inertiafromgeom, &MjsCompiler::set_inertiafromgeom)
     .property("inertiagrouprange", &MjsCompiler::inertiagrouprange)
     .property("meshdir", &MjsCompiler::meshdir, &MjsCompiler::set_meshdir, reference())
+    .property("passthrough", &MjsCompiler::passthrough, &MjsCompiler::set_passthrough)
     .property("savecanonical", &MjsCompiler::savecanonical, &MjsCompiler::set_savecanonical)
     .property("savecompiled", &MjsCompiler::savecompiled, &MjsCompiler::set_savecompiled)
     .property("saveinertial", &MjsCompiler::saveinertial, &MjsCompiler::set_saveinertial)
@@ -5799,7 +5827,8 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("mesh", &MjsDefault::mesh, reference())
     .property("pair", &MjsDefault::pair, reference())
     .property("site", &MjsDefault::site, reference())
-    .property("tendon", &MjsDefault::tendon, reference());
+    .property("tendon", &MjsDefault::tendon, reference())
+    .property("texture", &MjsDefault::texture, reference());
   emscripten::class_<MjsElement>("MjsElement")
     .property("elemtype", &MjsElement::elemtype, &MjsElement::set_elemtype)
     .property("signature", &MjsElement::signature, &MjsElement::set_signature);
@@ -5849,6 +5878,8 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("priority", &MjsFlex::priority, &MjsFlex::set_priority)
     .property("radius", &MjsFlex::radius, &MjsFlex::set_radius)
     .property("rgba", &MjsFlex::rgba)
+    .property("section", &MjsFlex::section, &MjsFlex::set_section)
+    .property("sectionsize", &MjsFlex::sectionsize)
     .property("selfcollide", &MjsFlex::selfcollide, &MjsFlex::set_selfcollide)
     .property("size", &MjsFlex::size)
     .property("solimp", &MjsFlex::solimp)
@@ -6118,6 +6149,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("cubefiles", &MjsTexture::cubefiles, reference())
     .property("data", &MjsTexture::data, reference())
     .property("element", &MjsTexture::element, reference())
+    .property("embed", &MjsTexture::embed, &MjsTexture::set_embed)
     .property("file", &MjsTexture::file, &MjsTexture::set_file, reference())
     .property("gridlayout", &MjsTexture::gridlayout)
     .property("gridsize", &MjsTexture::gridsize)
@@ -6532,6 +6564,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
   function("mjs_asTexture", &mjs_asTexture_wrapper);
   function("mjs_asTuple", &mjs_asTuple_wrapper);
   function("mjs_attach", &mjs_attach_wrapper);
+  function("mjs_dedupAssets", &mjs_dedupAssets_wrapper);
   function("mjs_defaultActuator", &mjs_defaultActuator_wrapper);
   function("mjs_defaultBody", &mjs_defaultBody_wrapper);
   function("mjs_defaultCamera", &mjs_defaultCamera_wrapper);
@@ -6760,6 +6793,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
   function("mj_saveModel", &mj_saveModel_wrapper);
   function("mj_saveLastXML", &mj_saveLastXML_wrapper);
   function("mj_setLengthRange", &mj_setLengthRange_wrapper);
+  function("mj_embedAssets", &mj_embedAssets_wrapper);
   function("mju_info", &mju_info_wrapper);
   // mj_compile is bound using two overloads to handle the optional MjVFS argument,
   // as using std::optional<MjVFS> caused memory errors due to missing copy/move constructors.

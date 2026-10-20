@@ -937,6 +937,26 @@ Whether to align free joints with the inertial frame.
 
 .. mujoco-include:: mjtAlignFree
 
+.. _mjtPassthrough:
+
+mjtPassthrough
+~~~~~~~~~~~~~~
+
+Which assets the compiler leaves :ref:`by reference<CAssetReference>` instead of loading into :ref:`mjModel`, a
+bitmask; see :ref:`compiler/passthrough<compiler-passthrough>`.
+
+.. mujoco-include:: mjtPassthrough
+
+.. _mjtEmbed:
+
+mjtEmbed
+~~~~~~~~
+
+Whether an asset's payload is in the model or the asset is :ref:`by reference<CAssetReference>`; see
+:ref:`texture/embed<asset-texture-embed>`.
+
+.. mujoco-include:: mjtEmbed
+
 .. _mjtInertiaFromGeom:
 
 mjtInertiaFromGeom
@@ -972,6 +992,15 @@ mjtMeshBuiltin
 Type of built-in procedural mesh.
 
 .. mujoco-include:: mjtMeshBuiltin
+
+.. _mjtFlexSection:
+
+mjtFlexSection
+~~~~~~~~~~~~~~
+
+Cross-section of 1D flex :ref:`elasticity<flex-elasticity>`, see :ref:`section<flex-elasticity-section>`.
+
+.. mujoco-include:: mjtFlexSection
 
 .. _mjtConflict:
 

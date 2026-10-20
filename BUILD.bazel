@@ -3,6 +3,11 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
+load(
+    "//:build_defs.bzl",
+    "cc_headers",
+)
 
 package(default_visibility = ["//visibility:private"])
 
@@ -11,7 +16,18 @@ licenses(["notice"])
 exports_files([
     ".clang-format",
     "LICENSE",
+    "mujoco_plugin.exported_symbols",
+    "mujoco_plugin.lds",
 ])
+
+# The headers of :mujoco and everything it depends on. mujoco_shared exports
+# the C API they declare with MJAPI, like CMake's libmujoco, and the exports
+# test checks that.
+cc_headers(
+    name = "mujoco_api_headers",
+    visibility = ["//test:__pkg__"],
+    deps = [":mujoco"],
+)
 
 package_group(
     name = "visibility",
@@ -32,6 +48,55 @@ cc_library(
         ":_io_plugins",  # buildcleaner: keep
         ":graphics_native",
     ],
+)
+
+# The MuJoCo library as a shared library, like the CMake build's libmujoco:
+# only MuJoCo's API is exported (the mj* functions and variables, and the
+# private _mj* functions used by the Python bindings). Engine internals and the
+# bundled third-party code stay hidden.
+cc_shared_library(
+    name = "mujoco_shared",
+    additional_linker_inputs = select({
+        "@platforms//os:macos": [":mujoco.exported_symbols"],
+        "//conditions:default": [":mujoco.lds"],
+    }),
+    # Libraries linked into this one, which other cc_shared_libraries (the
+    # plugins, the Python extensions) link dynamically instead of statically.
+    # Unrelated to which symbols are exported.
+    exports_filter = ["//:__subpackages__"],
+    shared_lib_name = select({
+        "@platforms//os:macos": "libmujoco.dylib",
+        "//conditions:default": "libmujoco.so",
+    }),
+    # Windows would need a different way to choose the exported symbols.
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    user_link_flags = select({
+        "@platforms//os:macos": [
+            "-Wl,-exported_symbols_list,$(execpath :mujoco.exported_symbols)",
+        ],
+        "//conditions:default": [
+            "-Wl,--version-script=$(execpath :mujoco.lds)",
+        ],
+    }),
+    visibility = [":visibility"],
+    deps = [":mujoco"],
+)
+
+# The C API symbols mujoco_shared exports, generated from the MJAPI declarations
+# in the headers: an ELF version script and a macOS exported-symbols list.
+genrule(
+    name = "mujoco_symbols",
+    srcs = [":mujoco_api_headers"],
+    outs = [
+        "mujoco.lds",
+        "mujoco.exported_symbols",
+    ],
+    cmd = "bash $(execpath :mujoco_symbols.sh) lds $(RULEDIR)/mujoco.lds $(SRCS) && " +
+          "bash $(execpath :mujoco_symbols.sh) exported_symbols $(RULEDIR)/mujoco.exported_symbols $(SRCS)",
+    tools = [":mujoco_symbols.sh"],
 )
 
 cc_library(

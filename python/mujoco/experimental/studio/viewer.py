@@ -14,7 +14,10 @@
 """Interactive Studio GUI viewer for MuJoCo.
 
 Pass ``--plugins=a.py,b.py`` to load ``ViewerPlugin`` and ``SimPlugin``
-subclasses from Python files (see ``plugin.load_plugins``).
+subclasses from Python files (see ``plugin.load_plugins``). With
+``--hot_reload=all``, saving those files, the model file, or its assets reloads
+them without restarting (``plugins``, ``model``, or plugin class names narrow
+that down).
 """
 
 import os
@@ -23,8 +26,6 @@ from absl import app as _app
 from absl import flags as _flags
 from mujoco.experimental.studio import launch_passive
 from mujoco.experimental.studio import plugin
-from mujoco.experimental.studio import sim_history
-from mujoco.experimental.studio import step_control
 from mujoco.experimental.studio import viewer_app
 from mujoco.experimental.studio import viewer_protocol
 
@@ -44,6 +45,12 @@ _PORT = _flags.DEFINE_integer(
 )
 _WIDTH = _flags.DEFINE_integer('width', 1200, 'Width of the output image.')
 _HEIGHT = _flags.DEFINE_integer('height', 800, 'Height of the output image')
+_HOT_RELOAD = _flags.DEFINE_string(
+    'hot_reload',
+    '',
+    "What is reloaded when modified. Options are '', 'plugins', 'model',"
+    " 'all', 'Plugin1,Plugin2,...'. Default is '', meaning nothing.",
+)
 
 
 def _resolve(path: str) -> str:
@@ -61,6 +68,7 @@ def main(argv: list[str]) -> None:
       height=_HEIGHT.value,
       gfx=_GFX.value or '',
       http_port=_PORT.value,
+      hot_reload=_HOT_RELOAD.value,
   )
 
   # Resolve model path, if provided.
@@ -74,8 +82,7 @@ def main(argv: list[str]) -> None:
       model_path=_resolve(model_path),
       plugins=[
           viewer_app.ViewerApp(),
-          step_control.StepControl(),
-          sim_history.SimHistory(),
+          *viewer_app.SIM_PLUGINS,
           *user_plugins,
       ],
   )

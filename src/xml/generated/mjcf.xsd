@@ -408,6 +408,13 @@
     </xs:restriction>
   </xs:simpleType>
 
+  <xs:simpleType name="kw_passthrough">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="none"/>
+      <xs:enumeration value="textures"/>
+    </xs:restriction>
+  </xs:simpleType>
+
   <xs:simpleType name="kw_scaling">
     <xs:restriction base="xs:string">
       <xs:enumeration value="similar"/>
@@ -530,6 +537,13 @@
       <xs:enumeration value="bend"/>
       <xs:enumeration value="stretch"/>
       <xs:enumeration value="both"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="kw_flexsection">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="circle"/>
+      <xs:enumeration value="box"/>
     </xs:restriction>
   </xs:simpleType>
 
@@ -780,6 +794,7 @@
     </xs:attribute>
     <xs:attribute name="alignfree" type="kw_bool"/>
     <xs:attribute name="conflict" type="kw_conflict"/>
+    <xs:attribute name="passthrough" type="kw_passthrough"/>
   </xs:complexType>
 
   <xs:complexType name="option">
@@ -954,11 +969,12 @@
 
   <xs:complexType name="default">
     <xs:annotation>
-      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): default (R), mesh (?), material (?), joint (?), geom (?), site (?), camera (?), light (?), pair (?), default_equality (?), default_tendon (?), general (?), motor (?), position (?), velocity (?), intvelocity (?), orientation (?), pid (?), damper (?), cylinder (?), muscle (?), adhesion (?), dcmotor (?)</xs:documentation>
+      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): default (R), mesh (?), texture (?), material (?), joint (?), geom (?), site (?), camera (?), light (?), pair (?), default_equality (?), default_tendon (?), general (?), motor (?), position (?), velocity (?), intvelocity (?), orientation (?), pid (?), damper (?), cylinder (?), muscle (?), adhesion (?), dcmotor (?)</xs:documentation>
     </xs:annotation>
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:element name="default" type="default"/>
       <xs:element name="mesh" type="default_mesh"/>
+      <xs:element name="texture" type="default_texture"/>
       <xs:element name="material" type="default_material"/>
       <xs:element name="joint" type="default_joint"/>
       <xs:element name="geom" type="default_geom"/>
@@ -1340,6 +1356,35 @@
     <xs:attribute name="scale" type="double3" default="1 1 1"/>
     <xs:attribute name="maxhullvert" type="xs:int" default="-1"/>
     <xs:attribute name="inertia" type="kw_meshinertia" default="legacy"/>
+  </xs:complexType>
+
+  <xs:complexType name="default_texture">
+    <xs:attribute name="type" type="kw_texture" default="cube"/>
+    <xs:attribute name="colorspace" type="kw_colorspace" default="auto"/>
+    <xs:attribute name="gridsize" type="int2" default="1 1"/>
+    <xs:attribute name="gridlayout">
+      <xs:annotation>
+        <xs:documentation>length must equal the gridsize product</xs:documentation>
+      </xs:annotation>
+      <xs:simpleType>
+        <xs:restriction base="xs:string">
+          <xs:minLength value="1"/>
+          <xs:maxLength value="12"/>
+        </xs:restriction>
+      </xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="builtin" type="kw_builtin"/>
+    <xs:attribute name="rgb1" type="double3" default="0.8 0.8 0.8"/>
+    <xs:attribute name="rgb2" type="double3" default="0.5 0.5 0.5"/>
+    <xs:attribute name="mark" type="kw_mark"/>
+    <xs:attribute name="markrgb" type="double3"/>
+    <xs:attribute name="random" type="xs:double" default="0.01"/>
+    <xs:attribute name="width" type="xs:int"/>
+    <xs:attribute name="height" type="xs:int"/>
+    <xs:attribute name="hflip" type="kw_bool"/>
+    <xs:attribute name="vflip" type="kw_bool"/>
+    <xs:attribute name="nchannel" type="xs:int" default="3"/>
+    <xs:attribute name="embed" type="kw_FalseTrueAuto" default="auto"/>
   </xs:complexType>
 
   <xs:complexType name="default_material">
@@ -2029,6 +2074,7 @@
 
   <xs:complexType name="texture">
     <xs:attribute name="name" type="xs:string"/>
+    <xs:attribute name="class" type="xs:string"/>
     <xs:attribute name="type" type="kw_texture" default="cube"/>
     <xs:attribute name="colorspace" type="kw_colorspace" default="auto"/>
     <xs:attribute name="content_type" type="xs:string"/>
@@ -2062,6 +2108,7 @@
     <xs:attribute name="hflip" type="kw_bool"/>
     <xs:attribute name="vflip" type="kw_bool"/>
     <xs:attribute name="nchannel" type="xs:int" default="3"/>
+    <xs:attribute name="embed" type="kw_FalseTrueAuto" default="auto"/>
   </xs:complexType>
 
   <xs:complexType name="material">
@@ -4111,6 +4158,8 @@
     <xs:attribute name="damping" type="xs:double"/>
     <xs:attribute name="thickness" type="xs:double" default="-1"/>
     <xs:attribute name="elastic2d" type="kw_elastic2d"/>
+    <xs:attribute name="section" type="kw_flexsection"/>
+    <xs:attribute name="sectionsize" type="double2"/>
   </xs:complexType>
 
   <xs:complexType name="flexcomp_contact">

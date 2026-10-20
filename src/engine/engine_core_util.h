@@ -195,6 +195,10 @@ int mj_tendonHasStiffness(const mjModel* m, int i);
 // tendon i has a damper: nonzero damping, damping polynomial, or an attached actuator
 int mj_tendonHasDamping(const mjModel* m, int i);
 
+// flex f has a nonzero stretch stiffness record; for volume-mode interpolated flexes,
+// any cell counts (empty cells carry an all-zero block)
+int mj_flexHasStiffness(const mjModel* m, int f);
+
 // does flex f use the passive contact path (metric-carried contacts)
 MJAPI int mj_effFlexContactPossible(const mjModel* m, int f);
 
@@ -203,6 +207,9 @@ int mj_effFlexStiffPossible(const mjModel* m, int f);
 
 // does flex f need the implicit metric treatment: elastic stiffness or passive contact
 MJAPI int mj_effFlexPossible(const mjModel* m, int f);
+
+// does any flex need the implicit metric treatment: elastic stiffness or passive contact
+int mj_effFlexAny(const mjModel* m);
 
 // can this tendon contribute to the metric (model-level; mirrored by island discovery
 // and the sleep wake rule)
@@ -222,6 +229,26 @@ void mj_flexHessian(const mjModel* m, mjData* d, int f);
 // add scale * cached Hessian * vec to res; vectors use flex-local Cartesian vertex order
 void mj_flexHessianMul(const mjModel* m, const mjData* d, int f, mjtNum* res,
                        const mjtNum* vec, mjtNum scale);
+
+//-------------------------- 1D rod bending --------------------------------------------------------
+
+// per-hinge data layout in flex_bending for 1D flexes, after a leading hinge count:
+//   [v_prev, v, v_next, k], energy k |kb|^2 (the reference configuration is straight)
+#define mjROD_HINGE_SIZE 4
+
+// curvature binormal kb = 2 e0 x e1 / (|e0||e1| + e0.e1) of hinge (xa, xv, xb), with
+// e0 = xv - xa and e1 = xb - xv, and its Jacobian J (3x9, columns xa, xv, xb);
+// returns 0 if the hinge is degenerate or fully folded
+int mj_rodHinge(const mjtNum xa[3], const mjtNum xv[3], const mjtNum xb[3],
+                mjtNum kb[3], mjtNum J[27]);
+
+// weights of the hinge energy in kb space, both including the factor 2k:
+//   g:  gradient dE/d(kb)
+//   Wk: Hessian d2E/d(kb)2
+//   Wd: Rayleigh damping weight, restricted to the rate of |kb| (rotation invariant)
+// each output is optional
+void mj_rodHingeWeights(mjtNum g[3], mjtNum Wk[9], mjtNum Wd[9],
+                        const mjtNum kb[3], mjtNum k);
 
 // element-local geometry, quadratic edge response, and stiffness contractions shared by
 // passive forces and both solver paths; keep the helpers visible to the compiler so the

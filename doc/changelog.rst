@@ -7,12 +7,88 @@ Upcoming Version (not yet released)
 
 Engine
 ^^^^^^
+- Added bending :ref:`elasticity<flex-elasticity>` for 1D flexes, using a twist-free isotropic discrete elastic rod
+  model. The cross-section is selected with the new :ref:`section<flex-elasticity-section>` attribute: a circle of the
+  flex radius, or a box with half-sizes :ref:`sectionsize<flex-elasticity-sectionsize>` that uses the stiffness of its
+  weak axis. It is enabled by a positive :ref:`young<flex-elasticity-young>` modulus, requires a straight reference
+  configuration (curved initial poses can be set with ``qpos`` or keyframes), is compatible with edge equality
+  constraints, and is integrated implicitly by the :ref:`discrete<option-integrator>` integrator. Previously ``young``
+  was ignored for 1D flexes: existing models that set it now bend, and fail to compile if the cross-section is
+  degenerate (zero radius with the default circle section), if a vertex joins a zero-length edge, or if the rod is not
+  straight.
 - Trees marked :ref:`sleep="init"<body-sleep>` which cannot be put to sleep now cause a warning rather than an error,
   and start awake. See :ref:`Sleeping<siSleepSleeping>` for details.
 - Added single-shot :ref:`multicontact<coMultiCCD>` for geoms with positive contact :ref:`margins<body-geom-margin>`.
+- :ref:`mj_setConst` now computes only values which follow from other fields of the model, and the compiler resolves
+  the conventions of the spec once. A model which is edited after compilation and passed to :ref:`mj_setConst` is
+  the model which recompiling the edited spec would give, apart from the values the compiler derives once:
+
+  - The compiler alone computes the values which the spec leaves to it: the damping of position actuators given a
+    :ref:`dampratio<actuator-position-dampratio>`, the spring length of tendons given ``(-1, -1)``, the relative pose
+    of welds between bodies given a zero quaternion, and the model statistics. :ref:`mj_setConst` no longer resolves
+    these conventions when they are written into a compiled model; code which did so should set the values directly,
+    which :ref:`mj_copyBack` now copies to the spec for tendon spring lengths too.
+  - Simulation no longer depends on the statistics: the constraint solvers scale their termination criteria by the
+    trace of the current inertia matrix, of the model or of an island, instead of ``mjModel.stat.meaninertia``.
+    Models solved with PGS, noslip or islands disabled can stop at slightly different iterations. The
+    :ref:`meaninertia<statistic-meaninertia>` attribute is deprecated and will be removed in a future release (compiling
+    a model that sets it now gives a warning; remove the attribute to migrate).
+- Interpolated flexes (**trilinear** or **quadratic** :ref:`dofs<body-flexcomp-dof>`) now support
+  :ref:`self-collision<flex-contact-selfcollide>`, excluding elements in the same or neighboring cells.
 
 Compiler
 ^^^^^^^^
+
+.. admonition:: Breaking API changes
+   :class: attention
+
+   - :ref:`mjs_fuseStatic` and :ref:`mjs_discardVisual` now return the number of bodies fused or elements discarded,
+     and -1 on error. Previously they returned 0 on success, so a caller could not tell whether the spec changed. In
+     Python, ``MjSpec.fuse_static`` and ``MjSpec.discard_visual`` return the same number instead of ``None``.
+
+     **Migration:** Test for an error with ``< 0`` rather than ``!= 0``.
+
+- A compiled :ref:`mjSpec` no longer keeps the decoded pixels of its textures between compilations, which lowers the
+  memory of a loaded model by the size of its textures.
+- Added :ref:`mjs_dedupAssets` (``MjSpec.dedup_assets``), which merges the textures and meshes of an :ref:`mjSpec`
+  that would compile to the same asset, as those of a sub-model attached several times do: the first of each group is
+  kept and every reference to the others is rewritten to it. Like :ref:`mjs_fuseStatic`, it returns the number of
+  assets merged.
+.. admonition:: Breaking API changes
+   :class: attention
+
+   - :ref:`mjs_addTexture` now takes a default class, like :ref:`mjs_addMesh` and :ref:`mjs_addMaterial`.
+
+     **Migration:** ``mjs_addTexture(spec)`` → ``mjs_addTexture(spec, NULL)``. ``MjSpec.add_texture`` is unchanged.
+
+- Textures can be left :ref:`by reference<CAssetReference>` instead of being decoded into :ref:`mjModel`. With
+  :ref:`compiler/passthrough<compiler-passthrough>` set to "textures", or :ref:`texture/embed<asset-texture-embed>`
+  set to "false", a texture loaded from a single file is not read at compile time; the model holds its path and not its
+  pixels. A scene which attaches many textured sub-models then loads in a fraction of the memory and time. The default
+  is unchanged: everything embedded.
+
+  - What the model holds: ``tex_adr`` is -1, ``tex_width`` and ``tex_height`` are 0 and ``ntexdata`` excludes the
+    texture; the resolved path is at ``tex_pathadr`` and the authored :ref:`content_type<asset-texture-content_type>`,
+    when there is one, at the new ``tex_contenttypeadr``. Flipped, composite, six-file, procedural, buffer and
+    in-memory textures stay embedded, as does any texture with :at:`embed` "true" (:at:`embed` can be set in a
+    :ref:`default class<default-texture>`).
+  - Getting the pixels: :ref:`mj_loadTexture` decodes a texture of either kind, resolving a
+    :ref:`colorspace<asset-texture-colorspace>` of "auto" as compilation would; :ref:`mj_embedAssets` returns a copy
+    of the model with every by-reference texture loaded, equal to an eager compile, which followed by
+    :ref:`mj_saveModel` gives a hermetic MJB. Both are in Python as ``mujoco.mj_loadTexture`` and
+    ``mujoco.mj_embedAssets``.
+  - Rendering: the built-in renderer loads by-reference textures in :ref:`mjr_makeContext` and
+    :ref:`mjr_uploadTexture`; the Filament renderer loads them through :ref:`mj_loadTexture` too, and uploads each file
+    once for all textures that share it. A file which does not resolve is a warning and an untextured material.
+- Textures can have :ref:`default classes<default-texture>`: ``mjsDefault`` has a ``texture`` member and
+  :ref:`texture<asset-texture>` takes a :ref:`class<asset-texture-class>`.
+- The asset paths in :ref:`mjModel` (``paths`` at ``mesh_pathadr``, ``hfield_pathadr``, ``skin_pathadr`` and
+  ``tex_pathadr``) are now the path or URI from which the compiler read the asset: the model file's directory,
+  ``meshdir`` or ``texturedir``, and the :at:`file`, unless the file is an absolute path or a URI, which is kept as is.
+  :ref:`mju_openResource` opens them directly, from the same working directory and VFS as the compiler. Previously they
+  held the :at:`file` attribute as authored, which could not be resolved after :ref:`attaching<body-attach>` models
+  with different asset directories. Code which prefixed these paths with a directory of its own should pass them to
+  :ref:`mju_openResource` directly.
 - Mesh polygon normals (``mjModel.mesh_polynormal``) are now computed from the whole polygon outline using Newell's
   method rather than the first three vertices (:issue:`3691`).
 
@@ -23,6 +99,19 @@ Python bindings
 - Unallocated arena arrays of ``MjData``, for example ``efm_*`` arrays when the ``discrete`` integrator is not used or
   island arrays when no islands are formed, are now filled with zeros, or with -1 for index fields where -1 means
   "none". Previously they returned uninitialized memory.
+- Fixed several bugs in :ref:`named access<PyNamed>` (``data.actuator('a')``, ``model.joint('j')``, ``data.bind(...)``):
+
+  - Actuator views now follow ``actuator_ctrladr`` and ``actuator_outadr``. An actuator with several controls or force
+    outputs, such as :ref:`orientation<actuator-orientation>`, got the shape of a single row, and every actuator after
+    it got the rows of another. Its views now have a leading dimension of ``ctrlnum`` or ``outnum``, e.g.
+    ``model.actuator('a').gear`` is ``outnum x 6``; actuators with one control and one output keep their shapes.
+  - ``data.actuator('a').moment`` read the sparse ``actuator_moment`` as if it were dense, giving wrong values. It is
+    now a read-only dense copy of the actuator's moment arm, of size ``nv``, or ``outnum x nv``.
+  - The views of multi-column per-dof fields (``cdof``, ``cdof_dot``, ``dof_dampingpoly``) of any joint other than the
+    first pointed at the wrong rows.
+
+  The named accessors of the JavaScript bindings, which are generated from the same tables, had the same bugs and are
+  fixed in the same way, with flat arrays.
 
 Bug fixes
 ^^^^^^^^^
@@ -34,6 +123,28 @@ Bug fixes
   - An error while compiling meshes or textures on the compiler's worker threads crashed the process.
   - :ref:`mj_loadAllPluginLibraries` kept a lock if a library failed to load, so other threads deadlocked.
   - An unknown :ref:`role<material-layer-role>` of a material layer leaked memory instead of causing a parse error.
+  - :ref:`mju_getXMLDependencies` leaked memory when reading or parsing an XML file failed.
+  - Saving a spec with an equality type which the XML writer does not support, such as ``mjEQ_DISTANCE``, called
+    :ref:`mju_error`, which from :ref:`mj_saveLastXML` also left a lock held. It is now a write error.
+  - The Filament renderer called :ref:`mju_error` for a texture with an unsupported number of channels. It now skips the
+    texture with a warning, like the classic renderer.
+- Fixed volume (solid) interpolated flexes whose first cell is empty, e.g. a trilinear :ref:`flexcomp<body-flexcomp>`
+  from a mesh that does not fill the corner of its bounding box. Their elasticity was gated on the stiffness of the
+  first cell, which is zero for an empty cell, so the whole flex had no elastic forces and no implicit stiffness.
+- A flex made with a strain :ref:`equality<flexcomp-edge-equality>` (e.g. by ``body.make_flex``) and then edited to
+  have none, or recompiled after such an edit, now compiles the stiffness of its current configuration. It used to keep
+  the strain constraint eigenmodes as its stiffness matrix, so a flex switched from shell to volumetric ignored
+  ``young`` and ``poisson`` and was unstable.
+- Fixed a bug in the Filament renderer where textures did not allocate mipmap levels, preventing mipmap generation and
+  causing minification aliasing, and where sRGB textures were unconditionally excluded from mipmapping.
+- Fixed a bug in the Filament renderer where skins that share vertices across faces failed with an index count mismatch
+  (:issue:`3719`).
+
+Models
+^^^^^^
+- The `elastic mechanism <https://github.com/google-deepmind/mujoco/tree/main/model/flex/mechanisms/>`__ example models
+  now use 1D flex rods: the cantilever comparison of quadratic flexes adds a rod, and the elastic slider-crank and the
+  tendon-loaded dipper arm are built from rods.
 
 Version 3.16.0 (October 14, 2026)
 ---------------------------------
