@@ -89,6 +89,12 @@ typedef enum mjtMeshBuiltin {      // type of built-in procedural mesh
 } mjtMeshBuiltin;
 
 
+typedef enum mjtFlexSection {      // cross-section of 1D flex elasticity
+  mjFLEXSECTION_CIRCLE = 0,        // circle of the flex radius
+  mjFLEXSECTION_BOX                // box with half-sizes sectionsize
+} mjtFlexSection;
+
+
 typedef enum mjtBuiltin {          // type of built-in procedural texture
   mjBUILTIN_NONE = 0,              // no built-in texture
   mjBUILTIN_GRADIENT,              // gradient: rgb1->rgb2
@@ -117,6 +123,19 @@ typedef enum mjtAlignFree {        // whether to align free joints with the iner
   mjALIGNFREE_TRUE,                // align
   mjALIGNFREE_AUTO,                // respect the global compiler flag
 } mjtAlignFree;
+
+
+typedef enum mjtPassthrough {      // which assets the compiler leaves by reference (bitmask)
+  mjPASSTHROUGH_NONE     = 0,      // all assets embedded
+  mjPASSTHROUGH_TEXTURES = 1<<0,   // textures by reference; meshes reserved for a later bit
+} mjtPassthrough;
+
+
+typedef enum mjtEmbed {            // whether an asset's payload is in the model
+  mjEMBED_FALSE = 0,               // by reference
+  mjEMBED_TRUE,                    // embedded
+  mjEMBED_AUTO,                    // respect the global compiler flag
+} mjtEmbed;
 
 
 typedef enum mjtInertiaFromGeom {  // whether to infer body inertias from child geoms
@@ -205,6 +224,7 @@ typedef struct mjsCompiler_ {      // compiler options
   mjtBool savecanonical;           // save quaternions and radians, not the notation of the spec
   mjtBool alignfree;               // align free joints with inertial frame
   mjtConflict conflict;            // conflict resolution for attach
+  mjtPassthrough passthrough;      // assets left by reference (bitmask)
   mjLROpt LRopt;                   // options for lengthrange computation
   mjString* meshdir;               // mesh and hfield directory
   mjString* texturedir;            // texture directory
@@ -534,6 +554,8 @@ typedef struct mjsFlex_ {          // flex specification
   int elastic2d;                   // 2D passive forces; 0: none, 1: bending, 2: stretching, 3: both
   int elastic3d;  // experimental 3D material (mjSpec only); 0: Saint
                   // Venant-Kirchhoff, 1: Stable Neo-Hookean
+  mjtFlexSection section;          // 1D cross-section (mjtFlexSection)
+  double sectionsize[2];           // 1D box cross-section half-sizes
   int cellcount[3];                // grid cell count for finite cell method
   int order;                       // interpolation order (1: trilinear, 2: quadratic)
 
@@ -646,6 +668,9 @@ typedef struct mjsTexture_ {       // texture specification
   // flip options
   mjtBool hflip;                   // horizontal flip
   mjtBool vflip;                   // vertical flip
+
+  // payload
+  mjtEmbed embed;                  // pixels in the model, or the file by reference
 
   // other
   mjString* info;                  // message appended to compiler errors
@@ -877,6 +902,7 @@ typedef struct mjsDefault_ {       // default specification
   mjsLight* light;                 // light defaults
   mjsFlex* flex;                   // flex defaults
   mjsMesh* mesh;                   // mesh defaults
+  mjsTexture* texture;             // texture defaults
   mjsMaterial* material;           // material defaults
   mjsPair* pair;                   // pair defaults
   mjsEquality* equality;           // equality defaults

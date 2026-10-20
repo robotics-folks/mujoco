@@ -80,12 +80,12 @@ class NativeViewer(viewer_protocol.Viewer):
     # so we can detect when the model changes and re-initialize.
     self._renderer_model_id = id(None)
 
-    ctx = self._viewer.GetImGuiContext()
+    ctx = _viewer.GetImGuiContext()
     imgui.SetCurrentContext(ctx)
     ux.set_imgui_context(ctx)
-    ux.set_implot_context(self._viewer.GetImPlotContext())
+    ux.set_implot_context(_viewer.GetImPlotContext())
     implot.set_imgui_context(ctx)
-    implot.set_implot_context(self._viewer.GetImPlotContext())
+    implot.set_implot_context(_viewer.GetImPlotContext())
 
     # Dispatch lifecycle event so handlers can cache the viewer reference.
     try:
@@ -163,36 +163,3 @@ class NativeViewer(viewer_protocol.Viewer):
       The texture ID.
     """
     return self._viewer.UploadImage(tex_id, img, width, height, bpp)
-
-  def render_to_texture(
-      self,
-      model: mujoco.MjModel,
-      data: mujoco.MjData,
-      tex_id: int,
-      width: int,
-      height: int,
-  ) -> int:
-    """Renders the scene to a texture.
-
-    This function renders the scene from the current camera view into a texture.
-    It handles buffer allocation internally.
-
-    Args:
-      model: The MuJoCo model provided by the simulation.
-      data: The MuJoCo data provided by the simulation.
-      tex_id: The texture ID to render into (0 to create a new one).
-      width: Width of the texture.
-      height: Height of the texture.
-
-    Returns:
-      The texture ID.
-    """
-    self._sync_renderer(model)
-    return self._viewer.RenderToTexture(
-        model,
-        data,
-        self.camera,
-        width,
-        height,
-        tex_id,
-    )

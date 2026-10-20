@@ -25,6 +25,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -2129,7 +2130,7 @@ TEST_F(MujocoTest, DisableCache) {
 TEST_F(MujocoTest, TextureFromBuffer) {
   mjSpec* spec = mj_makeSpec();
 
-  mjsTexture* t1 = mjs_addTexture(spec);
+  mjsTexture* t1 = mjs_addTexture(spec, nullptr);
   mjs_setName(t1->element, "tex1");
   t1->type = mjTEXTURE_2D;
   t1->width = 3;
@@ -2137,7 +2138,7 @@ TEST_F(MujocoTest, TextureFromBuffer) {
   t1->nchannel = 3;
   mjs_setBuffer(t1->data, (std::byte*)tex1, 18);
 
-  mjsTexture* t2 = mjs_addTexture(spec);
+  mjsTexture* t2 = mjs_addTexture(spec, nullptr);
   mjs_setName(t2->element, "tex2");
   t2->type = mjTEXTURE_2D;
   t2->width = 3;
@@ -2171,7 +2172,7 @@ TEST_F(MujocoTest, TextureFromBuffer) {
 // not fill it for textures made from a file or a builtin
 TEST_F(MujocoTest, TextureBufferIsAuthored) {
   mjSpec* spec = mj_makeSpec();
-  mjsTexture* texture = mjs_addTexture(spec);
+  mjsTexture* texture = mjs_addTexture(spec, nullptr);
   mjs_setName(texture->element, "texture");
   texture->type = mjTEXTURE_2D;
   texture->width = 2;
@@ -2205,13 +2206,131 @@ TEST_F(MujocoTest, TextureBufferIsAuthored) {
   mj_deleteSpec(spec);
 }
 
+// a texture added with a class takes the class's texture defaults, one
+// added without a class takes the main defaults
+TEST_F(MujocoTest, TextureDefaults) {
+  mjSpec* spec = mj_makeSpec();
+  mjsDefault* main = mjs_getSpecDefault(spec);
+  ASSERT_THAT(main->texture, NotNull());
+  EXPECT_EQ(main->texture->nchannel, 3);
+  EXPECT_EQ(main->texture->type, mjTEXTURE_CUBE);
+
+  mjsDefault* def = mjs_addDefault(spec, "flat", main);
+  def->texture->type = mjTEXTURE_2D;
+  def->texture->builtin = mjBUILTIN_FLAT;
+  def->texture->width = 2;
+  def->texture->height = 3;
+  def->texture->rgb1[0] = 0.25;
+  EXPECT_EQ(mjs_findDefault(spec, "flat")->texture->builtin, mjBUILTIN_FLAT);
+
+  // a child class inherits the texture defaults of its parent
+  mjsDefault* child = mjs_addDefault(spec, "child", def);
+  EXPECT_EQ(child->texture->builtin, mjBUILTIN_FLAT);
+  EXPECT_EQ(child->texture->height, 3);
+
+  mjsTexture* with = mjs_addTexture(spec, def);
+  mjs_setName(with->element, "with");
+  EXPECT_EQ(with->type, mjTEXTURE_2D);
+  EXPECT_EQ(with->builtin, mjBUILTIN_FLAT);
+  EXPECT_EQ(with->width, 2);
+  EXPECT_EQ(with->height, 3);
+  EXPECT_EQ(with->rgb1[0], 0.25);
+  EXPECT_EQ(mjs_getDefault(with->element), def);
+
+  mjsTexture* without = mjs_addTexture(spec, nullptr);
+  mjs_setName(without->element, "without");
+  EXPECT_EQ(without->type, mjTEXTURE_CUBE);
+  EXPECT_EQ(without->builtin, mjBUILTIN_NONE);
+  EXPECT_EQ(without->width, 0);
+  EXPECT_EQ(mjs_getDefault(without->element), main);
+  without->type = mjTEXTURE_2D;
+  without->builtin = mjBUILTIN_CHECKER;
+  without->width = 4;
+  without->height = 4;
+
+  // the model has what the class gave the texture
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  EXPECT_EQ(model->tex_type[0], mjTEXTURE_2D);
+  EXPECT_EQ(model->tex_width[0], 2);
+  EXPECT_EQ(model->tex_height[0], 3);
+  EXPECT_EQ(model->tex_data[0], (mjtByte)(255 * 0.25));
+  EXPECT_EQ(model->tex_width[1], 4);
+
+  // the class and its texture defaults are saved
+  std::string saved = SaveAndReadXml(spec);
+  EXPECT_THAT(saved, HasSubstr("<default class=\"flat\">"));
+  EXPECT_THAT(saved, HasSubstr("name=\"with\" class=\"flat\"/>"));
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
+// texture classes of an attached spec are kept, under the attach prefix
+TEST_F(MujocoTest, AttachKeepsTextureDefaults) {
+  static constexpr char xml_child[] = R"(
+  <mujoco>
+    <default>
+      <default class="tex">
+        <texture type="2d" builtin="checker" width="4" height="4"/>
+      </default>
+    </default>
+    <asset>
+      <texture name="checker" class="tex"/>
+      <material name="mat" texture="checker"/>
+    </asset>
+    <worldbody>
+      <body name="body">
+        <geom size="1" material="mat"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char xml_parent[] = R"(
+  <mujoco>
+    <worldbody>
+      <frame name="frame"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> err;
+  mjSpec* child = mj_parseXMLString(xml_child, 0, err.data(), err.size());
+  ASSERT_THAT(child, NotNull()) << err.data();
+  mjSpec* parent = mj_parseXMLString(xml_parent, 0, err.data(), err.size());
+  ASSERT_THAT(parent, NotNull()) << err.data();
+
+  mjsElement* attached =
+      mjs_attach(mjs_findFrame(parent, "frame")->element,
+                 mjs_findBody(child, "body")->element, "child-", "");
+  ASSERT_THAT(attached, NotNull()) << mjs_getError(parent);
+
+  mjsDefault* def = mjs_findDefault(parent, "child-tex");
+  ASSERT_THAT(def, NotNull());
+  EXPECT_EQ(def->texture->builtin, mjBUILTIN_CHECKER);
+  mjsTexture* texture =
+      mjs_asTexture(mjs_findElement(parent, mjOBJ_TEXTURE, "child-checker"));
+  ASSERT_THAT(texture, NotNull());
+  EXPECT_EQ(mjs_getDefault(texture->element), def);
+
+  mjModel* model = mj_compile(parent, 0);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(parent);
+  EXPECT_EQ(model->ntex, 1);
+  EXPECT_EQ(model->tex_width[0], 4);
+  EXPECT_THAT(SaveAndReadXml(parent),
+              HasSubstr("name=\"child-checker\" class=\"child-tex\"/>"));
+
+  mj_deleteModel(model);
+  mj_deleteSpec(child);
+  mj_deleteSpec(parent);
+}
+
 TEST_F(MujocoTest, TestTextureFlip) {
   mjSpec* spec = mj_makeSpec();
   EXPECT_THAT(spec, NotNull());
 
   std::vector<std::byte> texture_data = {std::byte{1}, std::byte{2},
                                          std::byte{3}, std::byte{4}};
-  mjsTexture* texture = mjs_addTexture(spec);
+  mjsTexture* texture = mjs_addTexture(spec, nullptr);
   mjs_setName(texture->element, "hflipped");
   texture->type = mjTEXTURE_2D;
   texture->width = 2;
@@ -2224,7 +2343,7 @@ TEST_F(MujocoTest, TestTextureFlip) {
                   std::byte{22}, std::byte{23}, std::byte{31}, std::byte{32},
                   std::byte{33}, std::byte{41}, std::byte{42}, std::byte{43}};
 
-  texture = mjs_addTexture(spec);
+  texture = mjs_addTexture(spec, nullptr);
   mjs_setName(texture->element, "vflipped");
   texture->type = mjTEXTURE_2D;
   texture->width = 2;
@@ -5859,7 +5978,7 @@ TEST_F(MujocoTest, InitTexture) {
   mjSpec* spec = mj_makeSpec();
   EXPECT_THAT(spec, NotNull());
 
-  mjsTexture* texture = mjs_addTexture(spec);
+  mjsTexture* texture = mjs_addTexture(spec, nullptr);
   mjs_setName(texture->element, "checker");
   texture->type = mjTEXTURE_CUBE;
   texture->builtin = mjBUILTIN_CHECKER;
@@ -9132,6 +9251,51 @@ TEST_F(CopyBackTest, WritesVectors) {
   mj_deleteModel(again);
   mj_deleteModel(model);
   mj_deleteSpec(authored);
+  mj_deleteSpec(spec);
+}
+
+// a spring length which was changed is written, in place of one which
+// compilation computed
+TEST_F(CopyBackTest, WritesSpringLength) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="slider" type="slide"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed stiffness="1">
+        <joint joint="slider" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  std::array<char, 1000> er;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, er.data(), er.size());
+  ASSERT_THAT(spec, NotNull()) << er.data();
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  mjsTendon* tendon = mjs_asTendon(mjs_firstElement(spec, mjOBJ_TENDON));
+
+  // unchanged, the computed length stays computed
+  ASSERT_EQ(mj_copyBack(spec, model), 1) << mjs_getError(spec);
+  EXPECT_EQ(tendon->springlength[0], -1);
+  EXPECT_EQ(tendon->springlength[1], -1);
+
+  model->tendon_lengthspring[0] = 0.25;
+  model->tendon_lengthspring[1] = 0.5;
+  ASSERT_EQ(mj_copyBack(spec, model), 1) << mjs_getError(spec);
+  EXPECT_EQ(tendon->springlength[0], 0.25);
+  EXPECT_EQ(tendon->springlength[1], 0.5);
+  mjModel* again = mj_compile(spec, nullptr);
+  ASSERT_THAT(again, NotNull()) << mjs_getError(spec);
+  EXPECT_EQ(again->tendon_lengthspring[0], 0.25);
+  EXPECT_EQ(again->tendon_lengthspring[1], 0.5);
+
+  mj_deleteModel(again);
+  mj_deleteModel(model);
   mj_deleteSpec(spec);
 }
 

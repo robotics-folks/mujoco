@@ -79,7 +79,6 @@ from mujoco.mjx.third_party.mujoco_warp._src.sensor import sensor_vel as sensor_
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const as set_const
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_0 as set_const_0
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_fixed as set_const_fixed
-from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_spring as set_const_spring
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_length_range as set_length_range
 from mujoco.mjx.third_party.mujoco_warp._src.smooth import camlight as camlight
 from mujoco.mjx.third_party.mujoco_warp._src.smooth import com_pos as com_pos
@@ -123,5 +122,4 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import OverflowType as Overfl
 from mujoco.mjx.third_party.mujoco_warp._src.types import RenderContext as RenderContext
 from mujoco.mjx.third_party.mujoco_warp._src.types import SolverType as SolverType
 from mujoco.mjx.third_party.mujoco_warp._src.types import State as State
-from mujoco.mjx.third_party.mujoco_warp._src.types import Statistic as Statistic
 from mujoco.mjx.third_party.mujoco_warp._src.types import TrnType as TrnType

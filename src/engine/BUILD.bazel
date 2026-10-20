@@ -49,17 +49,10 @@ alias(
 
 cc_library(
     name = "engine",
-    srcs = [
-        "engine_derivative_fd.c",
-        "engine_setconst.c",
-    ],
-    hdrs = [
-        "engine_derivative_fd.h",
-        "engine_setconst.h",
-    ],
+    srcs = ["engine_print.c"],
+    hdrs = ["engine_print.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -73,21 +66,89 @@ cc_library(
     deps = [
         ":engine_core",
         ":engine_core_util",
+        ":engine_derivative",  # buildcleaner: keep
+        ":engine_derivative_fd",  # buildcleaner: keep
+        ":engine_forward",  # buildcleaner: keep
+        ":engine_io",
+        ":engine_macro",
+        ":engine_memory",  # buildcleaner: keep
+        ":engine_name",
+        ":engine_setconst",  # buildcleaner: keep
+        ":engine_support",
+        ":engine_util_blas",  # buildcleaner: keep
+        ":engine_util_errmem",
+        ":engine_util_misc",
+        ":engine_util_solve",  # buildcleaner: keep
+        ":engine_util_sparse",  # buildcleaner: keep
+        ":engine_util_spatial",  # buildcleaner: keep
+        ":engine_vis",  # buildcleaner: keep
+        ":engine_vis_init",  # buildcleaner: keep
+        "//:libmujoco_hdrs",
+    ],
+)
+
+alias(
+    name = "engine_print",
+    actual = ":engine",
+)
+
+cc_library(
+    name = "engine_derivative_fd",
+    srcs = ["engine_derivative_fd.c"],
+    hdrs = ["engine_derivative_fd.h"],
+    conlyopts = ["-std=c11"],
+    copts = [
+        "-I" + MJ_ROOT + "/src",
+        "-Wshadow",
+    ],
+    cxxopts = ["-std=c++20"],
+    local_defines = [
+        "MUJOCO_DLL_EXPORTS",
+        "_GNU_SOURCE",
+        "mjUSEPLATFORMSIMD",
+    ],
+    deps = [
+        ":engine_forward",
+        ":engine_macro",
+        ":engine_memory",
+        ":engine_support",
+        ":engine_util_blas",
+        ":engine_util_errmem",
+        ":engine_util_misc",
+        "//:libmujoco_hdrs",
+    ],
+    # nothing else in the engine calls mjd_transitionFD and mjd_inverseFD
+    alwayslink = 1,
+)
+
+cc_library(
+    name = "engine_setconst",
+    srcs = ["engine_setconst.c"],
+    hdrs = ["engine_setconst.h"],
+    conlyopts = ["-std=c11"],
+    copts = [
+        "-I" + MJ_ROOT + "/src",
+        "-Wshadow",
+    ],
+    cxxopts = ["-std=c++20"],
+    local_defines = [
+        "MUJOCO_DLL_EXPORTS",
+        "_GNU_SOURCE",
+        "mjUSEPLATFORMSIMD",
+    ],
+    deps = [
+        ":engine_core",
+        ":engine_core_util",
         ":engine_derivative",
         ":engine_forward",
         ":engine_io",
-        ":engine_macro",
         ":engine_memory",
-        ":engine_print",  # buildcleaner: keep
-        ":engine_support",
         ":engine_util_blas",
         ":engine_util_errmem",
         ":engine_util_misc",
         ":engine_util_solve",
         ":engine_util_sparse",
         ":engine_util_spatial",
-        ":engine_vis",  # buildcleaner: keep
-        ":engine_vis_init",  # buildcleaner: keep
         "//:libmujoco_hdrs",
     ],
 )
@@ -106,7 +167,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -149,7 +209,6 @@ cc_library(
     hdrs = ["engine_solver.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -176,35 +235,6 @@ cc_library(
 )
 
 cc_library(
-    name = "engine_print",
-    srcs = ["engine_print.c"],
-    hdrs = ["engine_print.h"],
-    conlyopts = ["-std=c11"],
-    copts = [
-        "-I" + MJ_ROOT + "/include",
-        "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
-    ],
-    cxxopts = ["-std=c++20"],
-    local_defines = [
-        "MUJOCO_DLL_EXPORTS",
-        "_GNU_SOURCE",
-    ],
-    deps = [
-        ":engine_core",
-        ":engine_core_util",
-        ":engine_io",
-        ":engine_macro",
-        ":engine_name",
-        ":engine_support",
-        ":engine_util_errmem",
-        ":engine_util_misc",
-        ":engine_vis_init",
-        "//:libmujoco_hdrs",
-    ],
-)
-
-cc_library(
     name = "engine_derivative",
     srcs = [
         "engine_derivative.c",
@@ -218,7 +248,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -253,7 +282,6 @@ cc_library(
     hdrs = ["engine_sensor.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -287,7 +315,6 @@ cc_library(
     name = "engine_array_safety",
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -306,7 +333,6 @@ cc_library(
     hdrs = ["engine_callback.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -332,7 +358,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -362,7 +387,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -404,7 +428,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -433,7 +456,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -463,7 +485,6 @@ cc_library(
     hdrs = ["engine_collision_primitive.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -488,7 +509,6 @@ cc_library(
     hdrs = ["engine_collision_flex.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -515,7 +535,6 @@ cc_library(
     hdrs = ["engine_collision_continuous.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -532,6 +551,7 @@ cc_library(
         ":engine_util_blas",
         ":engine_util_errmem",
         ":engine_util_misc",
+        ":engine_util_spatial",
         "//:mjdata_hdrs",
         "//:mjmodel_hdrs",
         "//:mjtype_hdrs",
@@ -544,7 +564,6 @@ cc_library(
     hdrs = ["engine_crossplatform.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -561,7 +580,6 @@ cc_library(
     hdrs = ["engine_core_util.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -594,7 +612,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -627,7 +644,6 @@ cc_library(
     hdrs = ["engine_island.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -652,7 +668,6 @@ cc_library(
     hdrs = ["engine_support.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -689,7 +704,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -723,7 +737,6 @@ cc_library(
     hdrs = ["engine_vis_init.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -747,7 +760,6 @@ cc_library(
     hdrs = ["engine_init.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -767,7 +779,6 @@ cc_library(
     hdrs = ["engine_io.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -789,7 +800,6 @@ cc_library(
     hdrs = ["engine_io.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -819,7 +829,6 @@ cc_library(
     hdrs = ["engine_macro.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -840,7 +849,6 @@ cc_library(
     hdrs = ["engine_memory.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -862,7 +870,6 @@ cc_library(
     hdrs = ["engine_name.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -887,7 +894,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -909,7 +915,6 @@ cc_library(
     hdrs = ["engine_sleep.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -934,7 +939,6 @@ cc_library(
     hdrs = ["engine_sort.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -954,7 +958,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -975,7 +978,6 @@ cc_library(
     hdrs = ["engine_util_errmem.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -1000,7 +1002,6 @@ cc_library(
     hdrs = ["engine_util_misc.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -1030,7 +1031,6 @@ cc_library(
     ],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -1054,7 +1054,6 @@ cc_library(
     hdrs = ["engine_util_spatial.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -1077,7 +1076,6 @@ cc_library(
     hdrs = ["engine_util_solve.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],
@@ -1102,10 +1100,7 @@ cc_library(
     name = "engine_inline",
     hdrs = ["engine_inline.h"],
     conlyopts = ["-std=c11"],
-    copts = [
-        "-I" + MJ_ROOT + "/include",
-        "-I" + MJ_ROOT + "/src",
-    ],
+    copts = ["-I" + MJ_ROOT + "/src"],
     cxxopts = ["-std=c++20"],
     local_defines = [
         "MUJOCO_DLL_EXPORTS",
@@ -1123,7 +1118,6 @@ cc_library(
     hdrs = ["engine_thread.h"],
     conlyopts = ["-std=c11"],
     copts = [
-        "-I" + MJ_ROOT + "/include",
         "-I" + MJ_ROOT + "/src",
         "-Wshadow",
     ],

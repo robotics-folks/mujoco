@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
@@ -393,6 +394,32 @@ TEST_F(MjCMeshTest, LoadTorus) {
   mj_deleteModel(model);
 }
 
+TEST_F(MjCMeshTest, SavedContentTypeIndependentOfCache) {
+  const std::string xml_path = GetTestDataFilePath(kTorusPath);
+  std::array<char, 1024> error;
+
+  // the second compilation loads the mesh from the asset cache
+  std::array<std::string, 2> saved;
+  for (std::string& xml : saved) {
+    mjSpec* spec =
+        mj_parseXML(xml_path.c_str(), nullptr, error.data(), error.size());
+    ASSERT_THAT(spec, NotNull()) << error.data();
+    mjModel* model = mj_compile(spec, nullptr);
+    ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+    std::array<char, 8192> str;
+    ASSERT_EQ(mj_saveXMLString(spec, str.data(), str.size(), error.data(),
+                               error.size()),
+              0)
+        << error.data();
+    xml = str.data();
+    mj_deleteModel(model);
+    mj_deleteSpec(spec);
+  }
+
+  EXPECT_THAT(saved[0], HasSubstr("content_type=\"model/obj\""));
+  EXPECT_EQ(saved[0], saved[1]);
+}
+
 TEST_F(MjCMeshTest, LoadTorusQuads) {
   const std::string xml_path = GetTestDataFilePath(kTorusQuadsPath);
   std::array<char, 1024> error;
@@ -426,8 +453,11 @@ TEST_F(MjCMeshTest, SaveMeshOnce) {
   const std::string xml_path = GetTestDataFilePath(kCubePath);
   std::array<char, 1024> error;
   mjModel* model = mj_loadXML(xml_path.c_str(), 0, error.data(), error.size());
-  // Confirm the mesh file is loaded and stored in paths
-  EXPECT_EQ(std::string(&model->paths[model->mesh_pathadr[0]]), "cube.obj");
+  // Confirm the mesh file is loaded and its resolved path stored in paths
+  EXPECT_EQ(std::filesystem::path(&model->paths[model->mesh_pathadr[0]])
+                .lexically_normal(),
+            std::filesystem::path(GetTestDataFilePath("user/testdata/cube.obj"))
+                .lexically_normal());
   std::string saved_xml = SaveAndReadXml(model);
   EXPECT_THAT(saved_xml, Not(testing::HasSubstr("vertex")));
   mj_deleteModel(model);
@@ -1352,6 +1382,39 @@ TEST_F(MjCMeshTest, PolygonNormalCollinearOutline) {
     max_z = mju_max(max_z, n_user[2]);
   }
   EXPECT_NEAR(max_z, 1.0, MjTol(1e-4, 1e-4));
+}
+
+TEST_F(MjCMeshTest, PolygonNormalTriangularOutlineOfSeveralFaces) {
+  // A triangular prism whose top vertex (0.5, 0.3, 0.10001) is slightly
+  // raised: the top polygon is a triangle merged from three faces.
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="prism"
+            vertex="0 0 0.1   1 0 0.1   0.5 0.9 0.1   0.5 0.3 0.10001
+                    0 0 0     1 0 0     0.5 0.9 0"/>
+    </asset>
+    <worldbody>
+      <geom type="mesh" mesh="prism"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model, NotNull()) << error.data();
+  ASSERT_EQ(model->nmeshpoly, 5);
+
+  // Rotate polygon normals from mesh inertial frame back to user frame; the
+  // top (+z) and bottom (-z) polygons must both point outward.
+  mjtNum max_z = -1, min_z = 1;
+  for (int p = 0; p < model->nmeshpoly; ++p) {
+    mjtNum n_user[3];
+    mju_rotVecQuat(n_user, model->mesh_polynormal + 3 * p, model->mesh_quat);
+    max_z = mju_max(max_z, n_user[2]);
+    min_z = mju_min(min_z, n_user[2]);
+  }
+  EXPECT_NEAR(max_z, 1.0, MjTol(1e-4, 1e-4));
+  EXPECT_NEAR(min_z, -1.0, MjTol(1e-4, 1e-4));
 }
 
 TEST_F(MjCMeshTest, NegativeScaleUserMeshCompiles) {

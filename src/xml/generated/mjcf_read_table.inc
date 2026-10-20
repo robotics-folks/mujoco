@@ -44,6 +44,7 @@ inline constexpr mjXAttr kCompilerAttrs[] = {
   {"savecanonical", mjXAttr::kBool, 1, true, false, false, false, (int)offsetof(mjsCompiler, savecanonical)},
   {"alignfree", mjXAttr::kBool, 1, true, false, false, false, (int)offsetof(mjsCompiler, alignfree)},
   {"conflict", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsCompiler, conflict), conflict_map, conflict_sz},
+  {"passthrough", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsCompiler, passthrough), passthrough_map, passthrough_sz},
 };
 inline constexpr int kCompilerAttrsN = sizeof(kCompilerAttrs) / sizeof(kCompilerAttrs[0]);
 
@@ -269,7 +270,7 @@ inline constexpr mjXAttr kTextureAttrs[] = {
   {"name", mjXAttr::kName, 1, true, false, true, false, -1},
   {"type", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsTexture, type), texture_map, texture_sz},
   {"colorspace", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsTexture, colorspace), colorspace_map, colorspace_sz},
-  {"content_type", mjXAttr::kString, 1, true, false, false, false, (int)offsetof(mjsTexture, content_type)},
+  {"content_type", mjXAttr::kString, 1, true, false, true, false, (int)offsetof(mjsTexture, content_type)},
   {"gridsize", mjXAttr::kInt, 2, true, false, false, false, (int)offsetof(mjsTexture, gridsize)},
   {"gridlayout", mjXAttr::kChars, 12, false, false, false, false, (int)offsetof(mjsTexture, gridlayout)},
   {"builtin", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsTexture, builtin), builtin_map, builtin_sz},
@@ -283,6 +284,7 @@ inline constexpr mjXAttr kTextureAttrs[] = {
   {"hflip", mjXAttr::kBool, 1, true, false, false, false, (int)offsetof(mjsTexture, hflip)},
   {"vflip", mjXAttr::kBool, 1, true, false, false, false, (int)offsetof(mjsTexture, vflip)},
   {"nchannel", mjXAttr::kInt, 1, true, false, false, false, (int)offsetof(mjsTexture, nchannel)},
+  {"embed", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsTexture, embed), FalseTrueAuto_map, FalseTrueAuto_sz},
 };
 inline constexpr int kTextureAttrsN = sizeof(kTextureAttrs) / sizeof(kTextureAttrs[0]);
 
@@ -448,6 +450,8 @@ inline constexpr mjXAttr kElasticityAttrs[] = {
   {"damping", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, damping)},
   {"thickness", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, thickness)},
   {"elastic2d", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsFlex, elastic2d), elastic2d_map, elastic2d_sz},
+  {"section", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsFlex, section), flexsection_map, flexsection_sz},
+  {"sectionsize", mjXAttr::kDouble, 2, true, false, false, false, (int)offsetof(mjsFlex, sectionsize)},
 };
 inline constexpr int kElasticityAttrsN = sizeof(kElasticityAttrs) / sizeof(kElasticityAttrs[0]);
 

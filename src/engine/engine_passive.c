@@ -41,12 +41,12 @@
 // passive forces for interpolated flex (stretch + bending)
 static void mj_flexPassiveInterp(const mjModel* m, mjData* d, int f,
                                  int enbl_spring, int enbl_damper) {
-  int stiffnessadr = m->flex_stiffnessadr[f];
-  if (stiffnessadr < 0) {
+  // check if we have any work to do (element 0 may be an empty cell with zero stiffness)
+  if (m->flex_edgeequality[f] == 3 || !mj_flexHasStiffness(m, f)) {
     return;
   }
 
-  mjtNum* k = m->flex_stiffness + stiffnessadr;
+  mjtNum* k = m->flex_stiffness + m->flex_stiffnessadr[f];
   int nodenum = m->flex_nodenum[f];
 
   int order = m->flex_interp[f];
@@ -66,12 +66,6 @@ static void mj_flexPassiveInterp(const mjModel* m, mjData* d, int f,
   } else {
     npe = (order+1)*(order+1)*(order+1);
     nelem_fe = cx * cy * cz;
-  }
-
-  // check if we have any work to do
-  int has_stretch = k[0] != 0 && m->flex_edgeequality[f] != 3;
-  if (!has_stretch) {
-    return;
   }
 
   mj_markStack(d);
@@ -101,62 +95,60 @@ static void mj_flexPassiveInterp(const mjModel* m, mjData* d, int f,
   int* gindices = mjSTACKALLOC(d, npe, int);
 
   // -------------------- stretch forces --------------------
-  if (has_stretch) {
-    for (int fe = 0; fe < nelem_fe; fe++) {
-      // get element stiffness matrix
-      mjtNum* k_elem = k + fe * 3*npe * 3*npe;
+  for (int fe = 0; fe < nelem_fe; fe++) {
+    // get element stiffness matrix
+    mjtNum* k_elem = k + fe * 3*npe * 3*npe;
 
-      // skip empty elements (zero stiffness)
-      if (k_elem[0] == 0) {
-        continue;
-      }
+    // skip empty elements (zero stiffness)
+    if (k_elem[0] == 0) {
+      continue;
+    }
 
-      // gather element-local node data and compute corotational rotation
-      mjtNum quat[4];
-      if (shell_mode) {
-        mju_flexGatherFaceState(order, cx, cy, cz, fe, xpos_g, vel_g, xpos0,
-                                xpos_e, vel_e, xpos0_e, gindices, quat);
-      } else {
-        int ci = fe / (cy * cz);
-        int cj = (fe / cz) % cy;
-        int ck = fe % cz;
-        mju_flexGatherCellState(order, cy, cz, ci, cj, ck, xpos_g, vel_g,
-                                xpos0, xpos_e, vel_e, xpos0_e, gindices,
-                                quat);
-      }
+    // gather element-local node data and compute corotational rotation
+    mjtNum quat[4];
+    if (shell_mode) {
+      mju_flexGatherFaceState(order, cx, cy, cz, fe, xpos_g, vel_g, xpos0,
+                              xpos_e, vel_e, xpos0_e, gindices, quat);
+    } else {
+      int ci = fe / (cy * cz);
+      int cj = (fe / cz) % cy;
+      int ck = fe % cz;
+      mju_flexGatherCellState(order, cy, cz, ci, cj, ck, xpos_g, vel_g,
+                              xpos0, xpos_e, vel_e, xpos0_e, gindices,
+                              quat);
+    }
 
-      // rotate to corotational frame
-      for (int n = 0; n < npe; n++) {
-        mju_rotVecQuat(xpos_e+3*n, xpos_e+3*n, quat);
-        mju_rotVecQuat(vel_e+3*n, vel_e+3*n, quat);
-      }
+    // rotate to corotational frame
+    for (int n = 0; n < npe; n++) {
+      mju_rotVecQuat(xpos_e+3*n, xpos_e+3*n, quat);
+      mju_rotVecQuat(vel_e+3*n, vel_e+3*n, quat);
+    }
 
-      // compute displacement
-      for (int n = 0; n < npe; n++) {
-        mji_addScl3(displ_e+3*n, xpos_e+3*n, xpos0_e+3*n, -1);
-      }
+    // compute displacement
+    for (int n = 0; n < npe; n++) {
+      mji_addScl3(displ_e+3*n, xpos_e+3*n, xpos0_e+3*n, -1);
+    }
 
-      // compute force in corotational frame
+    // compute force in corotational frame
+    if (enbl_spring) {
+      mju_mulMatVec(frc_e, k_elem, displ_e, 3*npe, 3*npe);
+    }
+    if (enbl_damper) {
+      mju_mulMatVec(dmp_e, k_elem, vel_e, 3*npe, 3*npe);
+    }
+
+    // rotate back to global frame and scatter using node indices
+    mju_negQuat(quat, quat);
+    for (int n = 0; n < npe; n++) {
+      mjtNum qfrc[3], qdmp[3];
+      mji_rotVecQuat(qfrc, frc_e+3*n, quat);
+      mji_rotVecQuat(qdmp, dmp_e+3*n, quat);
+      int gidx = gindices[n];
       if (enbl_spring) {
-        mju_mulMatVec(frc_e, k_elem, displ_e, 3*npe, 3*npe);
+        mji_addTo3(frc_g + 3*gidx, qfrc);
       }
       if (enbl_damper) {
-        mju_mulMatVec(dmp_e, k_elem, vel_e, 3*npe, 3*npe);
-      }
-
-      // rotate back to global frame and scatter using node indices
-      mju_negQuat(quat, quat);
-      for (int n = 0; n < npe; n++) {
-        mjtNum qfrc[3], qdmp[3];
-        mji_rotVecQuat(qfrc, frc_e+3*n, quat);
-        mji_rotVecQuat(qdmp, dmp_e+3*n, quat);
-        int gidx = gindices[n];
-        if (enbl_spring) {
-          mji_addTo3(frc_g + 3*gidx, qfrc);
-        }
-        if (enbl_damper) {
-          mji_addTo3(dmp_g + 3*gidx, qdmp);
-        }
+        mji_addTo3(dmp_g + 3*gidx, qdmp);
       }
     }
   }
@@ -518,6 +510,78 @@ static void mj_flexPassiveBend(const mjModel* m, mjData* d, int f,
 }
 
 
+// passive forces for 1D flex bending: isotropic discrete elastic rod without twist, see
+// Bergou et al., "Discrete Elastic Rods", https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf
+//   energy per hinge: k |kb|^2, with k = EI / (|e0| + |e1|) in the straight reference
+//   damping: Rayleigh on the rate of |kb|, so that rigid rotations are not damped
+static void mj_flexPassiveBend1D(const mjModel* m, mjData* d, int f,
+                                 int enbl_spring, int enbl_damper) {
+  int bendingadr = m->flex_bendingadr[f];
+  if (bendingadr < 0) {
+    return;
+  }
+  mjtNum damp = enbl_damper ? m->flex_damping[f] : 0;
+  enbl_damper = (damp != 0);
+  if (!enbl_spring && !enbl_damper) {
+    return;
+  }
+
+  const mjtNum* b = m->flex_bending + bendingadr;
+  int nhinge = (int)b[0];
+  int vertnum = m->flex_vertnum[f];
+  const mjtNum* xpos = d->flexvert_xpos + 3*m->flex_vertadr[f];
+
+  mj_markStack(d);
+  mjtNum* vvel = enbl_damper ? mjSTACKALLOC(d, 3*vertnum, mjtNum) : NULL;
+  mjtNum* frc = mjSTACKALLOC(d, 3*vertnum, mjtNum);
+  mjtNum* dmp = mjSTACKALLOC(d, 3*vertnum, mjtNum);
+  mju_zero(frc, 3*vertnum);
+  mju_zero(dmp, 3*vertnum);
+  if (enbl_damper) {
+    mj_flexGather(m, d, f, vvel, d->qvel);
+  }
+
+  for (int h = 0; h < nhinge; h++) {
+    const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+    int v[3] = {(int)hinge[0], (int)hinge[1], (int)hinge[2]};
+    mjtNum kb[3], J[27];
+    if (!mj_rodHinge(xpos + 3*v[0], xpos + 3*v[1], xpos + 3*v[2], kb, J)) {
+      continue;
+    }
+
+    // w: weight in kb space, mapped to vertex forces as -J'w
+    mjtNum w[3] = {0}, Wd[9];
+    mj_rodHingeWeights(enbl_spring ? w : NULL, NULL, enbl_damper ? Wd : NULL, kb, hinge[3]);
+
+    // damper weight: Wd J vel
+    mjtNum wd[3] = {0};
+    if (enbl_damper) {
+      mjtNum kbdot[3] = {0};
+      for (int r = 0; r < 3; r++) {
+        for (int i = 0; i < 3; i++) {
+          kbdot[r] += mju_dot3(J + 9*r + 3*i, vvel + 3*v[i]);
+        }
+      }
+      mji_mulMatVec3(wd, Wd, kbdot);
+    }
+
+    for (int i = 0; i < 3; i++) {
+      for (int c = 0; c < 3; c++) {
+        for (int r = 0; r < 3; r++) {
+          frc[3*v[i]+c] -= J[9*r + 3*i + c] * w[r];
+          dmp[3*v[i]+c] -= J[9*r + 3*i + c] * wd[r];
+        }
+      }
+    }
+  }
+
+  if (enbl_spring) mj_flexScatter(m, d, f, d->qfrc_spring, frc, 1);
+  if (enbl_damper) mj_flexScatter(m, d, f, d->qfrc_damper, dmp, damp);
+
+  mj_freeStack(d);
+}
+
+
 // passive forces for flex stretch
 static void mj_flexPassiveStretch(const mjModel* m, mjData* d, int f,
                                   int enbl_spring, int enbl_damper) {
@@ -707,7 +771,13 @@ static void mj_springdamper(const mjModel* m, mjData* d) {
 
   // flex elasticity
   for (int f=0; f < m->nflex; f++) {
-    if (m->flex_dim[f] == 1 || m->flex_rigid[f]) {
+    if (m->flex_rigid[f]) {
+      continue;
+    }
+
+    if (m->flex_dim[f] == 1) {
+      // rod bending forces
+      mj_flexPassiveBend1D(m, d, f, enbl_spring, enbl_damper);
       continue;
     }
 

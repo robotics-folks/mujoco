@@ -330,7 +330,7 @@ def least_squares(
     g_norm = np.linalg.norm(grad_free)
     if g_norm <= gtol:
       status = Status.G_TOL
-      if g_norm == 0:
+      if g_norm == 0 and verbose > Verbosity.SILENT.value:
         print('Zero gradient norm: exact minimum found?', file=output)
       break
 
@@ -369,7 +369,13 @@ def least_squares(
       # New objective, evaluate reduction.
       ynew = norm.value(rnew)
       reduction = y - ynew
-      armijo = reduction + armijo_c1 * (grad.T @ dx).item()
+
+      # Reject nonfinite trial objectives and retry with more regularization.
+      armijo = (
+          reduction + armijo_c1 * (grad.T @ dx).item()
+          if np.isfinite(ynew)
+          else -np.inf
+      )
 
       if armijo < 0:
         if mu >= mu_max:

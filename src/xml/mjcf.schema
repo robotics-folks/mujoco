@@ -388,6 +388,11 @@ enum conflict : mjtConflict {
   error     = mjCONFLICT_ERROR
 }
 
+enum passthrough : mjtPassthrough {
+  none      = mjPASSTHROUGH_NONE
+  textures  = mjPASSTHROUGH_TEXTURES
+}
+
 enum scaling : mjtScaling {
   similar   = mjSCALING_SIMILAR
   geometry  = mjSCALING_GEOMETRY
@@ -484,6 +489,11 @@ enum elastic2d {
   bend      = 1
   stretch   = 2
   both      = 3
+}
+
+enum flexsection : mjtFlexSection {
+  circle    = mjFLEXSECTION_CIRCLE
+  box       = mjFLEXSECTION_BOX
 }
 
 enum flexeq {
@@ -614,6 +624,7 @@ element compiler : mjsCompiler {
   assetdir           : string (reading=custom)    # fans out to mesh/texturedir
   alignfree          : bool
   conflict           : enum<conflict>
+  passthrough        : enum<passthrough>
   child lengthrange ?
 }
 
@@ -845,6 +856,7 @@ element default {
   # children below are projections of the primary decls:
   # reduced rows = attrs minus name/class minus (nodefault)
   child mesh ?
+  child texture ?
   child material ?
   child joint ?
   child geom ?
@@ -969,18 +981,19 @@ element bone {
 
 element texture : mjsTexture {
   name               : id<texture>
+  class              : ref<default>
   type               : enum<texture> = cube
   colorspace         : enum<colorspace> = auto
-  content_type       : string
-  file               : file
+  content_type       : string (nodefault)
+  file               : file (nodefault)
   gridsize           : int[2] = {1, 1}
   gridlayout         : chars[1..12]  # length must equal the gridsize product
-  fileright          : file
-  fileleft           : file
-  fileup             : file
-  filedown           : file
-  filefront          : file
-  fileback           : file
+  fileright          : file (nodefault)
+  fileleft           : file (nodefault)
+  fileup             : file (nodefault)
+  filedown           : file (nodefault)
+  filefront          : file (nodefault)
+  fileback           : file (nodefault)
   builtin            : enum<builtin>
   rgb1               : double[3] = {0.8, 0.8, 0.8} (dim=1)
   rgb2               : double[3] = {0.5, 0.5, 0.5} (dim=1)
@@ -992,6 +1005,7 @@ element texture : mjsTexture {
   hflip              : bool
   vflip              : bool
   nchannel           : int = 3
+  embed              : enum<FalseTrueAuto> = auto
 }
 
 element material : mjsMaterial {
@@ -1323,6 +1337,8 @@ element elasticity : mjsFlex {
   damping            : double (dim=T)
   thickness          : double = -1 (dim=L)
   elastic2d          : enum<elastic2d>
+  section            : enum<flexsection>
+  sectionsize        : double[2] (dim=L)
 }
 
 element flexcomp_contact : mjsFlex (xml=contact) {

@@ -3893,6 +3893,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('ntex',),
              ),
              StructFieldDecl(
+                 name='tex_contenttypeadr',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='content type address in paths; -1: none',
+                 array_extent=('ntex',),
+             ),
+             StructFieldDecl(
                  name='mat_texid',
                  type=PointerType(
                      inner_type=ValueType(name='int'),
@@ -5225,7 +5233,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='char'),
                  ),
-                 doc='paths to assets, 0-terminated',
+                 doc='resolved paths to assets, 0-terminated',
                  array_extent=('npaths',),
              ),
              StructFieldDecl(
@@ -5557,7 +5565,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
              StructFieldDecl(
                  name='improvement',
                  type=ValueType(name='mjtNum'),
-                 doc='cost reduction, scaled by 1/trace(M(qpos0))',
+                 doc='cost reduction, scaled by 1/trace(M)',
              ),
              StructFieldDecl(
                  name='gradient',
@@ -5767,7 +5775,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
              StructFieldDecl(
                  name='nefmL',
                  type=ValueType(name='int'),
-                 doc='size of the effective-metric block storage (9*nefmdof)',
+                 doc='size of efm_L (9*nefmdof plus optional Cholesky or island tail)',  # pylint: disable=line-too-long
              ),
              StructFieldDecl(
                  name='nY',
@@ -7205,7 +7213,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
                  ),
-                 doc='factored 3x3 diagonal blocks of M+K',
+                 doc='factored 3x3 blocks of M+K and packed tail data',
                  array_extent=('nefmL',),
              ),
              StructFieldDecl(
@@ -7388,6 +7396,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='conflict',
                  type=ValueType(name='mjtConflict'),
                  doc='conflict resolution for attach',
+             ),
+             StructFieldDecl(
+                 name='passthrough',
+                 type=ValueType(name='mjtPassthrough'),
+                 doc='assets left by reference (bitmask)',
              ),
              StructFieldDecl(
                  name='LRopt',
@@ -8823,6 +8836,19 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  doc='experimental 3D material (mjSpec only); 0: Saint Venant-Kirchhoff, 1: Stable Neo-Hookean',  # pylint: disable=line-too-long
              ),
              StructFieldDecl(
+                 name='section',
+                 type=ValueType(name='mjtFlexSection'),
+                 doc='1D cross-section (mjtFlexSection)',
+             ),
+             StructFieldDecl(
+                 name='sectionsize',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(2,),
+                 ),
+                 doc='1D box cross-section half-sizes',
+             ),
+             StructFieldDecl(
                  name='cellcount',
                  type=ArrayType(
                      inner_type=ValueType(name='int'),
@@ -9343,6 +9369,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='vflip',
                  type=ValueType(name='mjtBool'),
                  doc='vertical flip',
+             ),
+             StructFieldDecl(
+                 name='embed',
+                 type=ValueType(name='mjtEmbed'),
+                 doc='pixels in the model, or the file by reference',
              ),
              StructFieldDecl(
                  name='info',
@@ -10385,6 +10416,13 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjsMesh'),
                  ),
                  doc='mesh defaults',
+             ),
+             StructFieldDecl(
+                 name='texture',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjsTexture'),
+                 ),
+                 doc='texture defaults',
              ),
              StructFieldDecl(
                  name='material',

@@ -309,14 +309,12 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
   int nnode = 0;
   if (doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) {
     int order = doftype == mjFCOMPDOF_TRILINEAR ? 1 : 2;
-    // multi-cell count for mesh/direct/gmsh, else single cell
+    // cellcount applies to all types (see the nodal mesh below), else single cell
     int cx = 1, cy = 1, cz = 1;
-    if (type == mjFCOMPTYPE_MESH || type == mjFCOMPTYPE_DIRECT || type == mjFCOMPTYPE_GMSH) {
-      if (cellcount[0] >= 0) {
-        cx = cellcount[0];
-        cy = cellcount[1];
-        cz = cellcount[2];
-      }
+    if (cellcount[0] >= 0) {
+      cx = cellcount[0];
+      cy = cellcount[1];
+      cz = cellcount[2];
     }
     nnode = (cx * order + 1) * (cy * order + 1) * (cz * order + 1);
   }
@@ -758,12 +756,11 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
       mjs_setString(pe->name1, name.c_str());
     } else if (equality == 3) {
       // create one strain constraint per finite element, storing element index
-      flex->has_strain_eq = true;
-      int  cell_cx        = flex->spec.cellcount[0];
-      int  cell_cy        = flex->spec.cellcount[1];
-      int  cell_cz        = flex->spec.cellcount[2];
-      bool shell          = (doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) &&
-                            flex->spec.elastic2d;
+      int  cell_cx = flex->spec.cellcount[0];
+      int  cell_cy = flex->spec.cellcount[1];
+      int  cell_cz = flex->spec.cellcount[2];
+      bool shell   = (doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) &&
+                     flex->spec.elastic2d;
 
       if (shell) {
         // shell mode: one constraint per boundary face element
@@ -1540,6 +1537,72 @@ void inline ComputeBending(
   bending[16] = mjuu_dot3(n, e2) * (a01 - a03) * (a04 - a02) * stiffness / (sqr * sqrt(sqr));
 }
 
+// bend angle tolerance of a straight 1D flex vertex in the reference configuration
+static constexpr double kRodStraightTol = 1e-4;
+
+// compute isotropic rod bending data for a 1D flex, following Bergou et al., "Discrete Elastic
+// Rods", https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf. One 3-vertex bending stencil is stored
+// in flex_bending for every vertex shared by exactly two edges; vertices with other valences carry
+// no bending energy.
+//   layout: bending[0] = number of stencils, then per stencil
+//           [v_prev, v, v_next, EI / (|e_prev| + |e_next|)]
+//   EI: bending rigidity, Young's modulus times the second moment of area of the cross-section
+// The reference configuration must be straight at every interior vertex: without material frames,
+// the isotropic energy of a curved reference would only resist the magnitude of the curvature.
+// returns 1 on success, or 0 with the id of the first degenerate vertex in *bad or of the first
+// bent one in *bent
+static int ComputeRodBending(std::vector<double>&                    bending,
+                             const double*                           pos,
+                             int                                     nvert,
+                             const std::vector<std::pair<int, int>>& edges,
+                             double                                  EI,
+                             int*                                    bad,
+                             int*                                    bent) {
+  *bad  = -1;
+  *bent = -1;
+
+  // vertex adjacency
+  std::vector<std::vector<int>> neighbors(nvert);
+  for (const auto& e : edges) {
+    neighbors[e.first].push_back(e.second);
+    neighbors[e.second].push_back(e.first);
+  }
+
+  bending.assign(1, 0);
+  for (int v = 0; v < nvert; v++) {
+    if (neighbors[v].size() != 2) { continue; }
+    int           va    = neighbors[v][0];
+    int           vb    = neighbors[v][1];
+    const double* xa    = pos + 3 * va;
+    const double* xv    = pos + 3 * v;
+    const double* xb    = pos + 3 * vb;
+    double        e0[3] = {xv[0] - xa[0], xv[1] - xa[1], xv[2] - xa[2]};
+    double        e1[3] = {xb[0] - xv[0], xb[1] - xv[1], xb[2] - xv[2]};
+    double        l0    = sqrt(mjuu_dot3(e0, e0));
+    double        l1    = sqrt(mjuu_dot3(e1, e1));
+    double        denom = l0 * l1 + mjuu_dot3(e0, e1);
+    if (l0 < mjMINVAL || l1 < mjMINVAL || denom < mjMINVAL) {
+      *bad = v;
+      return 0;
+    }
+
+    // reference curvature binormal magnitude 2*tan(phi/2), approximately the bend angle phi
+    double cross[3];
+    mjuu_crossvec(cross, e0, e1);
+    if (2 * sqrt(mjuu_dot3(cross, cross)) / denom > kRodStraightTol) {
+      *bent = v;
+      return 0;
+    }
+
+    bending.push_back(va);
+    bending.push_back(v);
+    bending.push_back(vb);
+    bending.push_back(EI / (l0 + l1));
+    bending[0]++;
+  }
+  return 1;
+}
+
 //----------------------------- linear elasticity --------------------------------------------------
 
 // Gauss Legendre quadrature points in 1 dimension on the interval [a, b]
@@ -2059,6 +2122,16 @@ void mjCFlex::CopyFromSpec() {
   nedge = 0;
   edge.clear();
   shell.clear();
+
+  // clear state derived by a previous compile: the spec may have changed since
+  // (e.g. elastic2d, young, vertices, elements or its equality constraints)
+  flaps.clear();
+  stiffness.clear();
+  bending.clear();
+  cell_empty.clear();
+  has_strain_eq = false;
+  rigid         = false;
+  centered      = false;
 }
 
 
@@ -2164,6 +2237,11 @@ std::string mjCFlex::ComputeStiffnessCacheKey() const {
   combine(std::hash<int>{}(spec.cellcount[0]));
   combine(std::hash<int>{}(spec.cellcount[1]));
   combine(std::hash<int>{}(spec.cellcount[2]));
+
+  // element type and stored representation (raw stiffness or strain eigenmodes)
+  combine(std::hash<int>{}(elastic2d != 0));
+  combine(std::hash<double>{}(thickness));
+  combine(std::hash<bool>{}(has_strain_eq));
 
   // compute bounding box from vertex positions
   if (!vert_.empty()) {
@@ -2496,9 +2574,6 @@ void mjCFlex::Compile(const mjVFS* vfs) {
   if (edgestiffness > 0 && dim > 1) {
     throw mjCError(this, "edge stiffness only available for dim=1, please use elasticity plugins");
   }
-  if (interpolated && selfcollide != mjFLEXSELF_NONE) {
-    throw mjCError(this, "trilinear interpolation cannot do self-collision");
-  }
   nelem = (int)elem_.size() / (dim + 1);
 
   // elastic2d checks
@@ -2771,7 +2846,10 @@ void mjCFlex::Compile(const mjVFS* vfs) {
 
     // Mocap poses do not supply velocities, so they cannot define elastic damping or the
     // implicit shift consistently. Dynamic articulated attachments have ordinary Jacobians.
-    if (!rigid && !interpolated) {
+    // Undamped 1D rod bending allows mocap attachments: its forces depend only on positions,
+    // and its implicit stiffness shift treats mocap vertices as fixed over the step, like
+    // tendon springs attached to mocap bodies.
+    if (!rigid && !interpolated && (dim > 1 || damping > 0)) {
       for (int bid : vertbodyid) {
         for (const mjCBody* body = model->Bodies()[bid]; body; body = body->parent) {
           if (body->mocap) {
@@ -2784,7 +2862,7 @@ void mjCFlex::Compile(const mjVFS* vfs) {
     }
 
     // linear elasticity
-    if (!interpolated) { stiffness.assign((dim == 3 ? 24 : 21) * nelem, 0); }
+    if (!interpolated && dim > 1) { stiffness.assign((dim == 3 ? 24 : 21) * nelem, 0); }
 
     // geometrically nonlinear elasticity
     for (unsigned int t = 0; t < nelem; t++) {
@@ -2804,6 +2882,39 @@ void mjCFlex::Compile(const mjVFS* vfs) {
           ComputeStiffness<Stencil3D>(stiffness, vertxpos, elem_.data() + 4 * t, t, young, poisson);
         }
       }
+    }
+
+    // rod bending stiffness (1D, not interpolated or rigid)
+    if (dim == 1 && !interpolated && !rigid) {
+      double I = 0;
+      if (section == mjFLEXSECTION_CIRCLE) {
+        if (radius <= 0) {
+          throw mjCError(this, "1D flex elasticity with circle section requires positive radius");
+        }
+        I = mjPI * pow(radius, 4) / 4;
+      } else if (section == mjFLEXSECTION_BOX) {
+        if (sectionsize[0] <= 0 || sectionsize[1] <= 0) {
+          throw mjCError(this, "1D flex elasticity with box section requires positive sectionsize");
+        }
+        // full sizes; the isotropic model uses the weak axis
+        double w = 2 * sectionsize[0];
+        double h = 2 * sectionsize[1];
+        I        = std::min(w * h * h * h, h * w * w * w) / 12;
+      } else {
+        throw mjCError(this, "unknown 1D flex section %d", nullptr, section);
+      }
+      int bad, bent;
+      if (!ComputeRodBending(bending, vertxpos.data(), nvert, edge, young * I, &bad, &bent)) {
+        if (bad >= 0) {
+          throw mjCError(this, "degenerate 1D flex hinge at vertex %d", nullptr, bad);
+        }
+        throw mjCError(this,
+                       "1D flex elasticity requires a straight reference configuration, "
+                       "vertex %d is bent",
+                       nullptr,
+                       bent);
+      }
+      if (bending[0] == 0) { bending.clear(); }
     }
 
     // bending stiffness (2D only)
@@ -2857,17 +2968,18 @@ void mjCFlex::Compile(const mjVFS* vfs) {
     }
   }
 
-  // compute linear stiffness for interpolated elements (cached)
-  bool stiffness_cached = false;
-  if (young > 0 && interpolated) { stiffness_cached = LoadCachedStiffness(); }
-
-  // check if any strain equality references this flex
+  // check if any strain equality references this flex (the equalities may
+  // have been added or removed since the flex was made)
   for (auto* equality : model->Equalities()) {
     if (equality->spec.type == mjEQ_FLEXSTRAIN && *equality->spec.name1 == name) {
       has_strain_eq = true;
       break;
     }
   }
+
+  // compute linear stiffness for interpolated elements (cached)
+  bool stiffness_cached = false;
+  if (interpolated && (young > 0 || has_strain_eq)) { stiffness_cached = LoadCachedStiffness(); }
 
   if (!stiffness_cached && interpolated && (young > 0 || has_strain_eq)) {
     // use young=1 for strain constraints (eigenvectors are geometry-only)
@@ -2892,8 +3004,8 @@ void mjCFlex::Compile(const mjVFS* vfs) {
     }
     int ndof_elem = 3 * npe;
 
-    // total stiffness = nelem_fe * ndof_elem^2
-    stiffness.resize(nelem_fe * ndof_elem * ndof_elem, 0);
+    // total stiffness = nelem_fe * ndof_elem^2 (empty cells stay zero)
+    stiffness.assign(nelem_fe * ndof_elem * ndof_elem, 0);
 
     // face layout for shell mode:
     //   face 0: x=0     (cy*cz quads, normal=0, in-plane=(1,2))

@@ -395,6 +395,13 @@ inline constexpr mjMap conflict_map[] = {
 };
 inline constexpr int conflict_sz = 3;
 
+// enum passthrough
+inline constexpr mjMap passthrough_map[] = {
+  {"none",      mjPASSTHROUGH_NONE},
+  {"textures",  mjPASSTHROUGH_TEXTURES},
+};
+inline constexpr int passthrough_sz = 2;
+
 // enum scaling
 inline constexpr mjMap scaling_map[] = {
   {"similar",   mjSCALING_SIMILAR},
@@ -516,6 +523,13 @@ inline constexpr mjMap elastic2d_map[] = {
   {"both",     3},
 };
 inline constexpr int elastic2d_sz = 4;
+
+// enum flexsection
+inline constexpr mjMap flexsection_map[] = {
+  {"circle",  mjFLEXSECTION_CIRCLE},
+  {"box",     mjFLEXSECTION_BOX},
+};
+inline constexpr int flexsection_sz = 2;
 
 // enum flexeq
 inline constexpr mjMap flexeq_map[] = {

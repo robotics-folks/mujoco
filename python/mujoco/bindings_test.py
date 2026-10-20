@@ -112,6 +112,18 @@ TEST_XML_TEXTURE = r"""
 </mujoco>
 """
 
+# a 3x2 RGB PNG
+_TINY_PNG = bytes([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x02,
+    0x08, 0x02, 0x00, 0x00, 0x00, 0x12, 0x16, 0xf1, 0x4d, 0x00, 0x00, 0x00,
+    0x1c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0x78, 0xc1, 0xc0, 0xc0,
+    0xc0, 0xf0, 0xbf, 0xb8, 0xb8, 0x98, 0x81, 0xe1, 0x3f, 0xc3, 0xff, 0xff,
+    0xff, 0xc5, 0xc4, 0xc4, 0x00, 0x46, 0xd7, 0x07, 0x7f, 0xd2, 0x52, 0xa1,
+    0x41, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60,
+    0x82,
+])
+
 
 @contextlib.contextmanager
 def temporary_callback(setter, callback):
@@ -364,6 +376,116 @@ class MuJoCoBindingsTest(parameterized.TestCase):
     np.testing.assert_array_equal(
         self.data.cdof[dof_idx : dof_idx + 6], [[42] * 6] * 6
     )
+
+  def test_named_indexing_ragged2d_after_first_joint(self):
+    # rows of a joint which is not the first: the address counts rows
+    self.data.cdof[:] = np.arange(self.data.cdof.size).reshape(-1, 6)
+    self.model.dof_dampingpoly[:] = np.arange(
+        self.model.dof_dampingpoly.size
+    ).reshape(self.model.nv, -1)
+    for name in ('myhinge', 'myball'):
+      adr = self.model.joint(name).dofadr[0]
+      dofs = slice(adr, adr + self.data.joint(name).qvel.size)
+      np.testing.assert_array_equal(
+          self.data.joint(name).cdof, self.data.cdof[dofs], name
+      )
+      np.testing.assert_array_equal(
+          self.model.joint(name).dampingpoly,
+          self.model.dof_dampingpoly[dofs],
+          name,
+      )
+
+  def test_named_indexing_mimo_actuators(self):
+    model = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="slide" type="slide"/>
+          <geom size=".1"/>
+          <body>
+            <joint name="ball" type="ball"/>
+            <geom size=".1" pos=".2 0 0"/>
+          </body>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor name="before" joint="slide" gear="2" ctrlrange="-1 1"/>
+        <orientation name="orient" joint="ball" kp="1" input="quat"/>
+        <motor name="after" joint="slide" gear="3" ctrlrange="-2 2"/>
+      </actuator>
+    </mujoco>
+    """)
+    data = mujoco.MjData(model)
+    data.ctrl[:] = np.arange(model.nu)
+    mujoco.mj_forward(model, data)
+    np.testing.assert_array_equal(model.actuator_ctrlnum, [1, 4, 1])
+    np.testing.assert_array_equal(model.actuator_outnum, [1, 3, 1])
+    # a single control or output keeps the shape of one row
+    one = lambda rows: rows[0] if len(rows) == 1 else rows
+    for i in range(model.nactuator):
+      ctrladr, outadr = model.actuator_ctrladr[i], model.actuator_outadr[i]
+      ctrls = slice(ctrladr, ctrladr + model.actuator_ctrlnum[i])
+      outs = slice(outadr, outadr + model.actuator_outnum[i])
+      name = model.actuator(i).name
+      for got, expected in (
+          (data.actuator(i).ctrl, data.ctrl[ctrls]),
+          (data.actuator(i).force, data.actuator_force[outs]),
+          (data.actuator(i).length, data.actuator_length[outs]),
+          (model.actuator(i).ctrlrange, one(model.actuator_ctrlrange[ctrls])),
+          (model.actuator(i).gear, one(model.actuator_gear[outs])),
+          (model.actuator(i).lengthrange,
+           one(model.actuator_lengthrange[outs])),
+      ):
+        np.testing.assert_array_equal(got, expected, name)
+    self.assertEqual(model.actuator('before').gear.shape, (6,))
+    self.assertEqual(model.actuator('orient').gear.shape, (3, 6))
+    self.assertEqual(model.actuator('orient').ctrlrange.shape, (4, 2))
+    self.assertEqual(data.actuator('orient').ctrl.shape, (4,))
+    self.assertEqual(data.actuator('after').ctrl.shape, (1,))
+    # views are views: a write reaches mjData
+    data.actuator('after').ctrl = 7
+    self.assertEqual(data.ctrl[model.actuator_ctrladr[2]], 7)
+
+  def test_named_indexing_actuator_moment(self):
+    model = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="slide" type="slide"/>
+          <geom size=".1"/>
+          <body>
+            <joint name="ball" type="ball"/>
+            <geom size=".1" pos=".2 0 0"/>
+          </body>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="slide" gear="2"/>
+        <orientation joint="ball" kp="1"/>
+        <motor joint="slide" gear="3"/>
+      </actuator>
+    </mujoco>
+    """)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    # actuator_moment is sparse: fewer values than a dense (nout, nv) matrix
+    self.assertLess(model.nJmom, model.nout * model.nv)
+    dense = np.zeros((model.nout, model.nv), dtype=DTYPE)
+    mujoco.mju_sparse2dense(
+        dense,
+        data.actuator_moment,
+        data.moment_rownnz,
+        data.moment_rowadr,
+        data.moment_colind,
+    )
+    for i in range(model.nactuator):
+      adr = model.actuator_outadr[i]
+      rows = dense[adr : adr + model.actuator_outnum[i]]
+      moment = data.actuator(i).moment
+      np.testing.assert_array_equal(moment, rows[0] if len(rows) == 1 else rows)
+      self.assertFalse(moment.flags.writeable)  # a copy, not a view
+    np.testing.assert_array_equal(data.actuator(0).moment, [2, 0, 0, 0])
+    self.assertEqual(data.actuator(1).moment.shape, (3, model.nv))
 
   def test_named_indexing_repr_in_data(self):
     view_repr = repr(self.data.geom('mybox'))
@@ -2103,6 +2225,90 @@ Euler integrator, semi-implicit in velocity.
     self.assertEqual(model.tex('tex').data.shape, (512, 512, 3))
     self.assertEqual(model.tex('tex').adr.dtype, np.int64)
     self.assertTrue(np.shares_memory(model.tex('tex').adr, model.tex_adr))
+
+  def test_mj_loadTexture(self):  # pylint: disable=invalid-name
+    # an embedded texture: a copy of its pixels and its colorspace
+    model = mujoco.MjModel.from_xml_string(TEST_XML_TEXTURE)
+    pixels, colorspace = mujoco.mj_loadTexture(model, 0)
+    self.assertEqual(pixels.dtype, np.uint8)
+    np.testing.assert_array_equal(pixels, model.tex('tex').data)
+    self.assertFalse(np.shares_memory(pixels, model.tex_data))
+    self.assertEqual(colorspace, model.tex_colorspace[0])
+
+    # a by-reference texture: the decoded file, with the colorspace resolved;
+    # the array outlives the model
+    png = os.path.join(self.create_tempdir('test_mj_loadTexture'), 'tiny.png')
+    with open(png, 'wb') as f:
+      f.write(_TINY_PNG)
+    xml = f"""
+    <mujoco>
+      <compiler passthrough="textures"/>
+      <asset>
+        <texture name="byref" type="2d" file="{png}"/>
+        <texture name="eager" type="2d" file="{png}" embed="true"/>
+      </asset>
+    </mujoco>
+    """
+    model = mujoco.MjModel.from_xml_string(xml)
+    self.assertEqual(model.tex('byref').adr[0], -1)
+    pixels, colorspace = mujoco.mj_loadTexture(model, model.tex('byref').id)
+    self.assertEqual(pixels.shape, (2, 3, 3))
+    np.testing.assert_array_equal(pixels, model.tex('eager').data)
+    self.assertEqual(colorspace, model.tex_colorspace[model.tex('eager').id])
+    self.assertEqual(colorspace, mujoco.mjtColorSpace.mjCOLORSPACE_LINEAR)
+    expected = pixels.copy()
+    del model
+    gc.collect()
+    np.testing.assert_array_equal(pixels, expected)
+
+    # errors
+    model = mujoco.MjModel.from_xml_string(xml)
+    with self.assertRaisesRegex(ValueError, 'out of range'):
+      mujoco.mj_loadTexture(model, 2)
+    os.remove(png)
+    with self.assertRaisesRegex(ValueError, 'tiny.png'):
+      mujoco.mj_loadTexture(model, model.tex('byref').id)
+
+  def test_mj_embedAssets(self):  # pylint: disable=invalid-name
+    png = os.path.join(self.create_tempdir('test_mj_embedAssets'), 'tiny.png')
+    with open(png, 'wb') as f:
+      f.write(_TINY_PNG)
+    xml = f"""
+    <mujoco>
+      <compiler passthrough="textures"/>
+      <asset>
+        <texture name="tiny" type="2d" file="{png}"/>
+        <texture name="checker" type="2d" builtin="checker" width="4"
+          height="4"/>
+      </asset>
+    </mujoco>
+    """
+    byref = mujoco.MjModel.from_xml_string(xml)
+    eager = mujoco.MjModel.from_xml_string(
+        xml.replace(' passthrough="textures"', '')
+    )
+    self.assertEqual(byref.tex('tiny').adr[0], -1)
+
+    # the embedded model is the eager compile, and lives on its own
+    embedded = mujoco.mj_embedAssets(byref)
+    self.assertIsInstance(embedded, mujoco.MjModel)
+    self.assertEqual(embedded.ntexdata, eager.ntexdata)
+    self.assertEqual(mujoco.mj_sizeModel(embedded), mujoco.mj_sizeModel(eager))
+    np.testing.assert_array_equal(embedded.tex_data, eager.tex_data)
+    np.testing.assert_array_equal(embedded.tex_adr, eager.tex_adr)
+    np.testing.assert_array_equal(embedded.tex_width, eager.tex_width)
+    np.testing.assert_array_equal(
+        embedded.tex_colorspace, eager.tex_colorspace
+    )
+    del byref
+    gc.collect()
+    self.assertEqual(embedded.tex('tiny').data.shape, (2, 3, 3))
+
+    # a file that does not resolve
+    byref = mujoco.MjModel.from_xml_string(xml)
+    os.remove(png)
+    with self.assertRaisesRegex(ValueError, 'texture 0: .*tiny.png'):
+      mujoco.mj_embedAssets(byref)
 
   def test_xml_dependencies(self):
     model_path = str(epath.resource_path("mujoco") / "testdata" / "msh.xml")

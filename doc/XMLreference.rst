@@ -477,7 +477,8 @@ adjust it properly through the XML.
    gradient norm. For Newton, it is additionally applied to the Newton decrement :math:`\tfrac{1}{2} g^T H^{-1} g`, the
    predicted cost improvement of the next iteration. Before the first iteration, CG and Newton also apply it to a
    :ref:`convergence certificate<soAlgorithms>` of the warmstarted solution, possibly terminating with zero iterations.
-   Set the tolerance to 0 to disable early termination.
+   The cost improvement and the gradient are scaled by the inverse trace of the inertia matrix, of the whole model or
+   of a constraint :ref:`island<soIsland>`. Set the tolerance to 0 to disable early termination.
 
 .. _option-ls_iterations:
 
@@ -1042,6 +1043,18 @@ has any effect. The settings here are global and apply to the entire model.
       Any conflict between authored values results in a compile error. This is the strictest mode and is useful for
       detecting unintended attribute mismatches.
 
+.. _compiler-passthrough:
+
+:at:`passthrough`: :at-val:`[none, textures], "none"`
+   Which assets the compiler leaves :ref:`by reference<CAssetReference>` instead of loading into :ref:`mjModel`. With
+   "textures", a texture loaded from a single file is not read: the model holds its resolved path and the parameters a
+   consumer needs to load it, and no pixels. Textures which the compiler would transform (flipped, composite
+   :ref:`grids<asset-texture-gridsize>`, six :ref:`separate files<asset-texture-fileright>`), procedural textures,
+   textures given as a buffer and files served from memory by a :ref:`virtual file system<Virtualfilesystem>` stay
+   embedded. The per-texture :ref:`embed<asset-texture-embed>` attribute overrides this policy. The policy is that of
+   the model being compiled, so it also applies to the textures of :ref:`attached<body-attach>` models. Only textures
+   can be by reference for now; other asset types will be added to the list of values.
+
 .. _compiler-lengthrange:
 
 :el-prefix:`compiler/` |-| **lengthrange** |?|
@@ -1253,9 +1266,11 @@ parameters.
 .. _statistic-meaninertia:
 
 :at:`meaninertia`: :at-val:`real, optional`
-   If this attribute is specified, it replaces the value of mjModel.stat.meaninertia computed by the compiler. The
-   computed value is the average diagonal element of the joint-space inertia matrix when the model is in qpos0. At
-   runtime this value scales the solver cost and gradient used for early termination.
+   This attribute is deprecated and will be removed in a future release; compiling a model which sets it gives a
+   warning. If it is specified, it replaces the value of mjModel.stat.meaninertia computed by the compiler. The
+   computed value is the average diagonal element of the joint-space inertia matrix when the model is in qpos0. It
+   does not affect simulation: the solvers scale their termination criteria by the trace of the current inertia
+   matrix, see :ref:`tolerance<option-tolerance>`.
 
 .. _statistic-meansize:
 
@@ -1839,6 +1854,11 @@ Only ``image/png`` and ``image/ktx`` are supported.
    extension) becomes the texture name. If the name after parsing is empty and the texture type is not "skybox", the
    compiler will generate an error.
 
+.. _asset-texture-class:
+
+:at:`class`: :at-val:`string, optional`
+   Defaults class for setting unspecified attributes.
+
 .. _asset-texture-type:
 
 :at:`type`: :at-val:`[2d, cube, skybox], "cube"`
@@ -2035,6 +2055,16 @@ Only ``image/png`` and ``image/ktx`` are supported.
    The number of channels in the texture image file. This allows loading 4-channel textures (RGBA) or single-channel
    textures (e.g., for Physics-Based Rendering properties such as roughness or metallic). Procedural, cube and skybox
    textures must have 3 channels.
+
+.. _asset-texture-embed:
+
+:at:`embed`: :at-val:`[false, true, auto], "auto"`
+   Whether the pixels of this texture are in :ref:`mjModel` or the texture is left :ref:`by reference<CAssetReference>`.
+   "auto" follows the :ref:`passthrough<compiler-passthrough>` policy of the compiler. "true" keeps the pixels in the
+   model whatever the policy says, for example for a texture which is written into at runtime. "false" asks for the
+   texture to be by reference whatever the policy says, and is a compile error for a texture which cannot be: one which
+   is procedural, given as a buffer or as six separate files, flipped, a composite grid, or whose file is served from
+   memory by a :ref:`virtual file system<Virtualfilesystem>`.
 
 
 .. _asset-material:
@@ -4199,9 +4229,11 @@ element is used to adjust the properties of all edges in the flex.
 .. _flexcomp-elasticity-damping:
 .. _flexcomp-elasticity-thickness:
 .. _flexcomp-elasticity-elastic2d:
+.. _flexcomp-elasticity-section:
+.. _flexcomp-elasticity-sectionsize:
 
 .. |body/flexcomp/elasticity attrib list| replace::
-   :at:`young`, :at:`poisson`, :at:`damping`, :at:`thickness`, :at:`elastic2d`
+   :at:`young`, :at:`poisson`, :at:`damping`, :at:`thickness`, :at:`elastic2d`, :at:`section`, :at:`sectionsize`
 
 |body/flexcomp/elasticity attrib list|
    Same as in :ref:`flex/elasticity<flex-elasticity>`.
@@ -4740,6 +4772,22 @@ to large displacements (finite rotations) and small strains, since it uses a non
 stress-strain relationship. See also :ref:`deformable <CDeformable>` objects and `this model
 <https://github.com/google-deepmind/mujoco/blob/main/model/flex/floppy.xml>`__.
 
+For 1D flexes, elasticity is a twist-free, isotropic `discrete elastic rod
+<https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf>`__ bending model with the cross-section given by
+:ref:`section<flex-elasticity-section>`. Every vertex shared by exactly two edges stores the energy
+:math:`k |\kappa b|^2`, where :math:`\kappa b` is the discrete curvature binormal and
+:math:`k = E I / (\ell_0 + \ell_1)`, with :math:`I` the second moment of area of the cross-section and
+:math:`\ell_{0,1}` the reference lengths of the two edges. The reference configuration ``qpos0`` must be straight: a
+compiler error is raised if any such vertex is bent by more than :math:`10^{-4}` rad, since without material frames an
+isotropic rod with a curved reference would only resist the magnitude of its curvature, not its direction. A curved
+initial pose, e.g. coiled or draped, can be set with ``qpos`` or a :ref:`keyframe<keyframe>`; the rod then starts with
+stored bending energy and is pushed toward straightening. Rods with a curved rest shape, such as coil springs, can use
+the :ref:`cable<CComposite>` composite instead. Twist is assumed to relax instantly, which is exact unless the
+orientation of both ends of the rod is constrained. Stretching is not included; use :ref:`edge<flex-edge>` constraints
+or stiffness instead. Rod bending is integrated implicitly by the :ref:`discrete<option-integrator>` integrator, using a
+positive semi-definite approximation of its Hessian, and explicitly by all other integrators. It is not supported by
+:ref:`dof<body-flexcomp-dof>` **trilinear** and **quadratic**.
+
 .. _flex-elasticity-young:
 
 :at:`young`: :at-val:`real(1), "0"`
@@ -4778,7 +4826,22 @@ stress-strain relationship. See also :ref:`deformable <CDeformable>` objects and
    With the :ref:`discrete<option-integrator>` integrator, use :ref:`solver<option-solver>` **CG** for general attachments.
    Newton supports fixed attachments and independent slide bodies with local positive X, Y and Z joints in that order
    and fixed ancestors. Mocap attachments are not supported for non-rigid flexes with elasticity because mocap poses do
-   not provide velocities for elastic damping.
+   not provide velocities for elastic damping, except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
+
+.. _flex-elasticity-section:
+
+:at:`section`: :at-val:`[circle, box], "circle"`
+   Cross-section of 1D flexes, used to compute the second moment of area :math:`I` of the bending stiffness. "circle":
+   :math:`I = \pi r^4 / 4`, where :math:`r` is the flex :ref:`radius <deformable-flex-radius>`. "box": rectangle with
+   half-sizes given by :ref:`sectionsize<flex-elasticity-sectionsize>`. Since the bending model is isotropic, a box uses
+   the second moment of area of its weak axis, :math:`I = \min(w h^3, h w^3) / 12`, where :math:`w, h` are the full
+   sizes. Collisions and rendering always use the flex radius.
+
+.. _flex-elasticity-sectionsize:
+
+:at:`sectionsize`: :at-val:`real(2), "0 0"`
+   Half-sizes of the "box" cross-section of 1D flexes, units of length. Both values must be positive when
+   :ref:`section<flex-elasticity-section>` is "box"; ignored otherwise.
 
 .. _flex-contact:
 
@@ -4797,6 +4860,10 @@ extensions specific to flexes.
    hierarchies and sweep-and-prune (which are two different strategies for midphase collision pruning). **auto** selects
    **sap** in 1D and 2D, and **bvh** in 3D. Which strategy performs better depends on the specifics of the model. The
    automatic setting is just a simple rule which we have found to perform well in general.
+
+   For interpolated flexes (**trilinear** or **quadratic** :ref:`dofs<body-flexcomp-dof>`), elements in the same or
+   neighboring :ref:`cells<body-flexcomp-cellcount>` do not self-collide, so self-collision requires at least 3 cells
+   along an axis.
 
 .. _flex-contact-activelayers:
 
@@ -5331,6 +5398,13 @@ at each of the 8 Gauss points, giving 26 constraints per element. For quadratic 
 constraint type is only supported for dimension 3 flexes with trilinear or quadratic interpolation. See `this model
 <https://github.com/google-deepmind/mujoco/blob/main/model/flex/strain.xml>`__ for an example.
 
+The strain constraint replaces the stretch elasticity of the flex: the compiled element stiffness holds the constraint
+eigenmodes instead of the :ref:`young<flex-elasticity-young>` and :ref:`poisson<flex-elasticity-poisson>` stiffness,
+and the passive stretch force is not computed. A positive :at:`young` is therefore rejected by the compiler unless
+:ref:`elastic2d<flex-elasticity-elastic2d>` is :at-val:`bend`, in which case it only determines the bending stiffness
+of the shell. Note that deactivating the constraint at runtime leaves the flex without stretch elasticity; to simulate
+a volumetric elastic solid, remove the constraint and set :at:`young` and :at:`poisson` before compiling.
+
 .. _equality-flexstrain-name:
 .. _equality-flexstrain-class:
 .. _equality-flexstrain-active:
@@ -5493,10 +5567,11 @@ length X, as in the clip on the right of `this example model
 
 :at:`springlength`: :at-val:`real(2), "-1 -1"`
    Spring resting position, can take either one or two values. If one value is given, it corresponds to the length of
-   the tendon at rest. If it is ``-1``, the tendon resting length is determined from the model reference configuration
-   in ``mjModel.qpos0``.  |br| Note that the default value of ``-1``, which invokes the automatic length computation,
-   was designed with :ref:`spatial<tendon-spatial>` tendons in mind, which can only have nonegative length. In order to
-   set the :at:`springlength` of a :ref:`fixed<tendon-fixed>` tendon to ``-1``, use a nearby value like ``-0.99999``.
+   the tendon at rest. If it is ``-1``, the tendon resting length is determined by the compiler from the spring
+   reference configuration in ``mjModel.qpos_spring``.  |br| Note that the default value of ``-1``, which invokes the
+   automatic length computation, was designed with :ref:`spatial<tendon-spatial>` tendons in mind, which can only have
+   nonegative length. In order to set the :at:`springlength` of a :ref:`fixed<tendon-fixed>` tendon to ``-1``, use a
+   nearby value like ``-0.99999``.
    |br| If two non-decreasing values are given, they define a `dead-band <https://en.wikipedia.org/wiki/Deadband>`_
    range. If the tendon length is between the two values, the force is 0. If it is outside this range, the force behaves
    like a regular spring, with the rest-point corresponding to the nearest :at:`springlength` value. A deadband can be
@@ -10147,6 +10222,48 @@ if omitted.
 
 | This element sets the attributes of the dummy :ref:`mesh <asset-mesh>` element of the defaults class.
 | The available attributes are: :ref:`scale <asset-mesh-scale>` and :ref:`maxhullvert <asset-mesh-maxhullvert>`.
+
+
+.. _default-texture:
+
+.. _default-texture-type:
+
+.. _default-texture-colorspace:
+
+.. _default-texture-gridsize:
+
+.. _default-texture-gridlayout:
+
+.. _default-texture-builtin:
+
+.. _default-texture-rgb1:
+
+.. _default-texture-rgb2:
+
+.. _default-texture-mark:
+
+.. _default-texture-markrgb:
+
+.. _default-texture-random:
+
+.. _default-texture-width:
+
+.. _default-texture-height:
+
+.. _default-texture-hflip:
+
+.. _default-texture-vflip:
+
+.. _default-texture-nchannel:
+
+.. _default-texture-embed:
+
+:el-prefix:`default/` |-| **texture** |?|
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+| This element sets the attributes of the dummy :ref:`texture <asset-texture>` element of the defaults class.
+| All texture attributes are available here except: name, class, content_type, file, fileright, fileleft, fileup,
+  filedown, filefront, fileback.
 
 
 .. _default-material:

@@ -30,6 +30,7 @@ MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
+ROD_HINGE_SIZE = 4  # 1D rod hinge data in flex_bending: [v_prev, v, v_next, k]
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -1014,17 +1015,6 @@ class Option:
 
 
 @dataclasses.dataclass
-class Statistic:
-  """Model statistics (in qpos0).
-
-  Attributes:
-    meaninertia: mean diagonal inertia (per-world)
-  """
-
-  meaninertia: array("*", float)
-
-
-@dataclasses.dataclass
 class TileSet:
   """Tiling configuration for decomposable block diagonal matrix.
 
@@ -1135,7 +1125,6 @@ class Model:
     nsensordata: number of elements in sensor data vector
     nhistory: number of history buffer entries
     opt: physics options
-    stat: model statistics
     qpos0: qpos values at default pose                       (*, nq)
     qpos_spring: reference pose for springs                  (*, nq)
     body_parentid: id of body's parent                       (nbody,)
@@ -1492,6 +1481,7 @@ class Model:
     has_flex_passive: whether any flex has passive contact enabled
     has_flex_snh: whether any flex uses 3D SNH elasticity
     has_non_simple_flex: whether any flex has non-simple vertex bodies
+    has_flex_stiff_dim23: whether any 2D or 3D flex contributes elastic stiffness
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
     has_efm_actuator: whether any actuator contributes effective metric coupling
@@ -1608,6 +1598,8 @@ class Model:
     nflexface: number of interpolated flex shell faces
     flex_face_map: mapping of face index to flex and local element face indices
     flex_face: global node indices of each face                             (nflexface, 9)
+    nflexrodhinge: number of 1D rod bending hinges
+    flex_rodhinge_map: flex id and flex_bending address of each rod hinge   (nflexrodhinge, 2)
   """
 
   nq: int
@@ -1667,7 +1659,6 @@ class Model:
   nsensordata: int
   nhistory: int
   opt: Option
-  stat: Statistic
   qpos0: array("*", "nq", float)
   qpos_spring: array("*", "nq", float)
   body_parentid: array("nbody", int)
@@ -2021,6 +2012,7 @@ class Model:
   has_flex_passive: bool
   has_flex_snh: bool
   has_non_simple_flex: bool
+  has_flex_stiff_dim23: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
   has_efm_actuator: bool
@@ -2130,6 +2122,8 @@ class Model:
   nflexface: int
   flex_face_map: array("nflexface", wp.vec2i)
   flex_face: array("nflexface", 9, int)
+  nflexrodhinge: int
+  flex_rodhinge_map: array("nflexrodhinge", wp.vec2i)
 
 
 class ContactType(enum.IntFlag):
@@ -2380,8 +2374,6 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    ctol: compacted-solve main tolerance (nv/nvmax_pad scaled)  (1,)
-    cls_tol: compacted-solve linesearch tolerance               (1,)
     cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
     cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
     cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
@@ -2541,8 +2533,6 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
-  ctol: array(1, float)
-  cls_tol: array(1, float)
   cdof_tri_row: array("nvmax_pad_sq", int)
   cdof_tri_col: array("nvmax_pad_sq", int)
   cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
@@ -2623,6 +2613,7 @@ class SolverContext:
   hfactor: wp.array3d[float]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  inertia_scale: wp.array[float]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
