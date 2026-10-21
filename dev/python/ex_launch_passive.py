@@ -1,4 +1,3 @@
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -7,7 +6,6 @@ import mujoco as mj
 import tyro
 from mujoco.experimental.studio import (
   launch_passive,
-  messages,
   step_control,
   viewer_app,
   viewer_protocol,
