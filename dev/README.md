@@ -48,17 +48,39 @@ docker run -it --rm -v $PWD/python/dist/:/mujoco/python/dist/ mujoco-ai2-manylin
 ./build_manylinux_wheel.sh --all --filament --studio --fresh --njobs 5 --py-version py311
 ```
 
-## Using the wheels
+- Using the wheel
 
 To install the wheels you would just have to use `pip` and point to the path where the wheel lives:
 
 ```bash
-uv pip install python/dist/mujoco-3.7.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+uv pip install python/dist/mujoco-3.16.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 ```
 
-We cannot host it on `PyPI` or `TestPyPI` because it will require to have a different package name,
-like `mujoco-filament` or similar, and that messes up some stuff when trying to install this wheel
-while having the original MuJoCo wheels from PyPI, making the installation fails sometimes.
+## Build Python wheels for MacOS
+
+To build macos wheels we can use the `build_macos_wheel` helper script directly from a macbook
+or a mac studio. Just run the following (the script expects to have an activated virtual
+environment managed by `uv`, so make sure you're using it instead of `conda` or `virtualenv`):
+
+```bash
+./build_macos_wheel.sh --filament --vulkan --studio --fresh --njobs 5
+```
+
+Notice that the wheel to be built corresponds to the python version being used by the activated
+python `uv` environment, so just create a new virtual environment for each version of python
+you want to build wheels for:
+
+```bash
+# For py311
+uv venv .venv-311 --python 3.11
+. .venv-311/bin/activate
+./build_macos_wheel.sh --filament --vulkan --studio --fresh --njobs 5
+
+# For py312
+uv venv .venv-312 --python 3.12
+. .venv-312/bin/activate
+./build_macos_wheel.sh --filament --vulkan --studio --fresh --njobs 5
+```
 
 ## MolmoSpaces assets
 
