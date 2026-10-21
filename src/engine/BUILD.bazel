@@ -7,6 +7,7 @@ package_group(
     name = "_impl_visibility",
     packages =
         [
+            "//src/batch/...",
             "//src/render/classic/...",
             "//src/user/...",
             "//src/xml/...",
@@ -546,7 +547,10 @@ cc_library(
     deps = [
         ":engine_collision_convex",
         ":engine_collision_primitive",
+        ":engine_core",
+        ":engine_core_util",
         ":engine_crossplatform",
+        ":engine_init",
         ":engine_inline",
         ":engine_memory",
         ":engine_thread",
