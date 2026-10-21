@@ -1,0 +1,52 @@
+target-version = "py311"
+line-length = 100
+indent-width = 2
+exclude = []
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+docstring-code-format = false
+
+[lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+    # PEP8
+    "W",
+    # flake8-annotations
+    "ANN",
+]
+ignore = [
+    "C408", # don't complain about usage of dict() calls
+    "C901", # don't complain about function complexity
+    "E501", # don't complain about line-length (handled by line-length setting)
+    "B006", # defaults shouldn't be mutable
+    "UP015", # redundant mode arguments in open should be fine for now
+    "SIM117", # allow nested with statements for now
+    "SIM102", # don't be picky about nested if statements
+    "SIM114", # don't be picky about merging if branches using or
+    "B905", # allow zip() without `strict` parameter
+    "B026", # allow star-arg after keyword argument for now
+    "ANN001", #	missing-type-function-argument
+    "ANN201", # missing-return-type-undocumented-public-function
+    "ANN202", # missing-return-type-private-function
+    "ANN003", # missing-type-kwargs
+    "E402", # module-import-not-at-top-of-file
+    "ANN401", # allow dynamic typed expressions
+]
+
+[lint.pydocstyle]
+convention = "google"
+
