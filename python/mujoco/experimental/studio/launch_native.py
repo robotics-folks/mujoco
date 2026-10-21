@@ -155,4 +155,4 @@ def run(
           handle.set_model(model, data=data)
         elif model_path:
           handle.dispatch(messages.LoadModelEvent(path=model_path))
-          viewer_handle.run_sim_loop(handle)
+        viewer_handle.run_sim_loop(handle)

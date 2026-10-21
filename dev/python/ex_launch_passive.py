@@ -1,15 +1,25 @@
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import mujoco as mj
 import tyro
-from mujoco.experimental.studio import launch_passive, messages, viewer_protocol
+from mujoco.experimental.studio import (
+  launch_passive,
+  messages,
+  step_control,
+  viewer_app,
+  viewer_protocol,
+)
 
 
 @dataclass
 class Args:
   model: Path
+  gfx: Literal["opengl", "vulkan", "web"] = "opengl"
+  width: int = 1024
+  height: int = 768
 
 
 def main() -> int:
@@ -22,17 +32,18 @@ def main() -> int:
   model = mj.MjModel.from_xml_path(args.model.as_posix())
   data = mj.MjData(model)
 
-  handle = launch_passive.run(
-    viewer_protocol.ViewerConfig(title="studio repro", width=900, height=600)
+  config = viewer_protocol.ViewerConfig(
+    title="Studio passive example",
+    width=args.width,
+    height=args.height,
+    gfx=args.gfx,
   )
-  handle.send_to_viewer(messages.ModelEvent(model=model, path=args.model.as_posix()))
-  print("launch_passive returned, is_running:", handle.is_running(), flush=True)
 
-  for _ in range(200):
-    model, data = handle.sync(model, data)
-    time.sleep(0.02)
-
-  print("finished normally", flush=True)
+  plugins = [
+    step_control.StepControl(),
+    viewer_app.ViewerApp(),
+  ]
+  launch_passive.run(config, model=model, data=data, plugins=plugins)
 
   return 0
 
