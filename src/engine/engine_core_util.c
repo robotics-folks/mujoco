@@ -1655,12 +1655,14 @@ int mj_flexHasStiffness(const mjModel* m, int f) {
   const mjtNum* k = m->flex_stiffness + adr;
 
   // standard flex: every element has stiffness if any does
-  // shell-mode interpolated flex (interp < 0): keep the first-block check; shells have no empty
-  // cells, and their first block (a membrane quad on the x=0 face) has a zero first entry, so
-  // interpolated shell stretch is currently never applied (to be revisited with MJWarp)
   int order = m->flex_interp[f];
-  if (order <= 0) {
+  if (order == 0) {
     return k[0] != 0;
+  }
+
+  // shell-mode interpolated flex (interp < 0): stiffness is allocated only when nonzero
+  if (order < 0) {
+    return 1;
   }
 
   // volume-mode interpolated flex: any 3D cell counts
@@ -1676,6 +1678,43 @@ int mj_flexHasStiffness(const mjModel* m, int f) {
     }
   }
   return 0;
+}
+
+
+// mean mass of dynamic vertices of flex f (1.0 if all vertices are pinned/massless)
+mjtNum mj_flexMeanVertMass(const mjModel* m, int f) {
+  int vertadr = m->flex_vertadr[f];
+  int vertnum = m->flex_vertnum[f];
+  mjtNum sum = 0;
+  int count = 0;
+  for (int i = vertadr; i < vertadr + vertnum; i++) {
+    int bi = m->flex_vertbodyid[i];
+    if (bi >= 0 && m->body_mass[bi] > mjMINVAL) {
+      sum += m->body_mass[bi];
+      count++;
+    }
+  }
+  return count > 0 ? sum / count : 1.0;
+}
+
+
+// count active mjEQ_FLEXVERT constraint rows for flex f; optionally accumulate Jacobian nnz
+int mj_flexvertRows(const mjModel* m, int f, int* nnz) {
+  int vertadr = m->flex_vertadr[f];
+  int vertnum = m->flex_vertnum[f];
+  int rows = 0;
+  for (int v = vertadr; v < vertadr + vertnum; v++) {
+    for (int j = 0; j < 2; j++) {
+      int rownnz = m->flexvert_J_rownnz[2*v + j];
+      if (rownnz) {
+        rows++;
+        if (nnz) {
+          *nnz += rownnz;
+        }
+      }
+    }
+  }
+  return rows;
 }
 
 

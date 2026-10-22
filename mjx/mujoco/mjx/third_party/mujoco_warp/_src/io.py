@@ -148,17 +148,35 @@ def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
   return adr, nrow
 
 
+def _flex_has_stiffness(mjm: mujoco.MjModel, f: int) -> bool:
+  """Whether flex f has a nonzero stretch stiffness record, see mj_flexHasStiffness."""
+  adr = int(mjm.flex_stiffnessadr[f])
+  if adr < 0:
+    return False
+  order = int(mjm.flex_interp[f])
+  if order < 0:
+    return True
+  if order == 0:
+    return bool(mjm.flex_stiffness[adr] != 0)
+  cx, cy, cz = mjm.flex_cellnum[f]
+  npe = (order + 1) ** 3
+  nelem = int(cx) * int(cy) * int(cz)
+  stride = 9 * npe * npe
+  return any(mjm.flex_stiffness[adr + e * stride] != 0 for e in range(nelem))
+
+
 def _get_nflexintcell(mjm: mujoco.MjModel) -> int:
   nflexintcell = 0
   if mjm.nflex > 0:
     for fi in range(mjm.nflex):
-      order = abs(int(mjm.flex_interp[fi]))
-      if order == 0:
+      order = int(mjm.flex_interp[fi])
+      if order == 0 or mjm.flex_edgeequality[fi] == 3 or not _flex_has_stiffness(mjm, fi):
         continue
-      if mjm.flex_edgeequality[fi] == 3:
-        continue
-      cx, cy, cz = mjm.flex_cellnum[fi]
-      nflexintcell += int(cx) * int(cy) * int(cz)
+      cx, cy, cz = (int(x) for x in mjm.flex_cellnum[fi])
+      if order < 0:
+        nflexintcell += 2 * (cy * cz + cx * cz + cx * cy)
+      else:
+        nflexintcell += cx * cy * cz
   return nflexintcell
 
 
@@ -210,8 +228,7 @@ def _eff_flex_stiff_possible(mjm: mujoco.MjModel, f: int) -> bool:
   badr = int(mjm.flex_bendingadr[f])
   if mjm.flex_dim[f] == 1:
     return badr >= 0
-  sadr = int(mjm.flex_stiffnessadr[f])
-  if sadr >= 0 and mjm.flex_stiffness[sadr] != 0 and mjm.flex_edgeequality[f] != 3:
+  if mjm.flex_edgeequality[f] != 3 and _flex_has_stiffness(mjm, f):
     return True
   if badr < 0:
     return False
@@ -474,7 +491,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     else:
       setattr(opt, f.name, f.type(getattr(opt, f.name)))
 
-
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
 
@@ -620,7 +636,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   efm_d = _get_efm_data(mjm)
   m.nefmK = int(efm_d.nefmK) if efm_d else 0
   m.nefmdof = int(efm_d.nefmdof) if efm_d else 0
-  m.nefmL = int(efm_d.nefmL) if efm_d else 0
+  m.nefmL = 9 * m.nefmdof
   m.efm_K_rownnz = efm_d.efm_K_rownnz if efm_d else np.zeros(mjm.nv, dtype=np.int32)
   m.efm_K_rowadr = efm_d.efm_K_rowadr if efm_d else np.zeros(mjm.nv, dtype=np.int32)
   m.efm_K_colind = efm_d.efm_K_colind if (efm_d and efm_d.efm_K_colind is not None) else np.zeros(0, dtype=np.int32)
@@ -629,15 +645,22 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   for k, b in enumerate(m.efm_dofid):
     dofblk[b : b + 3] = k
   has_stretch_or_interp = any(
-    (mjm.flex_interp[f] != 0 or mjm.flex_edgeequality[f] != 2)
-    and mjm.flex_stiffnessadr[f] >= 0
-    and not mjm.flex_rigid[f]
-    and np.any(
-      mjm.flex_stiffness[
-        mjm.flex_stiffnessadr[f] : mjm.flex_stiffnessadr[f]
-        + (types.FLEX_STIFFNESS_3D if mjm.flex_dim[f] == 3 else 21) * mjm.flex_elemnum[f]
-      ]
-      != 0
+    not mjm.flex_rigid[f]
+    and mjm.flex_edgeequality[f] != 3
+    and (
+      _flex_has_stiffness(mjm, f)
+      if mjm.flex_interp[f] != 0
+      else (
+        mjm.flex_edgeequality[f] != 2
+        and mjm.flex_stiffnessadr[f] >= 0
+        and np.any(
+          mjm.flex_stiffness[
+            mjm.flex_stiffnessadr[f] : mjm.flex_stiffnessadr[f]
+            + (types.FLEX_STIFFNESS_3D if mjm.flex_dim[f] == 3 else 21) * mjm.flex_elemnum[f]
+          ]
+          != 0
+        )
+      )
     )
     for f in range(mjm.nflex)
   )
@@ -651,8 +674,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   flex_interp_assemblable = True
   for fi in range(mjm.nflex):
     if mjm.flex_interp[fi] != 0:
-      sa = int(mjm.flex_stiffnessadr[fi])
-      if sa >= 0 and not mjm.flex_rigid[fi] and mjm.flex_stiffness[sa] != 0 and mjm.flex_edgeequality[fi] != 3:
+      if not mjm.flex_rigid[fi] and mjm.flex_edgeequality[fi] != 3 and _flex_has_stiffness(mjm, fi):
         nodeadr = int(mjm.flex_nodeadr[fi])
         for n in range(int(mjm.flex_nodenum[fi])):
           bid = int(mjm.flex_nodebodyid[nodeadr + n])
@@ -667,16 +689,19 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   flex_cell_map = []
   if mjm.nflex > 0:
     for fi in range(mjm.nflex):
-      order = abs(int(mjm.flex_interp[fi]))
-      if order == 0:
+      order = int(mjm.flex_interp[fi])
+      if order == 0 or mjm.flex_edgeequality[fi] == 3 or not _flex_has_stiffness(mjm, fi):
         continue
-      if mjm.flex_edgeequality[fi] == 3:
-        continue
-      cx, cy, cz = mjm.flex_cellnum[fi]
-      for ci in range(cx):
-        for cj in range(cy):
-          for ck in range(cz):
-            flex_cell_map.append((fi, ci, cj, ck))
+      cx, cy, cz = (int(x) for x in mjm.flex_cellnum[fi])
+      if order < 0:
+        nfaces = 2 * (cy * cz + cx * cz + cx * cy)
+        for fe in range(nfaces):
+          flex_cell_map.append((fi, fe, 0, 0))
+      else:
+        for ci in range(cx):
+          for cj in range(cy):
+            for ck in range(cz):
+              flex_cell_map.append((fi, ci, cj, ck))
   if not flex_cell_map:
     m.flex_cell_map = np.zeros((0, 4), dtype=np.int32)
   else:
@@ -1923,7 +1948,7 @@ def make_data(
   sizes["nflexface"] = _get_nflexface(mjm)
   efm_d = _get_efm_data(mjm)
   sizes["nefmK"] = int(efm_d.nefmK) if efm_d else 0
-  sizes["nefmL"] = int(efm_d.nefmL) if efm_d else 0
+  sizes["nefmL"] = 9 * int(efm_d.nefmdof) if efm_d else 0
 
   # qLD holds the factor: a packed dense region for dense blocks followed
   # by an nC-length LDL region for sparse blocks (present only when some block is sparse). Either
@@ -2157,7 +2182,7 @@ def put_data(
   sizes["nflexface"] = _get_nflexface(mjm)
   efm_d = _get_efm_data(mjm)
   sizes["nefmK"] = int(efm_d.nefmK) if efm_d else 0
-  sizes["nefmL"] = int(efm_d.nefmL) if efm_d else 0
+  sizes["nefmL"] = 9 * int(efm_d.nefmdof) if efm_d else 0
   lay = m_block_layout(mjm)
   qld_total = lay["total"] + (mjm.nC if lay["has_sparse"] else 0)
   sizes["qld_total"] = qld_total
@@ -2319,8 +2344,10 @@ def put_data(
     if f.name in d_kwargs:
       continue
     val = getattr(mjd, f.name, None)
-    if f.name in ("efm_K_val", "efm_L") and val is not None and val.size != sizes[f"nefm{f.name[4]}"]:
-      val = getattr(efm_d, f.name, None) if efm_d else None
+    if f.name == "efm_K_val" and val is not None and val.size != sizes["nefmK"]:
+      val = efm_d.efm_K_val if efm_d else None
+    elif f.name == "efm_L" and val is not None:
+      val = (efm_d.efm_L if (val.size < sizes["nefmL"] and efm_d) else val)[: sizes["nefmL"]]
     elif f.name == "efm_ts":
       val = np.zeros(mjm.ntendon, dtype=np.float32)
       if mjd.nefmT > 0 and mjd.efm_ts is not None and mjd.efm_tid is not None:

@@ -161,6 +161,103 @@ static int arenaAllocEfc(const mjModel* m, mjData* d) {
   return 1;
 }
 
+// compute contact condim, solref, solimp, friction, adhesion
+void mj_contactParam(const mjModel* m, int* condim, mjtNum* solref, mjtNum* solimp,
+                     mjtNum* friction, mjtNum* adhesion, int g1, int g2, int f1, int f2) {
+  mjtNum fri[3];
+
+  // get parameters from geom1 or flex1
+  int priority1 =           (f1 < 0) ? m->geom_priority[g1]     : m->flex_priority[f1];
+  int condim1 =             (f1 < 0) ? m->geom_condim[g1]       : m->flex_condim[f1];
+  mjtNum solmix1 =          (f1 < 0) ? m->geom_solmix[g1]       : m->flex_solmix[f1];
+  const mjtNum* solref1 =   (f1 < 0) ? m->geom_solref+g1*mjNREF : m->flex_solref+f1*mjNREF;
+  const mjtNum* solimp1 =   (f1 < 0) ? m->geom_solimp+g1*mjNIMP : m->flex_solimp+f1*mjNIMP;
+  const mjtNum* friction1 = (f1 < 0) ? m->geom_friction+g1*3    : m->flex_friction+f1*3;
+  mjtNum adhesion1 =        (f1 < 0) ? m->geom_adhesion[g1]     : 0;
+
+  // get parameters from geom2 or flex2
+  int priority2 =           (f2 < 0) ? m->geom_priority[g2]     : m->flex_priority[f2];
+  int condim2 =             (f2 < 0) ? m->geom_condim[g2]       : m->flex_condim[f2];
+  mjtNum solmix2 =          (f2 < 0) ? m->geom_solmix[g2]       : m->flex_solmix[f2];
+  const mjtNum* solref2 =   (f2 < 0) ? m->geom_solref+g2*mjNREF : m->flex_solref+f2*mjNREF;
+  const mjtNum* solimp2 =   (f2 < 0) ? m->geom_solimp+g2*mjNIMP : m->flex_solimp+f2*mjNIMP;
+  const mjtNum* friction2 = (f2 < 0) ? m->geom_friction+g2*3    : m->flex_friction+f2*3;
+  mjtNum adhesion2 =        (f2 < 0) ? m->geom_adhesion[g2]     : 0;
+
+  // adhesion: each surface contributes its own attraction
+  *adhesion = adhesion1 + adhesion2;
+
+  // different priority: copy from item with higher priority
+  if (priority1 > priority2) {
+    *condim = condim1;
+    mju_copy(solref, solref1, mjNREF);
+    mju_copy(solimp, solimp1, mjNIMP);
+    mju_copy(fri, friction1, 3);
+    *adhesion = adhesion1;
+  }
+  else if (priority1 < priority2) {
+    *condim = condim2;
+    mju_copy(solref, solref2, mjNREF);
+    mju_copy(solimp, solimp2, mjNIMP);
+    mju_copy(fri, friction2, 3);
+    *adhesion = adhesion2;
+  }
+
+  // same priority
+  else {
+    // condim: max
+    *condim = mjMAX(condim1, condim2);
+
+    // compute solver mix factor
+    mjtNum mix;
+    if (solmix1 >= mjMINVAL && solmix2 >= mjMINVAL) {
+      mix = solmix1 / (solmix1 + solmix2);
+    } else if (solmix1 < mjMINVAL && solmix2 < mjMINVAL) {
+      mix = 0.5;
+    } else if (solmix1 < mjMINVAL) {
+      mix = 0.0;
+    } else {
+      mix = 1.0;
+    }
+
+    // reference standard: mix
+    if (solref1[0] > 0 && solref2[0] > 0) {
+      for (int i=0; i < mjNREF; i++) {
+        solref[i] = mix*solref1[i] + (1-mix)*solref2[i];
+      }
+    }
+
+    // reference direct: min
+    else {
+      for (int i=0; i < mjNREF; i++) {
+        solref[i] = mju_min(solref1[i], solref2[i]);
+      }
+    }
+
+    // impedance: mix
+    for (int i=0; i < mjNIMP; i++) {
+      solimp[i] = mix*solimp1[i] + (1-mix)*solimp2[i];
+    }
+
+    // friction: max
+    for (int i=0; i < 3; i++) {
+      fri[i] = mju_max(friction1[i], friction2[i]);
+    }
+  }
+
+  // unpack 5D friction
+  friction[0] = fri[0];
+  friction[1] = fri[0];
+  friction[2] = fri[1];
+  friction[3] = fri[2];
+  friction[4] = fri[2];
+
+  // SHOULD NOT OCCUR
+  if (*condim > 6 || *condim < 1) {
+    mjERROR("Invalid condim value: %d", *condim);
+  }
+}
+
 
 // assign/clamp contact friction parameters
 void mj_assignFriction(const mjModel* m, mjtNum* target, const mjtNum* source) {
@@ -820,8 +917,11 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
       flex_vertnum = m->flex_vertnum[id[0]];
       for (int v=flex_vertadr; v < flex_vertadr+flex_vertnum; v++) {
         for (int j=0; j < 2; j++) {
-          cpos[0] = d->flexvert_length[2*v+j];
           int row = 2*v+j;
+          if (!m->flexvert_J_rownnz[row]) {
+            continue;
+          }
+          cpos[0] = d->flexvert_length[row];
           if (issparse) {
             mj_addConstraint(m, d, d->flexvert_J + m->flexvert_J_rowadr[row],
                              cpos, 0, 0, 1, mjCNSTR_EQUALITY, i,
@@ -1578,14 +1678,41 @@ void mj_diagApprox(const mjModel* m, mjData* d) {
         break;
 
       case mjEQ_FLEXVERT:
-        // process all vertices for this flex
+        // process all non-rigid vertices for this flex
         f = m->eq_obj1id[id];
         int vertadr = m->flex_vertadr[f];
         int vertnum = m->flex_vertnum[f];
         for (int v=vertadr; v<vertadr+vertnum; v++) {
+          if (!m->flexvert_J_rownnz[2*v+0] && !m->flexvert_J_rownnz[2*v+1]) {
+            continue;
+          }
           int bodyid = m->flex_vertbodyid[v];
-          dA[i++] = m->body_invweight0[2*bodyid];
-          dA[i++] = m->body_invweight0[2*bodyid];
+          mjtNum invweight = m->body_invweight0[2*bodyid];
+          if (invweight == 0) {
+            int nedge = m->flex_vertedgenum[v];
+            int edgeadr = m->flex_vertedgeadr[v];
+            int ebase = m->flex_edgeadr[f];
+            int n = 0;
+            for (int k=0; k<nedge; k++) {
+              int e = m->flex_vertedge[edgeadr+k];
+              int v1 = m->flex_edge[2*(ebase+e)];
+              int v2 = m->flex_edge[2*(ebase+e)+1];
+              int nb = m->flex_vertbodyid[vertadr + (v == vertadr+v1 ? v2 : v1)];
+              if (m->body_invweight0[2*nb] > 0) {
+                invweight += m->body_invweight0[2*nb];
+                n++;
+              }
+            }
+            if (n > 0) {
+              invweight /= n;
+            }
+          }
+          if (m->flexvert_J_rownnz[2*v+0]) {
+            dA[i++] = invweight;
+          }
+          if (m->flexvert_J_rownnz[2*v+1]) {
+            dA[i++] = invweight;
+          }
         }
 
         // adjust constraint counter
@@ -2160,7 +2287,7 @@ static int mj_ne(const mjModel* m, mjData* d, int* nnz) {
   int nv = m->nv, neq = m->neq;
   int id[2], size, NV, NV2, *chain = NULL, *chain2 = NULL;
   int issparse = (nnz != NULL);
-  int flex_edgeadr, flex_edgenum, flex_vertadr, flex_vertnum;
+  int flex_edgeadr, flex_edgenum;
 
   // disabled or no equality constraints: return
   if (mjDISABLED(mjDSBL_EQUALITY) || m->nemax == 0) {
@@ -2293,15 +2420,7 @@ static int mj_ne(const mjModel* m, mjData* d, int* nnz) {
       break;
 
     case mjEQ_FLEXVERT:
-      flex_vertadr = m->flex_vertadr[id[0]];
-      flex_vertnum = m->flex_vertnum[id[0]];
-      size = 2 * flex_vertnum;
-      if (nnz) {
-        for (int v=flex_vertadr; v < flex_vertadr+flex_vertnum; v++) {
-          NV += m->flexvert_J_rownnz[2*v+0];
-          NV += m->flexvert_J_rownnz[2*v+1];
-        }
-      }
+      size = mj_flexvertRows(m, id[0], nnz ? &NV : NULL);
       break;
 
     case mjEQ_FLEXSTRAIN: {

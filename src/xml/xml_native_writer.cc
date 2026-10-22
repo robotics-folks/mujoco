@@ -727,23 +727,32 @@ void mjXWriter::OneSkin(XMLElement* elem, const mjCSkin* skin) {
   const bool     scaled = !authored_ && skin->scaled_;
   const string   file   = scaled ? "" : Pick(authored_, skin->spec.file, skin->File());
 
+  // bones loaded from file and namespaced by an attachment can only be saved as data
+  const bool namespaced = !file.empty() && skin->HasBoneNameSpace();
+  const bool authored   = authored_ && !namespaced;
+  if (namespaced && skin->get_bodyname().empty()) {
+    throw mjXError(0,
+                   "attached skin '%s' with bones from file must be compiled to be saved",
+                   skin->name.c_str());
+  }
+
   // write attributes
   WriteAttrTxt(elem, "name", skin->name);
-  WriteAttrTxt(elem, "file", file);
+  if (!namespaced) { WriteAttrTxt(elem, "file", file); }
   WriteAttrTxt(elem, "material", Pick(authored_, skin->spec.material, skin->get_material()));
   WriteAttrInt(elem, "group", values->group, 0);
   WriteAttrTable(elem, values, static_cast<const mjsSkin*>(&defskin), kSkinAttrs, kSkinAttrsN);
 
   // write data if no file
-  if (file.empty()) {
-    const auto& vert       = Pick(authored_, skin->spec.vert, skin->get_vert());
-    const auto& texcoord   = Pick(authored_, skin->spec.texcoord, skin->get_texcoord());
-    const auto& face       = Pick(authored_, skin->spec.face, skin->get_face());
-    const auto& bodyname   = Pick(authored_, skin->spec.bodyname, skin->get_bodyname());
-    const auto& bindpos    = Pick(authored_, skin->spec.bindpos, skin->get_bindpos());
-    const auto& bindquat   = Pick(authored_, skin->spec.bindquat, skin->get_bindquat());
-    const auto& vertid     = Pick(authored_, skin->spec.vertid, skin->get_vertid());
-    const auto& vertweight = Pick(authored_, skin->spec.vertweight, skin->get_vertweight());
+  if (file.empty() || namespaced) {
+    const auto& vert       = Pick(authored, skin->spec.vert, skin->get_vert());
+    const auto& texcoord   = Pick(authored, skin->spec.texcoord, skin->get_texcoord());
+    const auto& face       = Pick(authored, skin->spec.face, skin->get_face());
+    const auto& bodyname   = Pick(authored, skin->spec.bodyname, skin->get_bodyname());
+    const auto& bindpos    = Pick(authored, skin->spec.bindpos, skin->get_bindpos());
+    const auto& bindquat   = Pick(authored, skin->spec.bindquat, skin->get_bindquat());
+    const auto& vertid     = Pick(authored, skin->spec.vertid, skin->get_vertid());
+    const auto& vertweight = Pick(authored, skin->spec.vertweight, skin->get_vertweight());
 
     // mesh vert
     text = Numbers(vert);
@@ -1410,7 +1419,17 @@ void mjXWriter::OneEquality(XMLElement* elem, const mjCEquality* pequality, mjCD
           // not the constructor's union payload
           double zero3[3] = {0, 0, 0};
           WriteAttr(elem, "anchor", 3, equality->data, zero3);
-          WriteAttr(elem, "relpose", 7, equality->data + 3, def->Equality().spec.data + 3);
+
+          // a relative pose which mj_setConst computes, marked in data[11], is written as none:
+          // a zero quaternion
+          const double* defpose = def->Equality().spec.data + 3;
+          double        relpose[7];
+          std::copy_n(equality->data + 3, 7, relpose);
+          if (!authored_ && equality->data[11]) {
+            std::copy_n(defpose, 3, relpose);
+            std::fill_n(relpose + 3, 4, 0);
+          }
+          WriteAttr(elem, "relpose", 7, relpose, defpose);
         } else {
           WriteAttrTxt(elem, "site1", mjs_getString(equality->name1));
           WriteAttrTxt(elem, "site2", mjs_getString(equality->name2));
