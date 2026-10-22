@@ -39,9 +39,13 @@ opt_should_install=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help) SHOW_HELP=true; shift ;;
+        # Script usage options ---------------------------
         --configure) opt_should_configure=true; shift ;;
         --build) opt_should_build=true; shift ;;
         --install) opt_should_install=true; shift ;;
+        --all) opt_should_configure=true; opt_should_build=true; opt_should_install=true; shift ;;
+        # ------------------------------------------------
+        # Build options ----------------------------------
         --debug) build_type="Debug"; shift ;;
         --rel-with-deb) build_type="RelWithDebInfo"; shift ;;
         --filament) build_filament=ON; shift ;;
@@ -53,6 +57,7 @@ while [[ $# -gt 0 ]]; do
         --fresh) fresh=true; shift ;;
         --build-dir) build_dir="$2"; shift 2 ;;
         --install-dir) install_dir="$2"; shift 2 ;;
+        # ------------------------------------------------
         *) echo "Unkown option: $1"; exit 1 ;;
     esac
 done

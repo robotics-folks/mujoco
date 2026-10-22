@@ -294,7 +294,7 @@ if(MUJOCO_BUILD_EXAMPLES)
 endif()
 
 if(MUJOCO_BUILD_DEV_EXAMPLES)
-  add_subdirectory(dev/cpp)
+  add_subdirectory(dev)
 endif()
 
 if(MUJOCO_WITH_USD)
