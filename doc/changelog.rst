@@ -2,6 +2,25 @@
 Changelog
 =========
 
+Upcoming Version (not yet released)
+-----------------------------------
+
+Engine
+^^^^^^
+- Contacts with flex elements now distribute the contact to the element vertices with the barycentric coordinates of the
+  point on the element closest to the contact. Previously the vertex weights were inversely proportional to the
+  distances from the contact, which do not interpolate the contact point: the contact Jacobian measured the velocity of
+  a different material point, and the contact force exerted a spurious torque on the element. This changes the
+  simulation of models with flex contacts.
+- Fixed contact Jacobians of quadratic flexes, which dropped nodes with negative basis weights.
+- Improved numerical stability of sphere and cylinder :ref:`spatial tendon<tendon-spatial>` :ref:`geom<spatial-geom>`
+  wrapping at wrap onset. Thanks to :github:user:`M-Colley` for reporting and analyzing the issue in
+  :doc:`MJWarp <mjwarp/index>` issue `1772 <https://github.com/google-deepmind/mujoco_warp/issues/1772>`__.
+
+Python bindings
+^^^^^^^^^^^^^^^
+- Removed support for Python 3.10, now that it's `deprecated upstream <https://devguide.python.org/versions>`__.
+
 Version 3.17.0 (October 22, 2026)
 ---------------------------------
 
