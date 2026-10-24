@@ -4757,12 +4757,15 @@ these mechanisms to be combined as desired.
 .. _flex-edge-stiffness:
 
 :at:`stiffness`: :at-val:`real(1), "0"`
-   Stiffness of all edges. Only for 1D flex. For 2D and 3D, plugins must be used.
+   Stiffness of all edges. Only for 1D flex. Integrated explicitly; not supported by the
+   :ref:`discrete<option-integrator>` integrator (use :ref:`elasticity<flex-elasticity>` or
+   :ref:`edge equality<flexcomp-edge-equality>` instead).
 
 .. _flex-edge-damping:
 
 :at:`damping`: :at-val:`real(1), "0"`
-   Damping of all edges.
+   Damping of all edges. Integrated explicitly; not supported by the :ref:`discrete<option-integrator>` integrator
+   (use :ref:`elasticity/damping<flex-elasticity-damping>` instead).
 
 
 .. _flex-elasticity:
@@ -4789,8 +4792,9 @@ initial pose, e.g. coiled or draped, can be set with ``qpos`` or a :ref:`keyfram
 stored bending energy and is pushed toward straightening. Rods with a curved rest shape, such as coil springs, can use
 the :ref:`cable<CComposite>` composite instead. Twist is assumed to relax instantly, which is exact unless the
 orientation of both ends of the rod is constrained. Stretching is not included; use :ref:`edge<flex-edge>` constraints
-or stiffness instead. Rod bending is integrated implicitly by the :ref:`discrete<option-integrator>` integrator, using a
-positive semi-definite approximation of its Hessian, and explicitly by all other integrators. It is not supported by
+(or edge stiffness under integrators other than ``discrete``) instead. Rod bending is integrated implicitly by the
+:ref:`discrete<option-integrator>` integrator, using a positive semi-definite approximation of its Hessian, and
+explicitly by ``Euler`` and ``RK4`` (not supported under ``implicit`` and ``implicitfast``). It is not supported by
 :ref:`dof<body-flexcomp-dof>` **trilinear** and **quadratic**.
 
 .. _flex-elasticity-young:
@@ -4912,10 +4916,11 @@ extensions specific to flexes.
    non-penetration, leave this option off.
 
    The force is a penalty on penetration depth whose stiffness is chosen as a natural frequency scaled by the
-   participating vertex mass, so a single value is appropriate across model scales; it is not user-specified. That
-   stiffness is integrated implicitly, its curvature being carried by the effective metric, and is therefore far
-   stiffer than an explicit force at the same timestep could be. It follows that the feature requires the ``discrete``
-   :ref:`integrator<option-integrator>`, with the ``CG`` or ``Newton`` :ref:`solver<option-solver>`, no
+   participating vertex mass (or for interpolated flexes, the effective cage node mass at the contact point scaled by
+   the node-to-vertex ratio), so a single value is appropriate across model scales and mesh resolutions; it is not
+   user-specified. That stiffness is integrated implicitly, its curvature being carried by the effective metric, and is
+   therefore far stiffer than an explicit force at the same timestep could be. It follows that the feature requires the
+   ``discrete`` :ref:`integrator<option-integrator>`, with the ``CG`` or ``Newton`` :ref:`solver<option-solver>`, no
    :ref:`noslip<option-noslip_iterations>` iterations and the :ref:`sleep<option-flag-sleep>` flag disabled. A model
    requesting passive flex collisions otherwise is rejected with an error.
 
