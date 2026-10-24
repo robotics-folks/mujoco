@@ -28,6 +28,7 @@ build_studio=OFF
 build_simulate=ON
 build_samples=OFF
 build_python=OFF
+build_tests=OFF
 install_dir=""
 njobs=4
 fresh=false
@@ -54,6 +55,7 @@ while [[ $# -gt 0 ]]; do
         --samples) build_samples=ON; shift ;;
         --python) build_python=ON; shift ;;
         --njobs) njobs="$2"; shift 2 ;;
+        --tests) build_tests=ON; shift ;;
         --fresh) fresh=true; shift ;;
         --build-dir) build_dir="$2"; shift 2 ;;
         --install-dir) install_dir="$2"; shift 2 ;;
@@ -110,7 +112,7 @@ if [ "$opt_should_configure" == "true" ]; then
         -DMUJOCO_BUILD_EXAMPLES=${build_samples} \
         -DMUJOCO_BUILD_DEV_EXAMPLES=${build_samples} \
         -DMUJOCO_BUILD_SIMULATE=${build_simulate} \
-        -DMUJOCO_BUILD_TESTS=OFF \
+        -DMUJOCO_BUILD_TESTS=${build_tests} \
         -DMUJOCO_TEST_PYTHON_UTIL=OFF \
         -DMUJOCO_WITH_USD=OFF \
         -DMUJOCO_USE_FILAMENT=${build_filament} \
