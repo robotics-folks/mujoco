@@ -17,23 +17,6 @@ _copy_tree() {  # $1=src dir, $2=dst dir — the whole subtree
     mkdir -p "$2" && cp -rp "${s}/." "$2/"
 }
 
-# _copy_headers() {
-#     local src_folder=$1
-#     local dst_folder=$2
-#     local files_to_cp=()
-#     mapfile -d '' files_to_cp < <(find ${src_folder} \( -name '*.h' -o -name '*.inl' \) -print0)
-#
-#     for file_to_cp in "${files_to_cp[@]}"; do
-#         mkdir -p "${dst_folder}/${file_to_cp%/*}" && cp -p "${file_to_cp}" "${dst_folder}/${file_to_cp}"
-#     done
-# }
-#
-# _copy_tree() {
-#     local src_folder=$1
-#     local dst_folder=$2
-#     mkdir -p ${dst_folder} && cp -rp "${src_folder}/." "${dst_folder}/"
-# }
-
 install_studio_platform() {
     local build_dir=$1
     local install_dir=$2
@@ -63,6 +46,7 @@ install_studio_platform() {
     fi
 
     # 1. Standard install: libmujoco (runtime), headers + archives (dev), the export and models (Unspecified)
+    local component
     for component in runtime dev Unspecified; do
         cmake --install ${build_dir} --prefix ${install_dir} --component ${component}
     done
@@ -76,8 +60,14 @@ install_studio_platform() {
 
     # 3. Static archives: mujoco_platform + every dependency archive; the Python
     #    build looks each one up by name with find_library().
+
     mkdir -p "${install_dir}/lib"
-    find "${build_dir}" \( -name "*.a" -o -name "*.lib" \) -exec cp {} "${install_dir}/lib/" \;
+    find "${build_dir}" -path "${install_dir}" -prune -o \
+        \( -name "*.a" -o -name "*.lib" \) ! -name "mujoco.lib" \
+        -exec cp -p {} "${install_dir}/lib/" \;
+
+    # mkdir -p "${install_dir}/lib"
+    # find "${build_dir}" \( -name "*.a" -o -name "*.lib" \) -exec cp {} "${install_dir}/lib/" \;
 
     # 4. Source-tree headers for platform / filament-compat / render.
     _copy_headers src/experimental "${install_dir}/include/mujoco/experimental"
