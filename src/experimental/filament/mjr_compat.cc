@@ -229,11 +229,6 @@ void mjr_makeContext(const mjModel* m, mjrContext* con, int fontscale) {
 
   mjrfContextConfig cfg;
   mjrf_defaultContextConfig(&cfg);
-
-#ifdef __APPLE__
-  cfg.graphics_api = static_cast<int>(filament::backend::Backend::OPENGL);
-#endif
-
   mjr_makeFilamentContext(m, &cfg, con);
 }
 
