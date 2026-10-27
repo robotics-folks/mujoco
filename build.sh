@@ -27,6 +27,7 @@ build_vulkan=OFF
 build_studio=OFF
 build_simulate=ON
 build_samples=OFF
+build_dev_samples=OFF
 build_python=OFF
 build_tests=OFF
 install_dir=""
@@ -52,7 +53,7 @@ while [[ $# -gt 0 ]]; do
         --filament) build_filament=ON; shift ;;
         --vulkan) build_vulkan=ON; shift ;;
         --studio) build_studio=ON; shift ;;
-        --samples) build_samples=ON; shift ;;
+        --samples) build_samples=ON; build_dev_samples=ON; shift ;;
         --python) build_python=ON; shift ;;
         --njobs) njobs="$2"; shift 2 ;;
         --tests) build_tests=ON; shift ;;
@@ -110,7 +111,7 @@ if [ "$opt_should_configure" == "true" ]; then
         -DUSE_STATIC_LIBCXX=OFF \
         -DBUILD_SHARED_LIBS=OFF \
         -DMUJOCO_BUILD_EXAMPLES=${build_samples} \
-        -DMUJOCO_BUILD_DEV_EXAMPLES=${build_samples} \
+        -DMUJOCO_BUILD_DEV_EXAMPLES=${build_dev_samples} \
         -DMUJOCO_BUILD_SIMULATE=${build_simulate} \
         -DMUJOCO_BUILD_TESTS=${build_tests} \
         -DMUJOCO_TEST_PYTHON_UTIL=OFF \
@@ -140,9 +141,28 @@ fi
 if [ "$opt_should_install" == "true" ]; then
     echo "Installing to target dir ..."
 
-    source build_common.sh
+    if [[ "${build_filament}" == "ON" ]]; then
+        source build_common.sh
 
-    install_studio_platform ${ROOT_DIR}/build ${USER_INSTALL_DIR}
+        install_studio_platform ${ROOT_DIR}/build ${USER_INSTALL_DIR}
+    else
+        rm -rf ${USER_INSTALL_DIR}
+        mkdir -p ${USER_INSTALL_DIR}
+
+        cmake --install ${ROOT_DIR}/build --prefix ${USER_INSTALL_DIR}
+
+        case "$(uname -s)" in
+            Darwin) plugin_ext="dylib" ;;
+            MINGW*|MSYS*|CYGWIN*) plugin_ext="dll" ;;
+            *) plugin_ext="so" ;;
+        esac
+
+        mkdir -p ${USER_INSTALL_DIR}/mujoco_plugin
+        for plugin in actuator elasticity sensor sdf_plugin; do
+            find ${ROOT_DIR}/build -name "*${plugin}.${plugin_ext}" \
+                -exec cp {} "${USER_INSTALL_DIR}/mujoco_plugin/" \; 2>/dev/null || true
+        done
+    fi
 fi
 
 
