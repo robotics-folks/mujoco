@@ -16,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -157,6 +158,13 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
   // check mass and inertia
   if (mass < mjMINVAL || inertiabox < mjMINVAL) {
     return comperr(error, "Mass and inertiabox must be larger than mjMINVAL", error_sz);
+  }
+
+  // check edge equality: 0=none, 1=edge, 3=strain (2=vert was removed)
+  if (equality != 0 && equality != 1 && equality != 3) {
+    return comperr(error,
+                   "Invalid edge equality, must be 0 (none), 1 (edge) or 3 (strain)",
+                   error_sz);
   }
 
   // compute orientation
@@ -659,7 +667,9 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
           mjuu_zerovec(pb->ipos, 3);
 
           // mass distribution
-          if (doftype == mjFCOMPDOF_TRILINEAR) {
+          if (!dflex->elastic2d) {
+            pb->mass = flex->NodeMassWeight(gi, gj, gk);
+          } else if (doftype == mjFCOMPDOF_TRILINEAR) {
             pb->mass = 1.0;
           } else {
             // local index within the cell for mass computation
@@ -725,11 +735,11 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
 
   // create equality constraints
   if (equality) {
-    // equality 1=edge(mjEQ_FLEX), 2=vert(mjEQ_FLEXVERT), 3=strain(mjEQ_FLEXSTRAIN)
-    if (equality == 1 || equality == 2) {
+    // equality 1=edge(mjEQ_FLEX), 3=strain(mjEQ_FLEXSTRAIN); 2 (vert) was removed
+    if (equality == 1) {
       mjsEquality* pe = mjs_addEquality(&model->spec, &def.spec);
       mjs_setDefault(pe->element, &model->Default()->spec);
-      pe->type   = (equality == 1) ? mjEQ_FLEX : mjEQ_FLEXVERT;
+      pe->type   = mjEQ_FLEX;
       pe->active = true;
       mjs_setString(pe->name1, name.c_str());
     } else if (equality == 3) {
@@ -818,7 +828,7 @@ static void AppendMeshSpec(const mjsMesh&       mesh,
 // make grid
 bool mjCFlexcomp::MakeGrid(char* error, int error_sz) {
   int  dim     = def.Flex().spec.dim;
-  bool needtex = texcoord.empty() && mjs_getString(def.spec.flex->material)[0];
+  bool needtex = texcoord.empty() && !def.spec.flex->material->empty();
   bool circle  = dim == 1 && type == mjFCOMPTYPE_CIRCLE;
 
   mjCMesh mesh;
@@ -840,7 +850,7 @@ bool mjCFlexcomp::MakeGrid(char* error, int error_sz) {
 bool mjCFlexcomp::MakeSquare(char* error, int error_sz) {
   // set 2D
   def.spec.flex->dim = 2;
-  bool needtex       = texcoord.empty() && mjs_getString(def.spec.flex->material)[0];
+  bool needtex       = texcoord.empty() && !def.spec.flex->material->empty();
 
   mjCMesh mesh;
   if (type == mjFCOMPTYPE_DISC) {
@@ -859,7 +869,7 @@ bool mjCFlexcomp::MakeSquare(char* error, int error_sz) {
 
 // make 3d box, ellipsoid or cylinder
 bool mjCFlexcomp::MakeBox(char* error, int error_sz, int dim, bool open) {
-  bool needtex = texcoord.empty() && mjs_getString(def.spec.flex->material)[0];
+  bool needtex = texcoord.empty() && !def.spec.flex->material->empty();
 
   // set dimension
   def.spec.flex->dim = dim;
@@ -1680,16 +1690,26 @@ double inline trace(const Matrix& tensor) {
   return tensor[0][0] + tensor[1][1] + tensor[2][2];
 }
 
-void inline ComputeLinearStiffness(
-    std::vector<double>& K, const double* pos, double E, double nu, int order) {
+
+// Finite Cell Method (FCM) subcell quadrature parameters
+constexpr int    kFcmSubdiv   = 2;
+constexpr double kFcmAlphaMin = 1e-6;
+// minimum fraction of the full-cell nodal mass weight (w_full) assigned to
+// each node of an active cut cell: prevents near-zero nodal mass and inertia
+// and bounds the generalized eigenvalue ratio K_ii / m_i on sliver cells
+constexpr double kFcmMassMin = 2e-2;
+
+
+// compute the linear stiffness matrix for a 3D hexahedral element
+void inline ComputeLinearStiffness(std::vector<double>&       K,
+                                   const double*              pos,
+                                   double                     E,
+                                   double                     nu,
+                                   int                        order,
+                                   const std::vector<double>* alphas = nullptr) {
   int nbasis = order + 1;
   int n      = pow(nbasis, 3);
   int ndof   = 3 * n;
-
-  // compute quadrature points
-  std::vector<double> points(nbasis);  // quadrature points
-  std::vector<double> weight(nbasis);  // quadrature weights
-  quadratureGaussLegendre(points.data(), weight.data(), nbasis, 0, 1);
 
   // compute element transformation
   double dx      = (pos + 3 * (n - 1))[0] - pos[0];
@@ -1702,6 +1722,109 @@ void inline ComputeLinearStiffness(
   std::vector<std::array<double, 3>> F(n);
   double                             la = E * nu / (1 + nu) / (1 - 2 * nu);
   double                             mu = E / (2 * (1 + nu));
+
+  if (alphas && !alphas->empty()) {
+    int                 nq_axis = kFcmSubdiv * nbasis;
+    std::vector<double> points(nq_axis);
+    std::vector<double> weight(nq_axis);
+    for (int sub = 0; sub < kFcmSubdiv; sub++) {
+      quadratureGaussLegendre(points.data() + sub * nbasis,
+                              weight.data() + sub * nbasis,
+                              nbasis,
+                              static_cast<double>(sub) / kFcmSubdiv,
+                              static_cast<double>(sub + 1) / kFcmSubdiv);
+    }
+
+    // precompute 1D basis function values and derivatives at quadrature points
+    std::vector<double> phi_tab(nbasis * nq_axis);
+    std::vector<double> dphi_tab(nbasis * nq_axis);
+    for (int b = 0; b < nbasis; b++) {
+      for (int p = 0; p < nq_axis; p++) {
+        phi_tab[b * nq_axis + p]  = phi(points[p], b, order);
+        dphi_tab[b * nq_axis + p] = dphi(points[p], b, order);
+      }
+    }
+
+    // accumulate integrated gradient outer products G[i * n + j][a][b] for j >=
+    // i
+    std::vector<Matrix> G(n * n);
+    for (auto& m : G) { m.fill({0, 0, 0}); }
+
+    int q_idx = 0;
+    for (int ps = 0; ps < nq_axis; ps++) {
+      for (int pt = 0; pt < nq_axis; pt++) {
+        for (int pu = 0; pu < nq_axis; pu++) {
+          double alpha = (*alphas)[q_idx++];
+          double dvol  = weight[ps] * weight[pt] * weight[pu] * detJ * alpha;
+          int    dof   = 0;
+
+          for (int bx = 0; bx < nbasis; bx++) {
+            double ph_s  = phi_tab[bx * nq_axis + ps];
+            double dph_s = invJ[0] * dphi_tab[bx * nq_axis + ps];
+            for (int by = 0; by < nbasis; by++) {
+              double ph_t  = phi_tab[by * nq_axis + pt];
+              double dph_t = invJ[1] * dphi_tab[by * nq_axis + pt];
+              double st_x  = dph_s * ph_t;
+              double st_y  = ph_s * dph_t;
+              double st_z  = ph_s * ph_t * invJ[2];
+              for (int bz = 0; bz < nbasis; bz++) {
+                double ph_u  = phi_tab[bz * nq_axis + pu];
+                double dph_u = dphi_tab[bz * nq_axis + pu];
+                F[dof++]     = {st_x * ph_u, st_y * ph_u, st_z * dph_u};
+              }
+            }
+          }
+
+          for (int i = 0; i < n; i++) {
+            double f0 = dvol * F[i][0];
+            double f1 = dvol * F[i][1];
+            double f2 = dvol * F[i][2];
+            for (int j = i; j < n; j++) {
+              Matrix& gij  = G[i * n + j];
+              gij[0][0]   += f0 * F[j][0];
+              gij[0][1]   += f0 * F[j][1];
+              gij[0][2]   += f0 * F[j][2];
+              gij[1][0]   += f1 * F[j][0];
+              gij[1][1]   += f1 * F[j][1];
+              gij[1][2]   += f1 * F[j][2];
+              gij[2][0]   += f2 * F[j][0];
+              gij[2][1]   += f2 * F[j][1];
+              gij[2][2]   += f2 * F[j][2];
+            }
+          }
+        }
+      }
+    }
+
+    for (int i = 0; i < n; i++) {
+      for (int j = i + 1; j < n; j++) {
+        const Matrix& gij = G[i * n + j];
+        Matrix&       gji = G[j * n + i];
+        for (int a = 0; a < 3; a++) {
+          for (int b = 0; b < 3; b++) { gji[a][b] = gij[b][a]; }
+        }
+      }
+    }
+
+    for (int i = 0; i < n; i++) {
+      for (int j = 0; j < n; j++) {
+        const Matrix& gij   = G[i * n + j];
+        double        dot_g = mu * (gij[0][0] + gij[1][1] + gij[2][2]);
+        for (int k = 0; k < 3; k++) {
+          for (int l = 0; l < 3; l++) {
+            double val = la * gij[k][l] + mu * gij[l][k] + (k == l ? dot_g : 0.0);
+            K[ndof * (3 * i + k) + 3 * j + l] -= val;
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  // compute quadrature points for full cell
+  std::vector<double> points(nbasis);  // quadrature points
+  std::vector<double> weight(nbasis);  // quadrature weights
+  quadratureGaussLegendre(points.data(), weight.data(), nbasis, 0, 1);
 
   // loop over quadrature points
   for (int ps = 0; ps < nbasis; ps++) {
@@ -2026,7 +2149,6 @@ mjCFlex::mjCFlex(mjCModel* _model) {
   nnode    = 0;
   nedge    = 0;
   nelem    = 0;
-  matid    = -1;
   rigid    = false;
   centered = false;
 
@@ -2077,8 +2199,10 @@ void mjCFlex::NameSpace(const mjCModel* m) {
   mjCBase::NameSpace(m);
   for (auto& name : spec_vertbody_) { name = m->prefix + name + m->suffix; }
   for (auto& name : spec_nodebody_) { name = m->prefix + name + m->suffix; }
-  if (!spec_material_.empty() && model != m) {
-    spec_material_ = m->prefix + spec_material_ + m->suffix;
+  if (model != m) {
+    for (auto& mat : spec_material_) {
+      if (!mat.empty()) { mat = m->prefix + mat + m->suffix; }
+    }
   }
 }
 
@@ -2107,6 +2231,9 @@ void mjCFlex::CopyFromSpec() {
   stiffness.clear();
   bending.clear();
   cell_empty.clear();
+  cell_full.clear();
+  cell_vol.clear();
+  cell_alphas.clear();
   has_strain_eq = false;
   rigid         = false;
   centered      = false;
@@ -2205,7 +2332,7 @@ bool mjCFlex::IsSimple() const {
 }
 
 
-std::string mjCFlex::ComputeStiffnessCacheKey() const {
+std::string mjCFlex::ComputeStiffnessCacheKey(const std::vector<double>& nodexpos_local) const {
   std::size_t hash = 0;
   auto combine     = [&hash](std::size_t v) { hash ^= v + 0x9e3779b9 + (hash << 6) + (hash >> 2); };
 
@@ -2240,29 +2367,31 @@ std::string mjCFlex::ComputeStiffnessCacheKey() const {
     combine(std::hash<double>{}(maxz - minz));
   }
 
-  for (std::size_t i = 0; i < vert_.size(); i += std::max(1, (int)vert_.size() / 100)) {
-    combine(std::hash<double>{}(vert_[i]));
-  }
+  for (double x : nodexpos_local) { combine(std::hash<double>{}(x)); }
 
-  for (std::size_t i = 0; i < elem_.size(); i += std::max(1, (int)elem_.size() / 100)) {
-    combine(std::hash<int>{}(elem_[i]));
-  }
+  for (double v : vert_) { combine(std::hash<double>{}(v)); }
+
+  for (int e : elem_) { combine(std::hash<int>{}(e)); }
 
   for (bool empty : cell_empty) { combine(std::hash<bool>{}(empty)); }
 
-  for (std::size_t i = 0; i < shell.size(); i += std::max(1, (int)shell.size() / 50)) {
-    combine(std::hash<int>{}(shell[i]));
+  for (double vol : cell_vol) { combine(std::hash<double>{}(vol)); }
+
+  for (const auto& alphas : cell_alphas) {
+    for (double a : alphas) { combine(std::hash<double>{}(a)); }
   }
+
+  for (int s : shell) { combine(std::hash<int>{}(s)); }
 
   return "flex_stiffness:" + std::to_string(hash);
 }
 
 
-bool mjCFlex::LoadCachedStiffness() {
+bool mjCFlex::LoadCachedStiffness(const std::vector<double>& nodexpos_local) {
   mjCCache* cache = reinterpret_cast<mjCCache*>(mj_getCache()->impl_);
   if (!cache) return false;
 
-  std::string key = ComputeStiffnessCacheKey();
+  std::string key = ComputeStiffnessCacheKey(nodexpos_local);
 
   auto load_fn = [this](const void* data) {
     const auto* cached = static_cast<const std::vector<double>*>(data);
@@ -2270,19 +2399,22 @@ bool mjCFlex::LoadCachedStiffness() {
     return true;
   };
 
+  mjpResourceProvider dummy_provider{};
+  dummy_provider.modified = [](const mjResource*, const char*) { return 0; };
   mjResource dummy_resource{};
   dummy_resource.name         = const_cast<char*>(key.c_str());
   dummy_resource.timestamp[0] = '\0';
+  dummy_resource.provider     = &dummy_provider;
 
   return cache->PopulateData(key, &dummy_resource, load_fn);
 }
 
 
-void mjCFlex::CacheStiffness() {
+void mjCFlex::CacheStiffness(const std::vector<double>& nodexpos_local) {
   mjCCache* cache = reinterpret_cast<mjCCache*>(mj_getCache()->impl_);
   if (!cache || stiffness.empty()) return;
 
-  std::string key = ComputeStiffnessCacheKey();
+  std::string key = ComputeStiffnessCacheKey(nodexpos_local);
 
   auto* cached = new std::vector<double>(stiffness);
 
@@ -2290,6 +2422,102 @@ void mjCFlex::CacheStiffness() {
 
   std::shared_ptr<const void> cached_data(cached, [](const void* data) {
     delete static_cast<const std::vector<double>*>(data);
+  });
+
+  mjResource dummy_resource{};
+  dummy_resource.name         = const_cast<char*>(key.c_str());
+  dummy_resource.timestamp[0] = '\0';
+
+  cache->Insert("", key, &dummy_resource, cached_data, size);
+}
+
+
+struct CachedFcmGeometry {
+  std::vector<bool>                cell_empty;
+  std::vector<bool>                cell_full;
+  std::vector<double>              cell_vol;
+  std::vector<std::vector<double>> cell_alphas;
+};
+
+
+std::string mjCFlex::ComputeFcmCacheKey(
+    const double* vpos, const int* elems, int ne, int fdim, const double minmax[6]) const {
+  std::size_t hash = 0;
+  auto combine     = [&hash](std::size_t v) { hash ^= v + 0x9e3779b9 + (hash << 6) + (hash >> 2); };
+
+  combine(std::hash<int>{}(fdim));
+  combine(std::hash<int>{}(spec.order));
+  combine(std::hash<int>{}(spec.cellcount[0]));
+  combine(std::hash<int>{}(spec.cellcount[1]));
+  combine(std::hash<int>{}(spec.cellcount[2]));
+  combine(std::hash<int>{}(ne));
+
+  double inv_d[3] = {
+      (minmax[3] - minmax[0] > mjMINVAL) ? 1.0 / (minmax[3] - minmax[0]) : 0.0,
+      (minmax[4] - minmax[1] > mjMINVAL) ? 1.0 / (minmax[4] - minmax[1]) : 0.0,
+      (minmax[5] - minmax[2] > mjMINVAL) ? 1.0 / (minmax[5] - minmax[2]) : 0.0,
+  };
+  auto qcoord = [](double u) { return static_cast<std::int64_t>(std::llround(u * 1e9)); };
+
+  int nvpe = fdim + 1;
+  for (int e = 0; e < ne; e++) {
+    for (int v = 0; v < nvpe; v++) {
+      int vid = elems[e * nvpe + v];
+      combine(std::hash<int>{}(vid));
+      for (int d = 0; d < 3; d++) {
+        double u = (vpos[3 * vid + d] - minmax[d]) * inv_d[d];
+        combine(std::hash<std::int64_t>{}(qcoord(u)));
+      }
+    }
+  }
+
+  return "flex_fcm:" + std::to_string(hash);
+}
+
+
+bool mjCFlex::LoadCachedFcmGeometry(const std::string& key) {
+  mjCCache* cache = reinterpret_cast<mjCCache*>(mj_getCache()->impl_);
+  if (!cache) return false;
+
+  auto load_fn = [this](const void* data) {
+    const auto* cached = static_cast<const CachedFcmGeometry*>(data);
+    cell_empty         = cached->cell_empty;
+    cell_full          = cached->cell_full;
+    cell_vol           = cached->cell_vol;
+    cell_alphas        = cached->cell_alphas;
+    return true;
+  };
+
+  mjpResourceProvider dummy_provider{};
+  dummy_provider.modified = [](const mjResource*, const char*) { return 0; };
+  mjResource dummy_resource{};
+  dummy_resource.name         = const_cast<char*>(key.c_str());
+  dummy_resource.timestamp[0] = '\0';
+  dummy_resource.provider     = &dummy_provider;
+
+  return cache->PopulateData(key, &dummy_resource, load_fn);
+}
+
+
+void mjCFlex::CacheFcmGeometry(const std::string& key) {
+  mjCCache* cache = reinterpret_cast<mjCCache*>(mj_getCache()->impl_);
+  if (!cache || cell_empty.empty()) return;
+
+  auto* cached        = new CachedFcmGeometry();
+  cached->cell_empty  = cell_empty;
+  cached->cell_full   = cell_full;
+  cached->cell_vol    = cell_vol;
+  cached->cell_alphas = cell_alphas;
+
+  std::size_t size = sizeof(*cached) +
+                     cell_empty.size() / 8 +
+                     cell_full.size() / 8 +
+                     sizeof(double) * cell_vol.size() +
+                     sizeof(std::vector<double>) * cell_alphas.size();
+  for (const auto& alphas : cell_alphas) { size += sizeof(double) * alphas.size(); }
+
+  std::shared_ptr<const void> cached_data(cached, [](const void* data) {
+    delete static_cast<const CachedFcmGeometry*>(data);
   });
 
   mjResource dummy_resource{};
@@ -2636,12 +2864,24 @@ void mjCFlex::Compile(const mjVFS* vfs) {
     memcpy(elemtexcoord_.data(), elem_.data(), (dim + 1) * nelem * sizeof(int));
   }
 
-  // resolve material name
-  mjCBase* pmat = model->FindObject(mjOBJ_MATERIAL, material_);
-  if (!pmat && !material_.empty()) {
-    throw mjCError(this, "unknown material '%s' in flex", material_.c_str());
+  // resolve material name(s)
+  if (!material_.empty() && material_.size() != 1 && (int)material_.size() != nelem) {
+    throw mjCError(this, "material size must be 0, 1 or nelem");
   }
-  matid = pmat ? pmat->id : -1;
+  elemmatid_.assign(nelem, -1);
+  if (!material_.empty()) {
+    std::vector<int> resolved(material_.size(), -1);
+    for (size_t i = 0; i < material_.size(); i++) {
+      if (!material_[i].empty()) {
+        mjCBase* pmat = model->FindObject(mjOBJ_MATERIAL, material_[i]);
+        if (!pmat) { throw mjCError(this, "unknown material '%s' in flex", material_[i].c_str()); }
+        resolved[i] = pmat->id;
+      }
+    }
+    for (int e = 0; e < nelem; e++) {
+      elemmatid_[e] = (resolved.size() == 1) ? resolved[0] : resolved[e];
+    }
+  }
 
   // resolve body ids
   ResolveReferences(model);
@@ -2929,11 +3169,12 @@ void mjCFlex::Compile(const mjVFS* vfs) {
   // create shell fragments
   CreateShell();
 
-  // recompute cell_empty from vertex/element geometry (volume mode only)
-  // (survives XML round-trips where flexcomp data is lost)
+  // recompute cell_empty and FCM quadrature weights from vertex/element
+  // geometry (volume mode only) (survives XML round-trips where flexcomp data
+  // is lost)
   if (interpolated && !elastic2d && cell_empty.empty()) {
     int cx = spec.cellcount[0], cy = spec.cellcount[1], cz = spec.cellcount[2];
-    if (cx * cy * cz > 1) {
+    if (cx * cy * cz >= 1) {
       // as in flexcomp: vertices in the frame of the grid, cells dividing the box of the nodes
       std::vector<double> vertxpos_local(3 * nvert);
       for (int j = 0; j < nvert; j++) {
@@ -3048,7 +3289,7 @@ void mjCFlex::Compile(const mjVFS* vfs) {
   bool need_stiffness =
       interpolated && (has_strain_eq || (young > 0 && (elastic2d == 0 || elastic2d >= 2)));
   bool stiffness_cached = false;
-  if (need_stiffness) { stiffness_cached = LoadCachedStiffness(); }
+  if (need_stiffness) { stiffness_cached = LoadCachedStiffness(nodexpos_local); }
 
   if (!stiffness_cached && need_stiffness) {
     // use young=1 for strain constraints (eigenvectors are geometry-only)
@@ -3092,6 +3333,11 @@ void mjCFlex::Compile(const mjVFS* vfs) {
     int face_fixed[6] = {0, cx * spec.order, 0, cy * spec.order, 0, cz * spec.order};
 
     // compute stiffness per element
+    std::vector<double> K_full_cell;
+    bool                has_K_full_cell = false;
+    std::vector<double> out_full_cell;
+    bool                has_out_full_cell = false;
+
     for (int fe = 0; fe < nelem_fe; fe++) {
       // gather element node positions
       std::vector<double> elem_pos(3 * npe);
@@ -3158,7 +3404,8 @@ void mjCFlex::Compile(const mjVFS* vfs) {
       }
 
       // compute per-element stiffness
-      std::vector<double> K_elem(ndof_elem * ndof_elem, 0);
+      std::vector<double>        K_elem(ndof_elem * ndof_elem, 0);
+      const std::vector<double>* alphas = nullptr;
       if (shell_mode) {
         ComputeLinearStiffness2D(K_elem,
                                  elem_pos.data(),
@@ -3168,7 +3415,24 @@ void mjCFlex::Compile(const mjVFS* vfs) {
                                  thickness,
                                  normal_axis);
       } else {
-        ComputeLinearStiffness(K_elem, elem_pos.data(), K_young, K_poisson, spec.order);
+        alphas = (fe < static_cast<int>(cell_alphas.size()) && !cell_alphas[fe].empty())
+                     ? &cell_alphas[fe]
+                     : nullptr;
+        if (!alphas) {
+          if (!has_K_full_cell) {
+            K_full_cell.assign(ndof_elem * ndof_elem, 0);
+            ComputeLinearStiffness(K_full_cell,
+                                   elem_pos.data(),
+                                   K_young,
+                                   K_poisson,
+                                   spec.order,
+                                   nullptr);
+            has_K_full_cell = true;
+          }
+          K_elem = K_full_cell;
+        } else {
+          ComputeLinearStiffness(K_elem, elem_pos.data(), K_young, K_poisson, spec.order, alphas);
+        }
       }
       double* out = stiffness.data() + fe * ndof_elem * ndof_elem;
 
@@ -3196,6 +3460,13 @@ void mjCFlex::Compile(const mjVFS* vfs) {
             for (int j = 0; j < ndof_elem; j++) { warp_out[j] *= scale; }
             out[0] = static_cast<double>(neig + 1);
           }
+        } else if (!alphas) {
+          if (!has_out_full_cell) {
+            out_full_cell.assign(ndof_elem * ndof_elem, 0.0);
+            EigendecomposeStiffness(K_elem.data(), out_full_cell.data(), ndof_elem);
+            has_out_full_cell = true;
+          }
+          std::copy(out_full_cell.begin(), out_full_cell.end(), out);
         } else {
           EigendecomposeStiffness(K_elem.data(), out, ndof_elem);
         }
@@ -3204,6 +3475,7 @@ void mjCFlex::Compile(const mjVFS* vfs) {
         std::copy(K_elem.begin(), K_elem.end(), out);
       }
     }
+    CacheStiffness(nodexpos_local);
   }
 
   // compute interpolated shell bending edge data (independent of stiffness cache)
@@ -3527,45 +3799,9 @@ static bool TetIntersectsBox(const double       v0[3],
   return false;
 }
 
-struct TriCellData {
-  double a[3];
-  double b[3];
-  double c[3];
-};
 
-// generalized winding number for a 3D point relative to a surface triangle mesh
-static double WindingNumber(const double x[3], const std::vector<TriCellData>& tris) {
-  double total_omega = 0.0;
-  for (const TriCellData& t : tris) {
-    double ra[3] = {t.a[0] - x[0], t.a[1] - x[1], t.a[2] - x[2]};
-    double rb[3] = {t.b[0] - x[0], t.b[1] - x[1], t.b[2] - x[2]};
-    double rc[3] = {t.c[0] - x[0], t.c[1] - x[1], t.c[2] - x[2]};
-    double la    = std::sqrt(ra[0] * ra[0] + ra[1] * ra[1] + ra[2] * ra[2]);
-    double lb    = std::sqrt(rb[0] * rb[0] + rb[1] * rb[1] + rb[2] * rb[2]);
-    double lc    = std::sqrt(rc[0] * rc[0] + rc[1] * rc[1] + rc[2] * rc[2]);
-    double labc  = la * lb * lc;
-    if (labc < 1e-30) { return 1.0; }
-    double bxc[3] = {
-        rb[1] * rc[2] - rb[2] * rc[1],
-        rb[2] * rc[0] - rb[0] * rc[2],
-        rb[0] * rc[1] - rb[1] * rc[0],
-    };
-    double num = ra[0] * bxc[0] + ra[1] * bxc[1] + ra[2] * bxc[2];
-    double ab  = ra[0] * rb[0] + ra[1] * rb[1] + ra[2] * rb[2];
-    double bc  = rb[0] * rc[0] + rb[1] * rc[1] + rb[2] * rc[2];
-    double ca  = rc[0] * ra[0] + rc[1] * ra[1] + rc[2] * ra[2];
-    double den = labc + ab * lc + bc * la + ca * lb;
-    if (std::abs(num) <= 1e-12 * labc) {
-      if (den <= 1e-12 * labc) { return 1.0; }
-      continue;
-    }
-    total_omega += 2.0 * std::atan2(num, den);
-  }
-  return total_omega / (4.0 * mjPI);
-}
-
-// identify cells with no mesh content (or only tiny-cut slivers) from
-// vertex/element geometry
+// identify cells with no mesh content and compute FCM subcell quadrature
+// weights
 void mjCFlex::ComputeCellEmpty(
     const double* vpos, const int* elems, int ne, int fdim, const double minmax[6]) {
   int cx     = spec.cellcount[0];
@@ -3578,9 +3814,15 @@ void mjCFlex::ComputeCellEmpty(
   double dz = minmax[5] - minmax[2];
 
   cell_empty.assign(ncells, false);
+  cell_full.assign(ncells, true);
+  cell_vol.assign(ncells, 1.0);
+  cell_alphas.assign(ncells, {});
 
   int nvpe = fdim + 1;
   if (nvpe <= 0 || ne <= 0 || ncells <= 0) { return; }
+
+  std::string fcm_cache_key = ComputeFcmCacheKey(vpos, elems, ne, fdim, minmax);
+  if (LoadCachedFcmGeometry(fcm_cache_key)) { return; }
 
   auto cellIdxLo = [](double coord, double lo, double d, int nc) {
     if (d <= 0) return 0;
@@ -3621,7 +3863,11 @@ void mjCFlex::ComputeCellEmpty(
       }
     }
     if (ncells > 1) {
-      for (int c = 0; c < ncells; c++) { cell_empty[c] = !has_element[c]; }
+      for (int c = 0; c < ncells; c++) {
+        cell_empty[c] = !has_element[c];
+        cell_full[c]  = has_element[c];
+        cell_vol[c]   = has_element[c] ? 1.0 : 0.0;
+      }
     }
     return;
   }
@@ -3633,12 +3879,28 @@ void mjCFlex::ComputeCellEmpty(
   double my = (cy > 1) ? kSliverMargin * hy : 0.0;
   double mz = (cz > 1) ? kSliverMargin * hz : 0.0;
 
+  int                 order   = std::max(1, spec.order);
+  int                 nbasis  = order + 1;
+  int                 nq_axis = kFcmSubdiv * nbasis;
+  int                 nq_cell = nq_axis * nq_axis * nq_axis;
+  std::vector<double> qpts(nq_axis);
+  std::vector<double> qwts(nq_axis);
+  for (int sub = 0; sub < kFcmSubdiv; sub++) {
+    quadratureGaussLegendre(qpts.data() + sub * nbasis,
+                            qwts.data() + sub * nbasis,
+                            nbasis,
+                            static_cast<double>(sub) / kFcmSubdiv,
+                            static_cast<double>(sub + 1) / kFcmSubdiv);
+  }
+
   std::vector<bool> has_element(ncells, false);
   std::vector<bool> has_core(ncells, false);
 
   if (fdim == 3) {
-    double vol_scale = hx * hy * hz;
-    double bbox_eps  = 1e-7 * std::max({hx, hy, hz});
+    std::vector<TetCellData>      valid_tets;
+    std::vector<std::vector<int>> cell_tets(ncells);
+    double                        vol_scale = hx * hy * hz;
+    double                        bbox_eps  = 1e-7 * std::max({hx, hy, hz});
 
     for (int e = 0; e < ne; e++) {
       const double* v0 = vpos + 3 * elems[4 * e + 0];
@@ -3661,9 +3923,10 @@ void mjCFlex::ComputeCellEmpty(
       mjuu_crossvec(c3, d1, d2);
       double det = mjuu_dot3(d1, c1);
 
-      TetCellData        td;
+      int                tet_id  = -1;
       const TetCellData* tet_ptr = nullptr;
       if (std::abs(det) > 1e-14 * vol_scale) {
+        TetCellData td;
         mjuu_copyvec(td.v0, v0, 3);
         double inv_det = 1.0 / det;
         for (int j = 0; j < 3; j++) {
@@ -3673,7 +3936,9 @@ void mjCFlex::ComputeCellEmpty(
           td.lo[j]      = elo[j] - bbox_eps;
           td.hi[j]      = ehi[j] + bbox_eps;
         }
-        tet_ptr = &td;
+        tet_id = static_cast<int>(valid_tets.size());
+        valid_tets.push_back(td);
+        tet_ptr = &valid_tets.back();
       }
 
       int ci0 = cellIdxLo(elo[0], minmax[0], dx, cx);
@@ -3700,26 +3965,104 @@ void mjCFlex::ComputeCellEmpty(
               double cmin[3] = {bmin_x + mx, bmin_y + my, bmin_z + mz};
               double cmax[3] = {bmax_x - mx, bmax_y - my, bmax_z - mz};
               if (TetIntersectsBox(v0, v1, v2, v3, tet_ptr, cmin, cmax)) { has_core[c] = true; }
+              if (tet_id >= 0) { cell_tets[c].push_back(tet_id); }
             }
           }
         }
       }
     }
 
-    if (ncells > 1) {
-      bool any_core = false;
-      for (bool core : has_core) {
-        if (core) {
-          any_core = true;
-          break;
-        }
+    bool any_core = false;
+    for (bool core : has_core) {
+      if (core) {
+        any_core = true;
+        break;
       }
+    }
+
+    // if all tetrahedra are degenerate (0 volume), fallback to has_core /
+    // has_element with full occupancy
+    if (valid_tets.empty()) {
       for (int c = 0; c < ncells; c++) {
-        cell_empty[c] = any_core ? !has_core[c] : !has_element[c];
+        bool active   = any_core ? has_core[c] : has_element[c];
+        bool empty    = (ncells > 1) && !active;
+        cell_empty[c] = empty;
+        cell_full[c]  = !empty;
+        cell_vol[c]   = empty ? 0.0 : 1.0;
+      }
+      CacheFcmGeometry(fcm_cache_key);
+      return;
+    }
+
+    for (int ci = 0; ci < cx; ci++) {
+      double bmin_x = minmax[0] + ci * hx;
+      for (int cj = 0; cj < cy; cj++) {
+        double bmin_y = minmax[1] + cj * hy;
+        for (int ck = 0; ck < cz; ck++) {
+          double bmin_z = minmax[2] + ck * hz;
+          int    c      = ci * cy * cz + cj * cz + ck;
+          bool   active = any_core ? has_core[c] : has_element[c];
+          if (!active) {
+            if (ncells > 1) {
+              cell_empty[c] = true;
+              cell_full[c]  = false;
+              cell_vol[c]   = 0.0;
+            } else {
+              cell_empty[c] = false;
+              cell_full[c]  = false;
+              cell_vol[c]   = kFcmAlphaMin;
+              cell_alphas[c].assign(nq_cell, kFcmAlphaMin);
+            }
+            continue;
+          }
+
+          std::vector<double> alphas(nq_cell, kFcmAlphaMin);
+          int                 n_inside = 0;
+          double              vol      = 0.0;
+          int                 q_idx    = 0;
+          const auto&         tets_c   = cell_tets[c];
+
+          for (int ps = 0; ps < nq_axis; ps++) {
+            double x_coord = bmin_x + qpts[ps] * hx;
+            double ws      = qwts[ps];
+            for (int pt = 0; pt < nq_axis; pt++) {
+              double y_coord = bmin_y + qpts[pt] * hy;
+              double wst     = ws * qwts[pt];
+              for (int pu = 0; pu < nq_axis; pu++) {
+                double x_q[3] = {x_coord, y_coord, bmin_z + qpts[pu] * hz};
+                double w_q    = wst * qwts[pu];
+                bool   inside = false;
+                for (int tid : tets_c) {
+                  if (PointInTet(x_q, valid_tets[tid])) {
+                    inside = true;
+                    break;
+                  }
+                }
+                if (inside) {
+                  alphas[q_idx] = 1.0;
+                  n_inside++;
+                }
+                vol += w_q * alphas[q_idx];
+                q_idx++;
+              }
+            }
+          }
+
+          cell_empty[c] = false;
+          if (n_inside == nq_cell) {
+            cell_full[c] = true;
+            cell_vol[c]  = 1.0;
+          } else {
+            cell_full[c]   = false;
+            cell_vol[c]    = vol;
+            cell_alphas[c] = std::move(alphas);
+          }
+        }
       }
     }
   } else if (fdim == 2) {
-    std::vector<TriCellData> tris(ne);
+    std::vector<TriCellData>      tris(ne);
+    std::vector<std::vector<int>> cell_tris(ncells);
     for (int e = 0; e < ne; e++) {
       const double* v0 = vpos + 3 * elems[3 * e + 0];
       const double* v1 = vpos + 3 * elems[3 * e + 1];
@@ -3758,60 +4101,167 @@ void mjCFlex::ComputeCellEmpty(
               double cmin[3] = {bmin_x + mx, bmin_y + my, bmin_z + mz};
               double cmax[3] = {bmax_x - mx, bmax_y - my, bmax_z - mz};
               if (TriangleIntersectsBox(v0, v1, v2, cmin, cmax)) { has_core[c] = true; }
+              cell_tris[c].push_back(e);
             }
           }
         }
       }
     }
 
-    if (ncells > 1) {
-      // Cells intersecting the shrunken core (has_core) are always active
-      // (including open sheets). WindingNumber is only evaluated once per
-      // connected component of non-intersected cells (propagated from adjacent
-      // !has_element neighbors) to keep hollow interiors of closed shells, plus
-      // on pure sliver cells (has_element && !has_core).
-      constexpr double  kWindingThreshold = 0.5 - 1e-5;
-      std::vector<bool> cell_inside(ncells, false);
-      bool              any_active = false;
-      for (int ci = 0; ci < cx; ci++) {
-        double bmin_x = minmax[0] + ci * hx;
-        for (int cj = 0; cj < cy; cj++) {
-          double bmin_y = minmax[1] + cj * hy;
-          for (int ck = 0; ck < cz; ck++) {
-            double bmin_z = minmax[2] + ck * hz;
-            int    c      = ci * cy * cz + cj * cz + ck;
-            if (!has_element[c]) {
-              bool inside = false;
-              if (ck > 0 && !has_element[c - 1]) {
-                inside = cell_inside[c - 1];
-              } else if (cj > 0 && !has_element[c - cz]) {
-                inside = cell_inside[c - cz];
-              } else if (ci > 0 && !has_element[c - cy * cz]) {
-                inside = cell_inside[c - cy * cz];
-              } else {
-                double center[3] = {bmin_x + 0.5 * hx, bmin_y + 0.5 * hy, bmin_z + 0.5 * hz};
-                inside           = std::abs(WindingNumber(center, tris)) >= kWindingThreshold;
-              }
-              cell_inside[c] = inside;
-              cell_empty[c]  = !inside;
-              if (inside) { any_active = true; }
-            } else if (has_core[c]) {
-              cell_empty[c] = false;
-              any_active    = true;
+    // Build Fast Winding Number BVH (Barill et al. 2018) once for the mesh
+    FastWindingBVH winding_bvh;
+    winding_bvh.Build(tris);
+
+    // Cells intersecting the shrunken core (has_core) are always active
+    // (including open sheets). WindingNumber is only evaluated once per
+    // connected component of non-intersected cells (propagated from adjacent
+    // !has_element neighbors) to keep hollow interiors of closed shells, plus
+    // on pure sliver cells (has_element && !has_core).
+    constexpr double kWindingThreshold = 0.5 - 1e-5;
+    bool             any_inside        = false;
+
+    for (int ci = 0; ci < cx; ci++) {
+      double bmin_x = minmax[0] + ci * hx;
+      for (int cj = 0; cj < cy; cj++) {
+        double bmin_y = minmax[1] + cj * hy;
+        for (int ck = 0; ck < cz; ck++) {
+          double bmin_z = minmax[2] + ck * hz;
+          int    c      = ci * cy * cz + cj * cz + ck;
+
+          if (!has_element[c] || (!has_core[c] && ncells > 1)) {
+            bool inside = false;
+            if (!has_element[c] && ck > 0 && !has_element[c - 1]) {
+              inside = cell_full[c - 1];
+            } else if (!has_element[c] && cj > 0 && !has_element[c - cz]) {
+              inside = cell_full[c - cz];
+            } else if (!has_element[c] && ci > 0 && !has_element[c - cy * cz]) {
+              inside = cell_full[c - cy * cz];
             } else {
-              // surface only grazes outer sliver margin: keep iff core center
-              // is inside volume
               double center[3] = {bmin_x + 0.5 * hx, bmin_y + 0.5 * hy, bmin_z + 0.5 * hz};
-              bool   inside    = std::abs(WindingNumber(center, tris)) >= kWindingThreshold;
-              cell_inside[c]   = inside;
-              cell_empty[c]    = !inside;
-              if (inside) { any_active = true; }
+              inside           = std::abs(winding_bvh.Evaluate(center)) >= kWindingThreshold;
             }
+            if (!has_element[c]) {
+              if (inside) {
+                any_inside    = true;
+                cell_empty[c] = false;
+                cell_full[c]  = true;
+                cell_vol[c]   = 1.0;
+              } else {
+                cell_empty[c] = (ncells > 1);
+                cell_full[c]  = false;
+                cell_vol[c]   = (ncells > 1) ? 0.0 : kFcmAlphaMin;
+                if (ncells == 1) { cell_alphas[c].assign(nq_cell, kFcmAlphaMin); }
+              }
+              continue;
+            } else if (!inside) {
+              // surface only grazes outer sliver margin from outside: prune
+              // cell
+              cell_empty[c] = true;
+              cell_full[c]  = false;
+              cell_vol[c]   = 0.0;
+              continue;
+            }
+          }
+
+          // Pre-check which of the kFcmSubdiv^3 subcells are intersected by
+          // surface triangles; un-intersected subcells have constant winding
+          // number and only require 1 evaluation at the subcell center.
+          // For cut subcells, evaluate the Fast Winding Number BVH at each
+          // quadrature point.
+          const auto& tris_c                                      = cell_tris[c];
+          bool        sub_cut[kFcmSubdiv][kFcmSubdiv][kFcmSubdiv] = {};
+          bool        sub_in[kFcmSubdiv][kFcmSubdiv][kFcmSubdiv]  = {};
+          for (int si = 0; si < kFcmSubdiv; si++) {
+            double smin_x = bmin_x + (si * hx) / kFcmSubdiv;
+            double smax_x = bmin_x + ((si + 1) * hx) / kFcmSubdiv;
+            for (int sj = 0; sj < kFcmSubdiv; sj++) {
+              double smin_y = bmin_y + (sj * hy) / kFcmSubdiv;
+              double smax_y = bmin_y + ((sj + 1) * hy) / kFcmSubdiv;
+              for (int sk = 0; sk < kFcmSubdiv; sk++) {
+                double smin[3] = {smin_x, smin_y, bmin_z + (sk * hz) / kFcmSubdiv};
+                double smax[3] = {smax_x, smax_y, bmin_z + ((sk + 1) * hz) / kFcmSubdiv};
+                bool   cut     = false;
+                for (int tid : tris_c) {
+                  if (TriangleIntersectsBox(tris[tid].a, tris[tid].b, tris[tid].c, smin, smax)) {
+                    cut = true;
+                    break;
+                  }
+                }
+                sub_cut[si][sj][sk] = cut;
+                if (!cut) {
+                  double sc[3]       = {0.5 * (smin[0] + smax[0]),
+                                        0.5 * (smin[1] + smax[1]),
+                                        0.5 * (smin[2] + smax[2])};
+                  sub_in[si][sj][sk] = std::abs(winding_bvh.Evaluate(sc)) >= kWindingThreshold;
+                }
+              }
+            }
+          }
+
+          std::vector<double> alphas(nq_cell, kFcmAlphaMin);
+          int                 n_inside = 0;
+          double              vol      = 0.0;
+          int                 q_idx    = 0;
+
+          for (int ps = 0; ps < nq_axis; ps++) {
+            int    si      = ps / nbasis;
+            double x_coord = bmin_x + qpts[ps] * hx;
+            double ws      = qwts[ps];
+            for (int pt = 0; pt < nq_axis; pt++) {
+              int    sj      = pt / nbasis;
+              double y_coord = bmin_y + qpts[pt] * hy;
+              double wst     = ws * qwts[pt];
+              for (int pu = 0; pu < nq_axis; pu++) {
+                int    sk     = pu / nbasis;
+                double w_q    = wst * qwts[pu];
+                bool   inside = false;
+                if (!sub_cut[si][sj][sk]) {
+                  inside = sub_in[si][sj][sk];
+                } else {
+                  double x_q[3] = {x_coord, y_coord, bmin_z + qpts[pu] * hz};
+                  inside        = std::abs(winding_bvh.Evaluate(x_q)) >= kWindingThreshold;
+                }
+                if (inside) {
+                  alphas[q_idx] = 1.0;
+                  n_inside++;
+                  any_inside = true;
+                }
+                vol += w_q * alphas[q_idx];
+                q_idx++;
+              }
+            }
+          }
+
+          cell_empty[c] = false;
+          if (n_inside == nq_cell) {
+            cell_full[c] = true;
+            cell_vol[c]  = 1.0;
+          } else {
+            cell_full[c]   = false;
+            cell_vol[c]    = vol;
+            cell_alphas[c] = std::move(alphas);
           }
         }
       }
-      if (!any_active) {
-        for (int c = 0; c < ncells; c++) { cell_empty[c] = !has_element[c]; }
+    }
+
+    // if surface is open and encloses no volume, fallback to has_core /
+    // has_element with full occupancy
+    if (!any_inside) {
+      bool any_core = false;
+      for (bool core : has_core) {
+        if (core) {
+          any_core = true;
+          break;
+        }
+      }
+      for (int c = 0; c < ncells; c++) {
+        bool active   = any_core ? has_core[c] : has_element[c];
+        bool empty    = (ncells > 1) && !active;
+        cell_empty[c] = empty;
+        cell_full[c]  = !empty;
+        cell_vol[c]   = empty ? 0.0 : 1.0;
+        cell_alphas[c].clear();
       }
     }
   } else {
@@ -3851,20 +4301,24 @@ void mjCFlex::ComputeCellEmpty(
         }
       }
     }
-    if (ncells > 1) {
-      bool any_core = false;
-      for (bool core : has_core) {
-        if (core) {
-          any_core = true;
-          break;
-        }
-      }
-      for (int c = 0; c < ncells; c++) {
-        cell_empty[c] = any_core ? !has_core[c] : !has_element[c];
+    bool any_core = false;
+    for (bool core : has_core) {
+      if (core) {
+        any_core = true;
+        break;
       }
     }
+    for (int c = 0; c < ncells; c++) {
+      bool active   = any_core ? has_core[c] : has_element[c];
+      bool empty    = (ncells > 1) && !active;
+      cell_empty[c] = empty;
+      cell_full[c]  = !empty;
+      cell_vol[c]   = empty ? 0.0 : 1.0;
+    }
   }
+  CacheFcmGeometry(fcm_cache_key);
 }
+
 
 // return true if all cells adjacent to node (gi, gj, gk) are empty
 bool mjCFlex::NodeInEmptyCells(int gi, int gj, int gk) const {
@@ -3889,6 +4343,86 @@ bool mjCFlex::NodeInEmptyCells(int gi, int gj, int gk) const {
   }
   return true;
 }
+
+
+// compute positive mass-lumping basis function on [0, 1] with exact
+// Simpson/trilinear integrals
+static inline double MassBasis1D(double s, int l, int order) {
+  if (order == 1) { return (l == 0) ? (1.0 - s) : s; }
+  if (l == 0) { return 0.5 * (1.0 - s) * (1.0 - s); }
+  if (l == 1) { return 0.5 + s * (1.0 - s); }
+  return 0.5 * s * s;
+}
+
+
+// compute FCM volume-weighted nodal mass weight for node (gi, gj, gk)
+double mjCFlex::NodeMassWeight(int gi, int gj, int gk) const {
+  int cx      = spec.cellcount[0];
+  int cy      = spec.cellcount[1];
+  int cz      = spec.cellcount[2];
+  int order   = std::max(1, spec.order);
+  int nbasis  = order + 1;
+  int nq_axis = kFcmSubdiv * nbasis;
+
+  double qpts[6];
+  double qwts[6];
+  for (int sub = 0; sub < kFcmSubdiv; sub++) {
+    quadratureGaussLegendre(qpts + sub * nbasis,
+                            qwts + sub * nbasis,
+                            nbasis,
+                            static_cast<double>(sub) / kFcmSubdiv,
+                            static_cast<double>(sub + 1) / kFcmSubdiv);
+  }
+  double m1d[3][6] = {};
+  for (int l = 0; l < nbasis; l++) {
+    for (int p = 0; p < nq_axis; p++) { m1d[l][p] = qwts[p] * MassBasis1D(qpts[p], l, order); }
+  }
+
+  const double  massP1[2] = {0.5, 0.5};
+  const double  massP2[3] = {1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0};
+  const double* full_w    = (order == 1) ? massP1 : massP2;
+
+  int ci_min = std::max(0, gi == 0 ? 0 : (gi - 1) / order);
+  int ci_max = std::min(cx - 1, gi / order);
+  int cj_min = std::max(0, gj == 0 ? 0 : (gj - 1) / order);
+  int cj_max = std::min(cy - 1, gj / order);
+  int ck_min = std::max(0, gk == 0 ? 0 : (gk - 1) / order);
+  int ck_max = std::min(cz - 1, gk / order);
+
+  double weight = 0.0;
+  for (int ci = ci_min; ci <= ci_max; ci++) {
+    for (int cj = cj_min; cj <= cj_max; cj++) {
+      for (int ck = ck_min; ck <= ck_max; ck++) {
+        int c = ci * cy * cz + cj * cz + ck;
+        if (!cell_empty.empty() && cell_empty[c]) { continue; }
+        int    li     = gi - ci * order;
+        int    lj     = gj - cj * order;
+        int    lk     = gk - ck * order;
+        double w_full = full_w[li] * full_w[lj] * full_w[lk];
+        if (c >= static_cast<int>(cell_alphas.size()) || cell_alphas[c].empty()) {
+          weight += w_full;
+        } else {
+          const std::vector<double>& alphas   = cell_alphas[c];
+          const double*              ms       = m1d[li];
+          const double*              mt       = m1d[lj];
+          const double*              mu       = m1d[lk];
+          double                     c_weight = 0.0;
+          int                        q_idx    = 0;
+          for (int ps = 0; ps < nq_axis; ps++) {
+            double ws = ms[ps];
+            for (int pt = 0; pt < nq_axis; pt++) {
+              double wst = ws * mt[pt];
+              for (int pu = 0; pu < nq_axis; pu++) { c_weight += wst * mu[pu] * alphas[q_idx++]; }
+            }
+          }
+          weight += std::max(c_weight, kFcmMassMin * w_full);
+        }
+      }
+    }
+  }
+  return weight;
+}
+
 
 // create flex BVH
 void mjCFlex::CreateBVH() {

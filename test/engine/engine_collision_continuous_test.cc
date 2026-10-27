@@ -865,8 +865,8 @@ TEST_F(ContinuousCollisionTest, AdvanceGeomPairFindsTimeOfImpact) {
     c.dist = con[0].dist;
     mju_copy3(c.pos, con[0].pos);
     mju_copy3(c.frame, con[0].normal);
-    c.frame[4] = 1.0;
-    c.frame[8] = 1.0;
+    c.frame[3] = 1.0;
+    c.frame[7] = 1.0;
     c.geom[0] = 3;
     c.geom[1] = 2;
     c.geom1 = 3;
@@ -910,6 +910,13 @@ TEST_F(ContinuousCollisionTest, AdvanceGeomPairFindsTimeOfImpact) {
     EXPECT_NEAR(con[i].normal[2], 1.0, MjTol(1e-4, 1e-4));
   }
 
+  // horizontal capsule falling onto ground plane -> 2 edge-face contacts
+  mj_resetData(m, d);
+  d->qvel[20] = -50.0;
+  mj_fwdPosition(m, d);
+  EXPECT_EQ(mjc_advanceGeomPair(m, d, 0, 5, 0.0, con, buffer.data()), 2);
+  EXPECT_EQ(mjc_advanceGeomPair(m, d, 5, 0, 0.0, con, buffer.data()), 2);
+
   // rotational motion (dw != 0): horizontal capsule at z = -0.90 rotating about
   // y-axis so its +x tip swings down into the ground plane at z = -1
   mj_resetData(m, d);
@@ -951,6 +958,49 @@ TEST_F(ContinuousCollisionTest, AdvanceGeomPairFindsTimeOfImpact) {
   EXPECT_NEAR(0.8 + con[0].dist / 5.0, 0.392, MjTol(0.02, 0.02));
   EXPECT_NEAR(con[0].normal[2], 1.0, MjTol(1e-4, 1e-4));
 
+  // t > 1 - b0 (signed delta < 0, dist > margin): verify no mid-air ghost stop
+  // With default solref = (0.02, 1) and dt = 0.01: b0 = 1.0, k0 = 0.25.
+  // For Euler, rem = 1 - t - b0 = -t < 0, so dist = -delta = (t / 0.25) * 0.50
+  // = 2 * t > 0, and stepping lands the sphere on the wall top (z = 0.07).
+  m->geom_solref[mjNREF * 1 + 0] = 0.02;
+  m->geom_solref[mjNREF * 2 + 0] = 0.02;
+  for (int integrator : {mjINT_EULER, mjINT_DISCRETE}) {
+    m->opt.integrator = integrator;
+    mj_resetData(m, d);
+    d->qvel[2] = -50.0;
+    mj_fwdPosition(m, d);
+    ASSERT_EQ(mjc_advanceGeomPair(m, d, 1, 2, 0.0, con, buffer.data()), 1);
+    if (integrator == mjINT_EULER) {
+      // t ~= 0.392 -> dist = -delta = (t / 0.25) * 0.50 = 2 * t ~= 0.784
+      EXPECT_NEAR(con[0].dist, 0.784, MjTol(0.04, 0.04));
+    }
+    mjContact c = {};
+    c.dist = con[0].dist;
+    mju_copy3(c.pos, con[0].pos);
+    mju_copy3(c.frame, con[0].normal);
+    c.frame[3] = 1.0;
+    c.frame[7] = 1.0;
+    c.geom[0] = 1;
+    c.geom[1] = 2;
+    c.geom1 = 1;
+    c.geom2 = 2;
+    c.dim = 1;
+    c.vert[0] = -1;
+    c.vert[1] = -1;
+    c.elem[0] = -1;
+    c.elem[1] = -1;
+    c.flex[0] = -1;
+    c.flex[1] = -1;
+    c.efc_address = -1;
+    mju_copy(c.solref, m->geom_solref + mjNREF * 2, mjNREF);
+    mju_copy(c.solimp, m->geom_solimp + mjNIMP * 2, mjNIMP);
+    ASSERT_EQ(mj_addContact(m, d, &c), 0);
+    mj_makeConstraint(m, d);
+    mj_fwdVelocity(m, d);
+    mj_step2(m, d);
+    EXPECT_NEAR(d->qpos[2], 0.07, 0.02) << "integrator=" << integrator;
+  }
+
   mj_deleteData(d);
   mj_deleteModel(m);
 }
@@ -965,11 +1015,11 @@ TEST_F(ContinuousCollisionTest,
       <geom name="thin_wall" type="box" size="1.0 1.0 0.02" pos="0 0 0"/>
       <body name="fast_sphere" pos="-0.4 0 0.25">
         <freejoint/>
-        <geom type="sphere" size="0.04" mass="1"/>
+        <geom type="sphere" size="0.04" gap="0.05" mass="1"/>
       </body>
       <body name="fast_box" pos="0 0 0.25">
         <freejoint/>
-        <geom type="box" size="0.04 0.04 0.04" mass="1"/>
+        <geom type="box" size="0.04 0.04 0.04" gap="0.20" mass="1"/>
       </body>
       <body name="fast_capsule" pos="0.4 0 0.25">
         <freejoint/>
@@ -1004,6 +1054,11 @@ TEST_F(ContinuousCollisionTest,
     d->qvel[14] = -50.0;
     for (int step = 0; step < 5; step++) {
       mj_step(m, d);
+      if (step == 0) {
+        EXPECT_NEAR(d->qpos[2], 0.06, 0.02) << "sphere lands on wall";
+        EXPECT_NEAR(d->qpos[9], 0.06, 0.02) << "box lands on wall";
+        EXPECT_NEAR(d->qpos[16], 0.07, 0.02) << "capsule lands on wall";
+      }
       EXPECT_GT(d->qpos[2], 0.02) << "sphere arrested at step " << step;
       EXPECT_GT(d->qpos[9], 0.02) << "box arrested at step " << step;
       EXPECT_GT(d->qpos[16], 0.02) << "capsule arrested at step " << step;
