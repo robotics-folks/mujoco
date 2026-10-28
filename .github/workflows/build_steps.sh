@@ -380,9 +380,9 @@ test_python_bindings() {
     pytest -v --pyargs mujoco
     if _has_studio_platform build; then
         echo "Smoke testing Studio Python modules..."
-        python -c "import mujoco._render_filament, mujoco.experimental.studio.window, mujoco.experimental.studio.ux, mujoco.experimental.studio.sim, mujoco.experimental.studio.native_viewer"
+        python -c "import mujoco._render_filament, mujoco.studio.window, mujoco.studio.ux, mujoco.studio.sim, mujoco.studio.native_viewer, mujoco.experimental.studio.messages"
         if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
-            python -c "import mujoco.experimental.studio.web.headless_ui, mujoco.experimental.studio.web.state_payload"
+            python -c "import mujoco.studio.web.headless_ui, mujoco.studio.web.state_payload"
         fi
     fi
 }
@@ -742,7 +742,8 @@ install_studio_platform() {
         \( -name "*.a" -o -name "*.lib" \) ! -name "mujoco.lib" \
         -exec cp -p {} "${prefix}/lib/" \;
 
-    # 4. Source-tree headers for platform / filament-compat / render.
+    # 4. Source-tree headers for studio / platform / filament-compat / render.
+    _copy_headers studio "${prefix}/include/mujoco/studio"
     _copy_headers src/experimental "${prefix}/include/mujoco/experimental"
     _copy_headers src/render "${prefix}/include/mujoco/render"
 
@@ -784,7 +785,7 @@ install_studio_platform() {
 
 
 # The web viewer browser client (WASM) in
-# python/mujoco/experimental/studio/web/dist/. The output is
+# python/mujoco/studio/web/dist/. The output is
 # platform-independent. It needs the host Filament tools, so the platform
 # libraries come first (a no-op once built). Installs Emscripten into ./emsdk
 # when it is missing. Configures build_wasm/ once; Ninja re-runs CMake by

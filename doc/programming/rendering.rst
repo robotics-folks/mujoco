@@ -10,7 +10,7 @@ rendering:
   OpenGL, Vulkan, Metal, and WebGL. It uses a **retained-mode**, asynchronous architecture in which meshes, textures,
   lights, and :ref:`renderables <mjrfRenderable>` are created once from :ref:`mjModel` and updated in place from
   :ref:`mjData` each frame. Filament powers `MuJoCo Studio
-  <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/studio>`__ and is the recommended renderer for
+  <https://github.com/google-deepmind/mujoco/blob/main/studio>`__ and is the recommended renderer for
   new applications.
 - :ref:`OpenGL rendering <ClassicRendering>` (``mjr``): The classic fixed-function OpenGL 1.5 renderer, now in
   maintenance mode. It uses an **immediate-mode** scene architecture in which :ref:`mjv_updateScene` populates an
@@ -62,7 +62,7 @@ Filament rendering
 MuJoCo provides a renderer based on `Filament <https://github.com/google/filament>`__, Google's real-time physically
 based rendering engine. Filament has a small and fast runtime, runs on Linux, Windows, macOS, Android, iOS and the Web,
 and supports the OpenGL, Vulkan, Metal and WebGL graphics backends. The Filament renderer powers `MuJoCo Studio
-<https://github.com/google-deepmind/mujoco/blob/main/src/experimental/studio>`__ and `live.mujoco.org
+<https://github.com/google-deepmind/mujoco/blob/main/studio>`__ and `live.mujoco.org
 <https://live.mujoco.org>`__.
 
 The Filament renderer is an optional, self-contained library named ``mujoco_filament``. It implements the ``mjrf``
@@ -200,7 +200,8 @@ objects are configured and drawn.
    (positions, packed tangent-frame orientations, UVs) and indices uploaded via :ref:`mjrf_uploadMesh`, along with
    bounding boxes used for frustum culling. :ref:`mjrfTexture` stores 2D, cubemap, or KTX-compressed image data uploaded
    via :ref:`mjrf_uploadTexture`. Both upload functions accept an optional completion callback for freeing host memory
-   once the asynchronous GPU transfer finishes.
+   once the asynchronous GPU transfer finishes; calling :ref:`mjrf_flush` flushes pending operations to the rendering
+   backend and invokes any completed callbacks before the next :ref:`mjrf_render` call.
 
 **Renderables and materials** (:ref:`mjrfRenderable`, :ref:`mjrfMaterial`)
    An :ref:`mjrfRenderable` is a persistent drawable entity in a scene, combining surface geometry, material appearance,
