@@ -53,7 +53,8 @@ while [[ $# -gt 0 ]]; do
         --filament) build_filament=ON; shift ;;
         --vulkan) build_vulkan=ON; shift ;;
         --studio) build_studio=ON; shift ;;
-        --samples) build_samples=ON; build_dev_samples=ON; shift ;;
+        --samples) build_samples=ON; shift ;;
+        --dev-samples) build_dev_samples=ON; shift ;;
         --python) build_python=ON; shift ;;
         --njobs) njobs="$2"; shift 2 ;;
         --tests) build_tests=ON; shift ;;

@@ -45,7 +45,7 @@ case "$MODE" in
         ;;
     run)
         echo "Running docker container ..."
-        docker run -it --rm \
+        docker run -it --rm --network host \
             -v $(pwd)/python/dist/:/mujoco/python/dist/ \
             ${DOCKER_IMAGE}
         ;;
