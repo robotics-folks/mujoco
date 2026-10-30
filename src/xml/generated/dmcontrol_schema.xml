@@ -111,6 +111,7 @@
             <attribute name="sleep" type="keyword" valid_values="disable enable" default="disable"/>
             <attribute name="diagexact" type="keyword" valid_values="disable enable" default="disable"/>
             <attribute name="ipc" type="keyword" valid_values="disable enable" default="disable"/>
+            <attribute name="speculative" type="keyword" valid_values="disable enable" default="disable"/>
           </attributes>
         </element>
       </children>
@@ -326,6 +327,7 @@
                 <attribute name="margin" type="float"/>
                 <attribute name="ref" type="float"/>
                 <attribute name="springref" type="float"/>
+                <attribute name="springyield" type="float"/>
                 <attribute name="armature" type="float"/>
                 <attribute name="damping" type="array" array_type="float" array_size="3"/>
                 <attribute name="frictionloss" type="float"/>
@@ -364,6 +366,7 @@
                 <attribute name="mesh" type="reference" reference_namespace="mesh"/>
                 <attribute name="fitscale" type="float" default="1"/>
                 <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
+                <attribute name="castshadow" type="keyword" valid_values="false true" default="true"/>
                 <attribute name="fluidshape" type="keyword" valid_values="none ellipsoid"/>
                 <attribute name="fluidcoef" type="array" array_type="float" array_size="5" default="0.5 0.25 1.5 1 1"/>
                 <attribute name="user" type="array" array_type="float"/>
@@ -460,6 +463,7 @@
                 <attribute name="solimpfriction" type="array" array_type="float" array_size="5"/>
                 <attribute name="frictionloss" type="float"/>
                 <attribute name="springlength" type="array" array_type="float" array_size="2"/>
+                <attribute name="springyield" type="float"/>
                 <attribute name="width" type="float"/>
                 <attribute name="material" type="reference" reference_namespace="material"/>
                 <attribute name="margin" type="float"/>
@@ -744,6 +748,7 @@
             <attribute name="margin" type="float"/>
             <attribute name="ref" type="float"/>
             <attribute name="springref" type="float"/>
+            <attribute name="springyield" type="float"/>
             <attribute name="armature" type="float"/>
             <attribute name="damping" type="array" array_type="float" array_size="3"/>
             <attribute name="frictionloss" type="float"/>
@@ -782,6 +787,7 @@
             <attribute name="mesh" type="reference" reference_namespace="mesh"/>
             <attribute name="fitscale" type="float" default="1"/>
             <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
+            <attribute name="castshadow" type="keyword" valid_values="false true" default="true"/>
             <attribute name="fluidshape" type="keyword" valid_values="none ellipsoid"/>
             <attribute name="fluidcoef" type="array" array_type="float" array_size="5" default="0.5 0.25 1.5 1 1"/>
             <attribute name="user" type="array" array_type="float"/>
@@ -878,6 +884,7 @@
             <attribute name="solimpfriction" type="array" array_type="float" array_size="5"/>
             <attribute name="frictionloss" type="float"/>
             <attribute name="springlength" type="array" array_type="float" array_size="2"/>
+            <attribute name="springyield" type="float"/>
             <attribute name="width" type="float"/>
             <attribute name="material" type="reference" reference_namespace="material"/>
             <attribute name="margin" type="float"/>
@@ -1302,6 +1309,7 @@
                 <attribute name="margin" type="float"/>
                 <attribute name="ref" type="float"/>
                 <attribute name="springref" type="float"/>
+                <attribute name="springyield" type="float"/>
                 <attribute name="armature" type="float"/>
                 <attribute name="damping" type="array" array_type="float" array_size="3"/>
                 <attribute name="frictionloss" type="float"/>
@@ -1349,6 +1357,7 @@
                 <attribute name="mesh" type="reference" reference_namespace="mesh"/>
                 <attribute name="fitscale" type="float" default="1"/>
                 <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
+                <attribute name="castshadow" type="keyword" valid_values="false true" default="true"/>
                 <attribute name="fluidshape" type="keyword" valid_values="none ellipsoid"/>
                 <attribute name="fluidcoef" type="array" array_type="float" array_size="5" default="0.5 0.25 1.5 1 1"/>
                 <attribute name="user" type="array" array_type="float"/>
@@ -1593,6 +1602,7 @@
                     <attribute name="poisson" type="float"/>
                     <attribute name="damping" type="float"/>
                     <attribute name="thickness" type="float" default="-1"/>
+                    <attribute name="yield" type="float"/>
                     <attribute name="elastic2d" type="keyword" valid_values="none bend stretch both"/>
                     <attribute name="section" type="keyword" valid_values="circle box"/>
                     <attribute name="sectionsize" type="array" array_type="float" array_size="2"/>
@@ -1675,6 +1685,7 @@
             <attribute name="mesh" type="reference" reference_namespace="mesh"/>
             <attribute name="fitscale" type="float" default="1"/>
             <attribute name="rgba" type="array" array_type="float" array_size="4" default="0.5 0.5 0.5 1"/>
+            <attribute name="castshadow" type="keyword" valid_values="false true" default="true"/>
             <attribute name="fluidshape" type="keyword" valid_values="none ellipsoid"/>
             <attribute name="fluidcoef" type="array" array_type="float" array_size="5" default="0.5 0.25 1.5 1 1"/>
             <attribute name="user" type="array" array_type="float"/>
@@ -1905,6 +1916,7 @@
                 <attribute name="poisson" type="float"/>
                 <attribute name="damping" type="float"/>
                 <attribute name="thickness" type="float" default="-1"/>
+                <attribute name="yield" type="float"/>
                 <attribute name="elastic2d" type="keyword" valid_values="none bend stretch both"/>
                 <attribute name="section" type="keyword" valid_values="circle box"/>
                 <attribute name="sectionsize" type="array" array_type="float" array_size="2"/>
@@ -2004,6 +2016,7 @@
                 <attribute name="poisson" type="float"/>
                 <attribute name="damping" type="float"/>
                 <attribute name="thickness" type="float" default="-1"/>
+                <attribute name="yield" type="float"/>
                 <attribute name="elastic2d" type="keyword" valid_values="none bend stretch both"/>
                 <attribute name="section" type="keyword" valid_values="circle box"/>
                 <attribute name="sectionsize" type="array" array_type="float" array_size="2"/>
@@ -2081,6 +2094,7 @@
             <attribute name="solimpfriction" type="array" array_type="float" array_size="5" default="0.9 0.95 0.001 0.5 2"/>
             <attribute name="frictionloss" type="float"/>
             <attribute name="springlength" type="array" array_type="float" array_size="2" default="-1 -1"/>
+            <attribute name="springyield" type="float"/>
             <attribute name="width" type="float" default="0.003"/>
             <attribute name="material" type="reference" reference_namespace="material"/>
             <attribute name="margin" type="float"/>
@@ -2124,6 +2138,7 @@
             <attribute name="solimpfriction" type="array" array_type="float" array_size="5" default="0.9 0.95 0.001 0.5 2"/>
             <attribute name="frictionloss" type="float"/>
             <attribute name="springlength" type="array" array_type="float" array_size="2" default="-1 -1"/>
+            <attribute name="springyield" type="float"/>
             <attribute name="margin" type="float"/>
             <attribute name="stiffness" type="array" array_type="float" array_size="3"/>
             <attribute name="damping" type="array" array_type="float" array_size="3"/>
@@ -3294,6 +3309,7 @@
             <attribute name="mpos" type="array" array_type="float"/>
             <attribute name="mquat" type="array" array_type="float"/>
             <attribute name="ctrl" type="array" array_type="float"/>
+            <attribute name="plastic" type="array" array_type="float"/>
           </attributes>
         </element>
       </children>

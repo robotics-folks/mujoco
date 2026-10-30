@@ -704,6 +704,7 @@ element flag {
   sleep              : enum<enable> = disable
   diagexact          : enum<enable> = disable
   ipc                : enum<enable> = disable
+  speculative        : enum<enable> = disable
 }
 
 
@@ -1094,6 +1095,7 @@ element joint : mjsJoint {
   margin             : double (dim=Q)
   ref                : double (dim=Q)
   springref          : double (dim=Q)
+  springyield        : double (dim=Q)
   armature           : double (dim="F T^2 Q^-1")
   damping            : double[1..3] (dim="F T Q^-1, F T^2 Q^-2, F T^3 Q^-3")  # damper polynomial, 1+mjNPOLY coefficients
   frictionloss       : double (dim=F)
@@ -1135,6 +1137,7 @@ element geom : mjsGeom {
   mesh               : ref<mesh> (field=meshname)
   fitscale           : double = 1 (writing=custom, dim=1)  # compile directive: not saved
   rgba               : float[4] = {0.5, 0.5, 0.5, 1} (dim=1)
+  castshadow         : bool = true
   fluidshape         : enum<fluidshape> (field=fluid_ellipsoid, reading=custom)
   fluidcoef          : double[1..5] = {0.5, 0.25, 1.5, 1, 1} (field=fluid_coefs, dim=1)
   user               : double[] (field=userdata, dim=opaque)
@@ -1335,6 +1338,7 @@ element elasticity : mjsFlex {
   poisson            : double (dim=1)
   damping            : double (dim=T)
   thickness          : double = -1 (dim=L)
+  yield              : double (field=stressyield, dim=1)
   elastic2d          : enum<elastic2d>
   section            : enum<flexsection>
   sectionsize        : double[2] (dim=L)
@@ -1449,6 +1453,7 @@ element spatial : mjsTendon {
   solimpfriction     : double[1..mjNIMP] = {0.9, 0.95, 0.001, 0.5, 2} (field=solimp_friction, dim="1, 1, Q, 1, 1")
   frictionloss       : double (dim=F)
   springlength       : double[1..2] = {-1, -1} (reading=custom, dim=Q)  # one value: copied to both
+  springyield        : double (dim=Q)
   width              : double = 0.003 (dim=L)
   material           : ref<material>
   margin             : double (dim=Q)
@@ -1492,6 +1497,7 @@ element fixed : mjsTendon {
   solimpfriction     : double[1..mjNIMP] = {0.9, 0.95, 0.001, 0.5, 2} (field=solimp_friction, dim="1, 1, Q, 1, 1")
   frictionloss       : double (dim=F)
   springlength       : double[1..2] = {-1, -1} (reading=custom, dim=Q)  # one value: copied to both
+  springyield        : double (dim=Q)
   margin             : double (dim=Q)
   stiffness          : double[1..3] (dim="F Q^-1, F Q^-2, F Q^-3")  # spring polynomial, 1+mjNPOLY coefficients
   damping            : double[1..3] (dim="F T Q^-1, F T^2 Q^-2, F T^3 Q^-3")  # damper polynomial, 1+mjNPOLY coefficients
@@ -2274,6 +2280,7 @@ element key : mjsKey {
   mpos               : double[] (dim=L)
   mquat              : double[] (dim=1)
   ctrl               : double[] (dim=custom)
+  plastic            : double[] (dim=custom)
 }
 
 
@@ -2363,6 +2370,7 @@ element default_tendon (xml=tendon) {
   solimpfriction     : double[1..mjNIMP] (dim="1, 1, Q, 1, 1")
   frictionloss       : double (dim=F)
   springlength       : double[1..2] (dim=Q)
+  springyield        : double (dim=Q)
   width              : double (dim=L)
   material           : ref<material>
   margin             : double (dim=Q)

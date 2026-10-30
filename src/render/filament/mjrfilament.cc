@@ -101,6 +101,7 @@ void mjrf_defaultMaterial(mjrfMaterial* material) {
   material->glossiness = -1.0f;
   material->metallic = -1.0f;
   material->roughness = -1.0f;
+  material->haze_ratio = -1.0f;
 }
 
 void mjrf_defaultRenderableParams(mjrfRenderableParams* params) {
@@ -121,6 +122,8 @@ void mjrf_defaultRenderRequest(mjrfRenderRequest* request) {
   request->post_processing = true;
   request->reflections = true;
   request->shadows = true;
+  request->skybox = true;
+  request->haze = true;
 }
 
 void mjrf_defaultReadRequest(mjrfReadRequest* request) {
@@ -308,6 +311,10 @@ void mjrf_setRenderablePose(mjrfRenderable* renderable,
 void mjrf_setRenderableSize(mjrfRenderable* renderable, const float size[3]) {
   const filament::math::float3 fsize{size[0], size[1], size[2]};
   mujoco::Renderable::downcast(renderable)->SetSize(fsize);
+}
+
+void mjrf_setRenderableCastShadow(mjrfRenderable* renderable, mjtBool enabled) {
+  mujoco::Renderable::downcast(renderable)->SetCastShadows(enabled);
 }
 
 void mjrf_addSceneLight(mjrfScene* scene, mjrfLight* light) {

@@ -1236,6 +1236,7 @@
     <xs:attribute name="sleep" type="kw_enable" default="disable"/>
     <xs:attribute name="diagexact" type="kw_enable" default="disable"/>
     <xs:attribute name="ipc" type="kw_enable" default="disable"/>
+    <xs:attribute name="speculative" type="kw_enable" default="disable"/>
   </xs:complexType>
 
   <xs:complexType name="global">
@@ -1448,6 +1449,7 @@
     <xs:attribute name="margin" type="xs:double"/>
     <xs:attribute name="ref" type="xs:double"/>
     <xs:attribute name="springref" type="xs:double"/>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="armature" type="xs:double"/>
     <xs:attribute name="damping" type="double1to3">
       <xs:annotation>
@@ -1516,6 +1518,7 @@
       </xs:annotation>
     </xs:attribute>
     <xs:attribute name="rgba" type="float4" default="0.5 0.5 0.5 1"/>
+    <xs:attribute name="castshadow" type="kw_bool" default="true"/>
     <xs:attribute name="fluidshape" type="kw_fluidshape"/>
     <xs:attribute name="fluidcoef" type="double1to5" default="0.5 0.25 1.5 1 1"/>
     <xs:attribute name="user" type="doublelist"/>
@@ -1628,6 +1631,7 @@
     <xs:attribute name="solimpfriction" type="double1to5"/>
     <xs:attribute name="frictionloss" type="xs:double"/>
     <xs:attribute name="springlength" type="double1to2"/>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="width" type="xs:double"/>
     <xs:attribute name="material" type="xs:string"/>
     <xs:attribute name="margin" type="xs:double"/>
@@ -2298,6 +2302,7 @@
       </xs:annotation>
     </xs:attribute>
     <xs:attribute name="rgba" type="float4" default="0.5 0.5 0.5 1"/>
+    <xs:attribute name="castshadow" type="kw_bool" default="true"/>
     <xs:attribute name="fluidshape" type="kw_fluidshape"/>
     <xs:attribute name="fluidcoef" type="double1to5" default="0.5 0.25 1.5 1 1"/>
     <xs:attribute name="user" type="doublelist"/>
@@ -2575,6 +2580,7 @@
         <xs:documentation>one value: copied to both</xs:documentation>
       </xs:annotation>
     </xs:attribute>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="width" type="xs:double" default="0.003"/>
     <xs:attribute name="material" type="xs:string"/>
     <xs:attribute name="margin" type="xs:double"/>
@@ -2618,6 +2624,7 @@
         <xs:documentation>one value: copied to both</xs:documentation>
       </xs:annotation>
     </xs:attribute>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="margin" type="xs:double"/>
     <xs:attribute name="stiffness" type="double1to3">
       <xs:annotation>
@@ -3961,6 +3968,7 @@
     <xs:attribute name="mpos" type="doublelist"/>
     <xs:attribute name="mquat" type="doublelist"/>
     <xs:attribute name="ctrl" type="doublelist"/>
+    <xs:attribute name="plastic" type="doublelist"/>
   </xs:complexType>
 
   <xs:complexType name="default_layer">
@@ -4053,6 +4061,7 @@
     <xs:attribute name="margin" type="xs:double"/>
     <xs:attribute name="ref" type="xs:double"/>
     <xs:attribute name="springref" type="xs:double"/>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="armature" type="xs:double"/>
     <xs:attribute name="damping" type="double1to3">
       <xs:annotation>
@@ -4146,6 +4155,7 @@
     <xs:attribute name="poisson" type="xs:double"/>
     <xs:attribute name="damping" type="xs:double"/>
     <xs:attribute name="thickness" type="xs:double" default="-1"/>
+    <xs:attribute name="yield" type="xs:double"/>
     <xs:attribute name="elastic2d" type="kw_elastic2d"/>
     <xs:attribute name="section" type="kw_flexsection"/>
     <xs:attribute name="sectionsize" type="double2"/>

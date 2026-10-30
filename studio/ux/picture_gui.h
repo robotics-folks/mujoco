@@ -39,12 +39,11 @@ struct PipState {
   Mode mode = Color;
 };
 
-using PipRenderCallback =
-    std::function<ImTextureID(const PipState&, int, int)>;
+using PipRenderCallback = std::function<ImTextureID(const PipState&, int, int)>;
 
 // Renders the GUI for a set of picture-in-picture widgets.
-void PipGui(const mjModel* model, float aspect_ratio,
-            const PipRenderCallback& render_cb, std::vector<PipState>* pips);
+void PipGui(const mjModel* model, float aspect_ratio, const PipRenderCallback& render_cb,
+            std::vector<PipState>* pips);
 
 // Renders the GUI for a set of picture-in-picture widgets backed by
 // pre-uploaded textures.

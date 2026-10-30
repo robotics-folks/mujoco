@@ -96,7 +96,7 @@ rendering and UI through non-blocking message endpoints:
 │              Viewer Thread (or Web Client)             │
 │  - Owns Window, Renderer, Camera, VisOptions, Perturb  │
 │  - Owns local copy of MjModel and MjData for rendering │
-│  - Executes ViewerPlugin instances (ViewerApp, UI)     │
+│  - Executes ViewerPlugin instances (studio_app, UI)    │
 │  - Dispatches lifecycle events (UpdateEvent, BuildGuiEvent) │
 └────────────────────────────────────────────────────────┘
 ```
@@ -111,17 +111,17 @@ rendering and UI through non-blocking message endpoints:
     -   **`plugin.ViewerPlugin`**: Runs on the viewer thread, automatically
         caches `self.viewer` on `ViewerInitEvent`, and handles visual updates,
         rendering overlays, and Dear ImGui construction.
--   **Canonical Samples (`python/mujoco/studio/`)**:
+-   **Canonical Samples (`python/mujoco/sample/studio/`)**:
     -   `python/mujoco/studio/viewer.py` — Standard Studio viewer
-        (`viewer_app.ViewerApp`); run with
+        (`studio_app.App`); run with
         `viewer.py --model=<file> --plugins=a.py,b.py` (instantiates every
         `ViewerPlugin`/`SimPlugin` defined in those files).
-    -   `sample/ghost.py` — `GhostRenderer` injecting transient `extra_geoms` on
+    -   `python/mujoco/sample/studio/ghost.py` — `GhostRenderer` injecting transient `extra_geoms` on
         `UpdateEvent` and ImGui controls on `BuildGuiEvent`
-        (`viewer.py --model=... --plugins=sample/ghost.py`).
-    -   `sample/implot.py` — `BodyInspector` demonstrating real-time ImGui +
-        ImPlot charting (`viewer.py --model=... --plugins=sample/implot.py`).
-    -   `sample/custom_sim_loop.py` — External script owning its stepping and
+        (`viewer.py --model=... --plugins=python/mujoco/sample/studio/ghost.py`).
+    -   `python/mujoco/sample/studio/implot.py` — `BodyInspector` demonstrating real-time ImGui +
+        ImPlot charting (`viewer.py --model=... --plugins=python/mujoco/sample/studio/implot.py`).
+    -   `python/mujoco/sample/studio/custom_sim_loop.py` — External script owning its stepping and
         pacing loop via `handle.sync(model, data)`.
 
 ## 2. Launching Python Viewers
@@ -150,12 +150,12 @@ Studio provides three runner modules sharing the same `.run(...)` and
 Accepts either `model_path=...` (loaded on the sim thread by `ViewerHandle` via
 `LoadModelEvent`, setting `handle.model_path` so **Reload** works) or an
 in-memory `model=...` (with optional `data=...`, published via
-`handle.set_model`). `viewer_app.SIM_PLUGINS` bundles
+`handle.set_model`). `studio_app.SIM_PLUGINS` bundles
 `step_control.StepControl()` and `sim_history.SimHistory()`:
 
 ```python
+from mujoco.studio import app as studio_app
 from mujoco.studio import launch_web  # Or launch_native / launch_passive
-from mujoco.studio import viewer_app
 from mujoco.studio import viewer_protocol
 
 config = viewer_protocol.ViewerConfig(title='Studio')
@@ -164,15 +164,15 @@ launch_web.run(
     config,
     model_path=model_path,  # Or model=model, data=data for an in-memory model.
     plugins=[
-        viewer_app.ViewerApp(),
-        *viewer_app.SIM_PLUGINS,
+        studio_app.App(),
+        *studio_app.SIM_PLUGINS,
     ],
 )
 ```
 
 > [!WARNING]
 >
-> **Stepping and pacing are plugin responsibilities.** `viewer_app.SIM_PLUGINS`
+> **Stepping and pacing are plugin responsibilities.** `studio_app.SIM_PLUGINS`
 > includes `step_control.StepControl()` (real-time-paced CPU stepping) and
 > `sim_history.SimHistory()` (history scrubbing). Without `StepControl()` (or
 > your own `StepEvent` plugin), `handle.sync()` does **not** advance physics or
@@ -192,8 +192,8 @@ loop, trajectory replay script, or test):
 with launch_web.launch(
     config,
     plugins=[
-        viewer_app.ViewerApp(),
-        *viewer_app.SIM_PLUGINS,
+        studio_app.App(),
+        *studio_app.SIM_PLUGINS,
     ],
 ) as handle:
   while handle.is_running():
@@ -203,7 +203,7 @@ with launch_web.launch(
 
 To step and pace physics directly in the caller loop instead, omit
 `StepControl()` and step after `model, data = handle.sync(model, data)` (see
-`python/mujoco/studio/sample/custom_sim_loop.py`).
+`python/mujoco/sample/studio/custom_sim_loop.py`).
 
 ## 3. Plugin & Messaging Essentials
 

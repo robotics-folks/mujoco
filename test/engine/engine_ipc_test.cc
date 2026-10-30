@@ -1902,6 +1902,7 @@ TEST_F(IpcTest, MulAddScratchBounds) {
                   count="4 4 4" spacing=".05 .05 .05" radius=".005" mass=".1">
           <contact selfcollide="none"/>
           <elasticity young="1e4"/>
+          <pin id="0"/>
         </flexcomp>
       </body>
     </worldbody>
@@ -2060,9 +2061,10 @@ TEST_F(IpcTest, SparseFactorMatchesBlocks) {
   mj_deleteModel(m);
 }
 
-// the factor applies under the run-time IPC flag only: clearing the flag
-// switches to the blocks, setting it again switches back
-TEST_F(IpcTest, SparseFactorFollowsIpcFlag) {
+// for a 2D flex the factor applies under the run-time IPC flag or when CG folds
+// into it: clearing the flag keeps the factor under CG, an elliptic cone (no
+// fold) switches to the blocks, restoring the pyramidal cone switches back
+TEST_F(IpcTest, SparseFactorFollowsIpcFlagAndSolver) {
   mjModel* m = Load(kHanging);
   ASSERT_THAT(m, NotNull());
   mjData* d = mj_makeData(m);
@@ -2071,8 +2073,11 @@ TEST_F(IpcTest, SparseFactorFollowsIpcFlag) {
   EXPECT_TRUE(FactorUsed(d));
   m->opt.enableflags &= ~mjENBL_IPC;
   mj_step(m, d);
+  EXPECT_TRUE(FactorUsed(d));
+  m->opt.cone = mjCONE_ELLIPTIC;
+  mj_step(m, d);
   EXPECT_TRUE(BlocksUsed(d));
-  m->opt.enableflags |= mjENBL_IPC;
+  m->opt.cone = mjCONE_PYRAMIDAL;
   mj_step(m, d);
   EXPECT_TRUE(FactorUsed(d));
 
@@ -2107,21 +2112,73 @@ TEST_F(IpcTest, SparseFactorSaveLoad) {
   mj_deleteModel(m);
 }
 
-// a model without the compile-time IPC flag has no ordering: enabling the flag
-// at run time uses the blocks
-TEST_F(IpcTest, SparseFactorNeedsCompileTimeIpc) {
+// a model compiled without the IPC flag has the ordering too: CG without IPC
+// uses the factor, and so does enabling the flag at run time
+TEST_F(IpcTest, SparseFactorWithoutCompileTimeIpc) {
   std::string xml(kHanging);
   xml.erase(xml.find("<flag ipc=\"enable\"/>"),
             std::string("<flag ipc=\"enable\"/>").size());
   mjModel* m = Load(xml.c_str());
   ASSERT_THAT(m, NotNull());
-  EXPECT_EQ(m->nefmCvert, 0);
-  m->opt.enableflags |= mjENBL_IPC;
+  EXPECT_GT(OrderedVertices(m), 0);
   mjData* d = mj_makeData(m);
   mj_step(m, d);
-  EXPECT_TRUE(BlocksUsed(d));
+  EXPECT_TRUE(FactorUsed(d));
+  m->opt.enableflags |= mjENBL_IPC;
+  mj_step(m, d);
+  EXPECT_TRUE(FactorUsed(d));
   EXPECT_FALSE(d->warning[mjWARN_BADQACC].number);
   mj_deleteData(d);
+  mj_deleteModel(m);
+}
+
+// without IPC, the CG fold into the sparse factor and the 3x3 blocks on the
+// island path precondition the same solves: from the same state, one step gives
+// the same accelerations up to the solver tolerances
+TEST_F(IpcTest, SparseFactorFoldMatchesBlocksWithoutIpc) {
+  std::string xml(kSheets);
+  xml.erase(xml.find("<flag ipc=\"enable\"/>"),
+            std::string("<flag ipc=\"enable\"/>").size());
+  size_t pos = xml.find("iterations=\"400\"");
+  xml.replace(pos, std::string("iterations=\"400\"").size(),
+              "iterations=\"4000\" tolerance=\"1e-12\"");
+  mjModel* m = Load(xml.c_str());
+  ASSERT_THAT(m, NotNull());
+  ASSERT_GT(OrderedVertices(m), 0);
+  mjModel* mb = BlocksCopy(m);
+  mjData* d = mj_makeData(m);
+  mjData* db = mj_makeData(mb);
+
+  bool contact = false;
+  mjtNum rel = 0, rel_smooth = 0;
+  for (int s = 0; s < 150; s++) {
+    mj_copyData(db, mb, d);
+    mj_step(m, d);
+    mj_step(mb, db);
+    ASSERT_TRUE(FactorUsed(d)) << "step " << s;
+    // the blocks copy runs on the island path, which appends the island lists
+    // after the blocks once there are contacts
+    ASSERT_FALSE(FactorUsed(db)) << "step " << s;
+    contact = contact || mju_norm(d->qfrc_constraint, m->nv) > 0;
+
+    mjtNum scale = 0, diff = 0, scale_s = 0, diff_s = 0;
+    for (int i = 0; i < m->nv; i++) {
+      scale = mju_max(scale, mju_abs(db->qacc[i]));
+      diff = mju_max(diff, mju_abs(d->qacc[i] - db->qacc[i]));
+      scale_s = mju_max(scale_s, mju_abs(db->qacc_smooth[i]));
+      diff_s = mju_max(diff_s, mju_abs(d->qacc_smooth[i] - db->qacc_smooth[i]));
+    }
+    rel = mju_max(rel, diff / scale);
+    rel_smooth = mju_max(rel_smooth, diff_s / scale_s);
+  }
+  EXPECT_LE(rel_smooth, MjTol(2e-11, 2e-4)) << "qacc_smooth";
+  EXPECT_LE(rel, MjTol(1e-4, 2e-4)) << "qacc";
+  EXPECT_TRUE(contact) << "the sheets must collide";
+  EXPECT_FALSE(d->warning[mjWARN_BADQACC].number);
+
+  mj_deleteData(db);
+  mj_deleteData(d);
+  mj_deleteModel(mb);
   mj_deleteModel(m);
 }
 
@@ -2292,13 +2349,15 @@ TEST_F(IpcTest, SparseFactorPatternChange) {
   mj_deleteModel(m);
 }
 
-// the coverage rules: the compiler sizes the ordering for models with IPC and a
-// 2D flex, mj_setConst orders the vertices of the engine's own stencils, and
-// models with a covered non-2D flex, or without IPC, use the blocks
+// the coverage rules: the compiler sizes the ordering for models with a 2D flex
+// or an elastic rod, mj_setConst orders the vertices of the engine's own
+// stencils, and models with a covered 3D flex use the blocks. A 2D flex uses
+// the factor under IPC or when CG folds into it (pyramidal cone, no sleep), and
+// the blocks otherwise
 TEST_F(IpcTest, SparseFactorCoverage) {
   static constexpr char kTemplate[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">
+    <option timestep="0.002" integrator="discrete" iterations="400" %s>
       %s
     </option>
     <worldbody>
@@ -2306,6 +2365,7 @@ TEST_F(IpcTest, SparseFactorCoverage) {
     </worldbody>
   </mujoco>
   )";
+  static constexpr char kCG[] = R"(solver="CG")";
   static constexpr char kIpc[] = R"(<flag ipc="enable"/>)";
   static constexpr char kSheet[] = R"(
       <flexcomp name="sheet" type="grid" dim="2" count="7 6 1" spacing=".04 .04 1"
@@ -2347,32 +2407,45 @@ TEST_F(IpcTest, SparseFactorCoverage) {
   };
   struct Case {
     std::string name;
+    std::string attrs;
     std::string option;
     std::string bodies;
     bool sized;  // the model has ordering slots
-    bool used;   // the CG step uses the factor (efm_K is assembled)
+    bool used;   // the step uses the factor (efm_K is assembled)
   };
   std::vector<Case> cases = {
-      {"stretch and bending", kIpc, sheet("both", ""), true, true},
-      {"pins", kIpc, sheet("both", R"(<pin id="0 6 35 41"/>)"), true, true},
-      {"stretch only", kIpc, sheet("stretch", ""), true, true},
-      {"bending only", kIpc, sheet("bend", ""), true, false},
-      {"two sheets", kIpc, sheet("both", "") + kSecond, true, true},
-      {"joint before the sheet", kIpc, std::string(kHinge) + sheet("both", ""),
-       true, true},
-      {"sheet and cable", kIpc, sheet("both", "") + kCable, true, true},
-      {"sheet and elastic rod", kIpc, sheet("both", "") + kRod, true, true},
-      {"elastic rod, no IPC", "", kRod, true, true},
-      {"sheet and elastic rod, no IPC", "", sheet("both", "") + kRod, true,
+      {"stretch and bending", kCG, kIpc, sheet("both", ""), true, true},
+      {"pins", kCG, kIpc, sheet("both", R"(<pin id="0 6 35 41"/>)"), true,
+       true},
+      {"stretch only", kCG, kIpc, sheet("stretch", ""), true, true},
+      {"bending only", kCG, kIpc, sheet("bend", ""), true, false},
+      {"two sheets", kCG, kIpc, sheet("both", "") + kSecond, true, true},
+      {"joint before the sheet", kCG, kIpc,
+       std::string(kHinge) + sheet("both", ""), true, true},
+      {"sheet and cable", kCG, kIpc, sheet("both", "") + kCable, true, true},
+      {"sheet and elastic rod", kCG, kIpc, sheet("both", "") + kRod, true,
+       true},
+      {"elastic rod, no IPC", kCG, "", kRod, true, true},
+      {"sheet and elastic rod, no IPC", kCG, "", sheet("both", "") + kRod, true,
+       true},
+      {"sheet and solid", kCG, kIpc, sheet("both", "") + kSolid, true, false},
+      {"solid", kCG, kIpc, kSolid, false, false},
+      {"no IPC", kCG, "", sheet("both", ""), true, true},
+      {"no IPC, two sheets", kCG, "", sheet("both", "") + kSecond, true, true},
+      {"no IPC, Newton", R"(solver="Newton")", "", sheet("both", ""), true,
        false},
-      {"sheet and solid", kIpc, sheet("both", "") + kSolid, true, false},
-      {"solid", kIpc, kSolid, false, false},
-      {"no IPC", "", sheet("both", ""), false, false},
+      {"no IPC, elliptic", R"(solver="CG" cone="elliptic")", "",
+       sheet("both", ""), true, false},
+      {"no IPC, sleep", kCG, R"(<flag sleep="enable"/>)", sheet("both", ""),
+       true, false},
+      {"elastic rod, no IPC, Newton", R"(solver="Newton")", "", kRod, true,
+       true},
   };
   for (const Case& c : cases) {
     SCOPED_TRACE(c.name);
     char xml[4096];
-    snprintf(xml, sizeof(xml), kTemplate, c.option.c_str(), c.bodies.c_str());
+    snprintf(xml, sizeof(xml), kTemplate, c.attrs.c_str(), c.option.c_str(),
+             c.bodies.c_str());
     mjModel* m = Load(xml);
     ASSERT_THAT(m, NotNull());
     EXPECT_EQ(m->nefmCvert > 0, c.sized);
@@ -2397,7 +2470,7 @@ TEST_F(IpcTest, SparseFactorCoverage) {
 
 // the solver's preconditioner folded with rows (mj_effPrecFold) with a copy of
 // the sparse factor (mjEffFold.F), applied to b into x (mj_effPrecBlocks);
-// returns whether the fold made this solve's contact-adaptive factor
+// returns whether the fold factored its copy (rows folded in)
 static bool SparseFoldApply(const mjModel* m, mjData* d, const FoldRows& rows,
                             const mjtNum* b, mjtNum* x) {
   std::vector<mjtNum> L(9 * d->nefmdof), F(mj_effCholFoldSize(d));
@@ -2406,11 +2479,11 @@ static bool SparseFoldApply(const mjModel* m, mjData* d, const FoldRows& rows,
   fold.F = F.empty() ? nullptr : F.data();
   mj_markStack(d);
   int nefc = static_cast<int>(rows.D.size());
-  fold.factor = mj_effCholFoldFactor(
-      m, d, &fold, nefc, nefc ? rows.D.data() : nullptr,
-      /*is_sparse=*/1, nefc ? rows.J.data() : nullptr,
-      nefc ? rows.rownnz.data() : nullptr, nefc ? rows.rowadr.data() : nullptr,
-      nefc ? rows.colind.data() : nullptr);
+  mj_effCholFoldFactor(m, d, &fold, nefc, nefc ? rows.D.data() : nullptr,
+                       /*is_sparse=*/1, nefc ? rows.J.data() : nullptr,
+                       nefc ? rows.rownnz.data() : nullptr,
+                       nefc ? rows.rowadr.data() : nullptr,
+                       nefc ? rows.colind.data() : nullptr);
   size_t pstack0 = d->pstack;
   bool folded = mj_effPrecFold(
       m, d, &fold, nefc, nefc ? rows.D.data() : nullptr,
@@ -2421,15 +2494,15 @@ static bool SparseFoldApply(const mjModel* m, mjData* d, const FoldRows& rows,
   EXPECT_EQ(d->pstack, pstack0);
   mj_effPrecBlocks(m, d, x, b, &fold);
   mj_freeStack(d);
-  return fold.factor != nullptr;
+  return fold.F && fold.F[0] == 1;
 }
 
-// a solve's contact-adaptive factor holds the vertex pairs its terms couple: a
-// row coupling two vertices that share no flex edge, folded on a sheet without
-// dropped pairs, adds exactly J' D J to the factored matrix W of the fold
-// without rows: x = (W + J' D J)^-1 b satisfies x + W^-1 J' D J x = W^-1 b. On
-// the step's pattern the pair would be replaced by its rank-1 complement
-TEST_F(IpcTest, SparseFactorContactPattern) {
+// a row coupling two vertices off the step's pattern (rows the step did not
+// see), folded on a sheet without dropped pairs, adds its complement
+// C = 2 D (J_k' J_k + J_q' J_q) >= J' D J, on the vertices' diagonal blocks, to
+// the factored matrix W of the fold without rows: x = (W + C)^-1 b satisfies
+// x + W^-1 C x = W^-1 b
+TEST_F(IpcTest, SparseFactorContactComplement) {
   char xml[2048];
   snprintf(xml, sizeof(xml), kStretchSheet, "");
   mjModel* m = Load(xml);
@@ -2449,13 +2522,14 @@ TEST_F(IpcTest, SparseFactorContactPattern) {
   for (int i = 0; i < nv; i++) {
     b[i] = std::sin(1.0 + i);
   }
-  EXPECT_TRUE(SparseFoldApply(m, d, rows, b.data(), x.data()))
-      << "the fold must analyse the solve's own pattern";
+  EXPECT_TRUE(SparseFoldApply(m, d, rows, b.data(), x.data()));
 
-  // W^-1 b and W^-1 J' D J x, without rows: the step's analysis, exact
-  FoldRows none;
+  // W^-1 b and W^-1 C x, without rows
+  FoldRows none, parts;
+  parts.Add(0.02, {a0, a0 + 1, a0 + 2}, {0.3, -0.7, 1});
+  parts.Add(0.02, {a1, a1 + 1, a1 + 2}, {-0.5, 0.2, 0.9});
   EXPECT_FALSE(SparseFoldApply(m, d, none, b.data(), w.data()));
-  rows.MulAdd(cx.data(), x.data());
+  parts.MulAdd(cx.data(), x.data());
   SparseFoldApply(m, d, none, cx.data(), wcx.data());
   mjtNum scale = 0, diff = 0, coupling = 0;
   for (int i = 0; i < nv; i++) {

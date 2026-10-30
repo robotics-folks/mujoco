@@ -34,6 +34,8 @@ using namespace mujoco;          // NOLINT(build/namespaces)
 using namespace mujoco::python;  // NOLINT(build/namespaces)
 using namespace mujoco::studio;  // NOLINT(build/namespaces)
 
+namespace {
+
 std::unique_ptr<ImguiBridge> MakeImguiBridge(mujoco::python::PyContext& ctx,
                                              PyScene& scene) {
   return std::make_unique<ImguiBridge>(ctx.get(), scene.get());
@@ -54,17 +56,18 @@ intptr_t UploadImage(ImguiBridge& imgui_bridge, intptr_t tex_id,
   return imgui_bridge.UploadImage(tex_id, {bytes, num_bytes}, width, height);
 }
 
-void SyncModelScene(
-    ModelScene& model_scene, int width, int height,
-    const mujoco::python::MjModelWrapper& model,
-    mujoco::python::MjDataWrapper& data,
-    mujoco::python::MjvPerturbWrapper& perturb,
-    mujoco::python::MjvCameraWrapper& camera,
-    mujoco::python::MjvOptionWrapper& vis_options,
-    const std::vector<mujoco::python::MjvGeomWrapper>& extra_geoms) {
+void SyncModelScene(ModelScene& model_scene, int width, int height,
+                    const mujoco::python::MjModelWrapper& model,
+                    mujoco::python::MjDataWrapper& data,
+                    mujoco::python::MjvPerturbWrapper& perturb,
+                    mujoco::python::MjvCameraWrapper& camera,
+                    mujoco::python::MjvOptionWrapper& vis_options,
+                    const py::iterable& extra_geoms) {
   std::vector<mjvGeom> geoms;
-  geoms.reserve(extra_geoms.size());
-  for (const auto& geom_wrapper : extra_geoms) {
+  geoms.reserve(py::len_hint(extra_geoms));
+  for (py::handle item : extra_geoms) {
+    const auto& geom_wrapper =
+        py::cast<const mujoco::python::MjvGeomWrapper&>(item);
     if (geom_wrapper.get()) {
       geoms.push_back(*geom_wrapper.get());
     }
@@ -75,13 +78,16 @@ void SyncModelScene(
                    vis_options.get(), perturb.get(), camera.get(), geoms);
 }
 
-
 bool RenderToPixels(int gfx_mode) {
   return IsHeadless(
     static_cast<mujoco::studio::GraphicsMode>(gfx_mode));
 }
 
-PYBIND11_MODULE(native_viewer_cc, m, pybind11::mod_gil_not_used()) {
+}  // namespace
+
+namespace mujoco::python::studio {
+
+void InitNativeViewer(pybind11::module_& m) {
   pybind11::module_::import("mujoco._structs");
   {
     py::class_<ImguiBridge> cls(m, "ImguiBridge", py::module_local());
@@ -103,3 +109,11 @@ PYBIND11_MODULE(native_viewer_cc, m, pybind11::mod_gil_not_used()) {
   }
   m.def("render_to_pixels", &RenderToPixels);
 }
+
+}  // namespace mujoco::python::studio
+
+#ifndef MUJOCO_STUDIO_COMBINED_MODULE
+PYBIND11_MODULE(native_viewer_cc, m, pybind11::mod_gil_not_used()) {
+  mujoco::python::studio::InitNativeViewer(m);
+}
+#endif

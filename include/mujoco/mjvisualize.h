@@ -152,6 +152,7 @@ typedef enum mjtRndFlag_ {        // flags enabling rendering effects
   mjRND_SEGMENT,                  // segmentation with random color
   mjRND_IDCOLOR,                  // segmentation with segid+1 color
   mjRND_CULL_FACE,                // cull backward faces
+  mjRND_POST_PROCESSING,          // post-processing (e.g. color grading, bloom, etc.)
 
   mjNRNDFLAG                      // number of rendering flags
 } mjtRndFlag;
@@ -249,6 +250,7 @@ typedef struct mjvGeom_ {         // abstract geom
   float    shininess;             // shininess coef
   float    reflectance;           // reflectance coef
   float    texrepeat[2];          // texture repetition for 2d mapping
+  mjtByte  castshadow;            // does geom cast shadows
 
   char     label[100];            // text label
 

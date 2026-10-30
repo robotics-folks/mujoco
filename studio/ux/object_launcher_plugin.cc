@@ -88,7 +88,8 @@ class ObjectLauncher {
     const mjtNum size = 0.5 * len;
     Seed(size, &size_, &size_seed_);
     // Mass giving the default box (volume (2*size)^3) density 1000, MuJoCo's
-    // default geom density. Units are unspecified, so 1000 is just a convention.
+    // default geom density. Units are unspecified, so 1000 is just a
+    // convention.
     const mjtNum box_volume = 8.0 * size * size * size;
     Seed(1000.0 * box_volume, &mass_, &mass_seed_);
     const mjtNum gravity = mju_norm3(model->opt.gravity);
@@ -97,26 +98,25 @@ class ObjectLauncher {
     Seed(3.0 * mju_sqrt(model->stat.extent * g), &speed_, &speed_seed_);
   }
 
-  bool UpdateSpecPreCompile(mjSpec* spec, const mjModel* model,
-                            const mjData* data, const mjvCamera* camera) {
+  bool UpdateSpecPreCompile(mjSpec* spec, const mjModel* model, const mjData* data,
+                            const mjvCamera* camera) {
     // Objects live on [creation_time, expiration]: drop them when the lifetime
     // elapses, or when the sim rewinds before launch (so a reset clears them).
-    auto it = std::remove_if(
-        objects_.begin(), objects_.end(), [&](const ObjectInfo& o) {
-          if (o.body_id < 0) {
-            return false;  // not yet compiled into the model
-          }
-          const bool expired = o.expiration != 0 && o.expiration < data->time;
-          const bool rewound = data->time < o.creation_time;
-          const bool remove = expired || rewound;
-          if (remove) {
-            mjsBody* body = mjs_findBody(spec, o.name.c_str());
-            if (body) {
-              mjs_delete(spec, body->element);
-            }
-          }
-          return remove;
-        });
+    auto it = std::remove_if(objects_.begin(), objects_.end(), [&](const ObjectInfo& o) {
+      if (o.body_id < 0) {
+        return false;  // not yet compiled into the model
+      }
+      const bool expired = o.expiration != 0 && o.expiration < data->time;
+      const bool rewound = data->time < o.creation_time;
+      const bool remove = expired || rewound;
+      if (remove) {
+        mjsBody* body = mjs_findBody(spec, o.name.c_str());
+        if (body) {
+          mjs_delete(spec, body->element);
+        }
+      }
+      return remove;
+    });
     if (it != objects_.end()) {
       objects_.erase(it, objects_.end());
       return true;
@@ -165,8 +165,7 @@ class ObjectLauncher {
     return true;
   }
 
-  void UpdateSpecPostCompile(const mjSpec* spec, const mjModel* model,
-                             mjData* data) {
+  void UpdateSpecPostCompile(const mjSpec* spec, const mjModel* model, mjData* data) {
     if (objects_.empty()) {
       return;
     }
@@ -255,8 +254,7 @@ mjPLUGIN_LIB_INIT(object_launcher) {
   mujoco::studio::ModelPlugin model_plugin;
   model_plugin.data = &plugin;
   model_plugin.name = mujoco::studio::kObjectLauncherName;
-  model_plugin.post_model_loaded = [](mujoco::studio::ModelPlugin* self,
-                                      const mjModel* model,
+  model_plugin.post_model_loaded = [](mujoco::studio::ModelPlugin* self, const mjModel* model,
                                       const char* model_path) {
     auto* plugin = static_cast<mujoco::studio::ObjectLauncher*>(self->data);
     plugin->OnModelLoaded(model);
@@ -266,15 +264,13 @@ mjPLUGIN_LIB_INIT(object_launcher) {
   mujoco::studio::SpecEditorPlugin spec_editor;
   spec_editor.data = &plugin;
   spec_editor.name = mujoco::studio::kObjectLauncherName;
-  spec_editor.pre_compile = [](mujoco::studio::SpecEditorPlugin* self,
-                               mjSpec* spec, const mjModel* model,
-                               const mjData* data, const mjvCamera* camera) {
+  spec_editor.pre_compile = [](mujoco::studio::SpecEditorPlugin* self, mjSpec* spec,
+                               const mjModel* model, const mjData* data, const mjvCamera* camera) {
     auto* plugin = static_cast<mujoco::studio::ObjectLauncher*>(self->data);
     return plugin->UpdateSpecPreCompile(spec, model, data, camera);
   };
-  spec_editor.post_compile = [](mujoco::studio::SpecEditorPlugin* self,
-                                const mjSpec* spec, const mjModel* model,
-                                mjData* data) {
+  spec_editor.post_compile = [](mujoco::studio::SpecEditorPlugin* self, const mjSpec* spec,
+                                const mjModel* model, mjData* data) {
     auto* plugin = static_cast<mujoco::studio::ObjectLauncher*>(self->data);
     return plugin->UpdateSpecPostCompile(spec, model, data);
   };

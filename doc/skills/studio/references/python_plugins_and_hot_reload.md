@@ -1,6 +1,6 @@
 # Authoring Python Studio Plugins & Hot Reload
 
-Explore `python/mujoco/experimental/studio/sample/` for actively maintained
+Explore `python/mujoco/sample/studio/` for actively maintained
 reference implementations.
 
 > [!IMPORTANT]
@@ -25,10 +25,10 @@ reference implementations.
 
 ### Viewer UI Plugins (Dear ImGui & ImPlot)
 
-See `python/mujoco/experimental/studio/sample/implot.py` (`BodyInspector`) for a
+See `python/mujoco/sample/studio/implot.py` (`BodyInspector`) for a
 complete viewer UI plugin demonstrating how to:
 
--   Subscribe to `ViewerAppInitEvent` to cache `event.viewer_app` references.
+-   Subscribe to `studio_app.InitEvent` to cache `event.app` references.
 -   Draw responsive ImPlot charts during `BuildGuiEvent` (preparing any heavy
     frame data or texture uploads earlier in `UpdateEvent`).
 -   Use persistent window IDs (`###`) to preserve docking and window state
@@ -36,14 +36,14 @@ complete viewer UI plugin demonstrating how to:
 
 ### Visual Overlays & Transient Geoms
 
-See `python/mujoco/experimental/studio/sample/ghost.py` (`GhostRenderer`) for
+See `python/mujoco/sample/studio/ghost.py` (`GhostRenderer`) for
 subscribing to `UpdateEvent` and populating `viewer.extra_geoms` with transient
 `mjvGeom` instances without mutating the compiled `MjModel`.
 
 > [!WARNING]
 >
 > **Upcoming API Migration for Extra Geoms:**
-> `viewer.extra_geoms` in `sample/ghost.py` is an interim mechanism and will be
+> `viewer.extra_geoms` in `sample/studio/ghost.py` is an interim mechanism and will be
 > replaced by the direct scene/geom API in
 > `python/mujoco/rendering/filament/renderer.py`. Prefer referencing that
 > renderer API when architecting new custom visual overlays.
@@ -75,9 +75,9 @@ Dear ImGui Test Engine readiness), load the `mujoco-gui` skill
     or two ImGui windows** (`imgui.Begin(...)`) so users can dock panels cleanly
     into the Studio Viewer App dockspaces alongside built-in tools.
 -   **Shared Custom Widgets (`imgui_widgets.h`/`cc`)**: Reusable C++ custom
-    ImGui widgets live in `src/experimental/studio/ux/imgui_widgets.h` and
+    ImGui widgets live in `studio/ux/imgui_widgets.h` and
     `imgui_widgets.cc`. (A counterpart shared widgets module under
-    `python/mujoco/experimental/studio/` can be used as Python-authored widgets
+    `python/mujoco/studio/` can be used as Python-authored widgets
     grow.)
 -   **Python vs C++ Widgets (GIL, Performance & Web Portability)**: Before
     implementing a compute-heavy or reusable widget in Python, consider whether
@@ -113,13 +113,14 @@ The `hot_reload` option selects what to watch (parsed via
 -   Comma-separated plugin class names (e.g., `'Scene,SceneGui'`), combinable
     with `'model'` (e.g., `'model,Scene'`).
 
-See the module docstring of `python/mujoco/experimental/studio/hot_reload.py`
+See the module docstring of `python/mujoco/studio/hot_reload.py`
 for full design details:
 
 -   **Reloadable vs. fixed boundary**: Registered plugin modules (both user
-    plugins and built-ins like `ViewerApp`, `StepControl`, and `SimHistory`),
-    same-directory helper modules, and the active XML/URDF model file (including
-    its `<include>`s and assets) reload on save. Framework modules, `__main__`,
+    plugins and built-ins like `studio_app.App`, `StepControl`, and
+    `SimHistory`), same-directory helper modules, and the active XML/URDF model
+    file (including its `<include>`s and assets) reload on save. Framework
+    modules, `__main__`,
     the C++ binary, and the list of registered plugin instances are fixed.
     Always keep plugins in separate module files rather than `__main__` (and if
     a user's script defines plugins inline in `__main__`, ask whether to extract

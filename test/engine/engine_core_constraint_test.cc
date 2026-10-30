@@ -298,6 +298,78 @@ TEST_F(CoreConstraintTest, SurfaceVelocityMeshFrame) {
   EXPECT_NEAR(speed, 0.4 * r, 5e-3);
 }
 
+// surfacevel: writing mjContact.surfacevel directly matches geom_surfacevel
+TEST_F(CoreConstraintTest, SurfaceVelocityExternalContact) {
+  constexpr char xml_geom[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="5 5 .1" condim="4" surfacevel=".5 -.2 0  0 0 1"/>
+      <body pos=".3 .4 .1">
+        <freejoint/>
+        <geom type="box" size=".1 .1 .1" mass="1" condim="4"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  constexpr char xml_plain[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="5 5 .1" condim="4"/>
+      <body pos=".3 .4 .1">
+        <freejoint/>
+        <geom type="box" size=".1 .1 .1" mass="1" condim="4"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model_a = LoadModelFromString(xml_geom, error, sizeof(error));
+  ASSERT_THAT(model_a.get(), testing::NotNull()) << error;
+  MjDataPtr data_a = MakeData(model_a);
+
+  MjModelPtr model_b = LoadModelFromString(xml_plain, error, sizeof(error));
+  ASSERT_THAT(model_b.get(), testing::NotNull()) << error;
+  MjDataPtr data_b = MakeData(model_b);
+
+  for (const mjtCone cone : {mjCONE_PYRAMIDAL, mjCONE_ELLIPTIC}) {
+    model_a->opt.cone = cone;
+    model_b->opt.cone = cone;
+    model_b->flg_surfacevel = 0;
+
+    mj_resetData(model_a.get(), data_a.get());
+    mj_forward(model_a.get(), data_a.get());
+    ASSERT_EQ(data_a->ncon, 4);
+
+    mj_resetData(model_b.get(), data_b.get());
+    mj_fwdPosition(model_b.get(), data_b.get());
+    ASSERT_EQ(data_b->ncon, data_a->ncon);
+
+    // contacts on plain model have zero-initialized surfacevel
+    for (int i = 0; i < data_b->ncon; i++) {
+      EXPECT_EQ(data_b->contact[i].surfacevel[0], 0);
+      EXPECT_EQ(data_b->contact[i].surfacevel[1], 0);
+      EXPECT_EQ(data_b->contact[i].surfacevel[2], 0);
+      mju_copy3(data_b->contact[i].surfacevel, data_a->contact[i].surfacevel);
+    }
+
+    // gated off when flg_surfacevel == 0
+    mj_forwardSkip(model_b.get(), data_b.get(), mjSTAGE_POS, 0);
+    EXPECT_NEAR(data_b->qacc[0], 0.0, MjTol(1e-12, 1e-6));
+    EXPECT_NEAR(data_b->qacc[1], 0.0, MjTol(1e-12, 1e-6));
+    EXPECT_NEAR(data_b->qacc[5], 0.0, MjTol(1e-12, 1e-6));
+
+    // enabling flg_surfacevel matches geom_surfacevel exactly
+    model_b->flg_surfacevel = 1;
+    mj_forwardSkip(model_b.get(), data_b.get(), mjSTAGE_POS, 0);
+    for (int i = 0; i < data_a->nefc; i++) {
+      EXPECT_NEAR(data_b->efc_vel[i], data_a->efc_vel[i], MjTol(1e-12, 1e-6));
+    }
+    for (int i = 0; i < model_a->nv; i++) {
+      EXPECT_NEAR(data_b->qacc[i], data_a->qacc[i], MjTol(1e-11, 1e-5));
+    }
+  }
+}
+
 static const char* const kDoflessContactPath =
     "engine/testdata/core_constraint/dofless_contact.xml";
 static const char* const kDoflessTendonFrictionalPath =
@@ -741,8 +813,6 @@ TEST_F(CoreConstraintTest, StrainConstraintNoPinning) {
   <option integrator="discrete" jacobian="dense"/>
   <worldbody>
     <body name="parent">
-      <joint type="free"/>
-      <geom type="box" size=".01 .01 .01" mass=".1"/>
       <flexcomp name="test" type="box"
                 spacing=".1 .1 .1" radius="0.001"
                 pos="0 0 .5" dof="trilinear" mass="1" dim="3">
@@ -788,15 +858,19 @@ TEST_F(CoreConstraintTest, StrainConstraintNoPinning) {
   }
   EXPECT_FALSE(has_bad_jacobian) << "Jacobian has NaN";
 
-  // Test rigid rotation: rotate flex and check strain still ~0
+  // Test rigid rotation: rotate flex nodes by 45 degrees around Z axis and
+  // check strain still ~0
   std::vector<mjtNum> qpos0(m->nq);
   mju_copy(qpos0.data(), d->qpos, m->nq);
-  // Rotate by 45 degrees around Z axis via quaternion
-  mjtNum angle = 0.785398;          // 45 degrees
-  d->qpos[3] = mju_cos(angle / 2);  // w
-  d->qpos[4] = 0;                   // x
-  d->qpos[5] = 0;                   // y
-  d->qpos[6] = mju_sin(angle / 2);  // z
+  mjtNum angle = 0.785398;  // 45 degrees
+  mjtNum c = mju_cos(angle), s = mju_sin(angle);
+  for (int n = 0; n < m->nflexnode; n++) {
+    int b = m->flex_nodebodyid[n];
+    mjtNum x0 = m->body_pos[3 * b + 0];
+    mjtNum y0 = m->body_pos[3 * b + 1];
+    d->qpos[3 * n + 0] = (c * x0 - s * y0) - x0;
+    d->qpos[3 * n + 1] = (s * x0 + c * y0) - y0;
+  }
   mj_forward(m.get(), d.get());
 
   mjtNum max_strain_rotated = 0;
@@ -825,8 +899,6 @@ TEST_F(CoreConstraintTest, StrainConstraintQuadratic) {
   <option integrator="discrete" jacobian="dense"/>
   <worldbody>
     <body name="parent">
-      <joint type="free"/>
-      <geom type="box" size=".01 .01 .01" mass=".1"/>
       <flexcomp name="test" type="box"
                 spacing=".1 .1 .1" radius="0.001"
                 pos="0 0 .5" dof="quadratic" mass="1" dim="3">
@@ -956,8 +1028,6 @@ TEST_F(CoreConstraintTest, QuadraticAnisotropicStrain) {
   <worldbody>
     <geom type="plane" size="10 10 1"/>
     <body name="parent">
-      <joint type="free"/>
-      <geom type="box" size=".01 .01 .01" mass=".1"/>
       <flexcomp name="test" type="grid" count="3 3 3"
                 spacing=".1 .05 .08" radius="0.001"
                 pos="0 0 .5" dof="quadratic" mass="1" dim="3">
@@ -1160,8 +1230,6 @@ TEST_P(StrainConstraintRotatedTest, ResidualIsZero) {
     xml += "quat=\"" + param.body_quat + "\" ";
   }
   xml += R"(>
-      <joint type="free"/>
-      <geom type="box" size=".01 .01 .01" mass=".1"/>
       <flexcomp name="test" type="box" )";
 
   if (!param.flex_spacing.empty()) {
@@ -1651,6 +1719,7 @@ TEST_F(CoreConstraintTest, SparseRotationalJacobianMatchesDense) {
         <flexcomp name="flex" type="grid" count="3 3 3" spacing=".1 .1 .1" dim="3" dof="trilinear">
           <elasticity elastic2d="stretch" thickness="0.01"/>
           <contact selfcollide="none"/>
+          <pin id="0"/>
         </flexcomp>
       </body>
       <geom name="plane" type="plane" size="1 1 1" pos="0 0 -1"/>

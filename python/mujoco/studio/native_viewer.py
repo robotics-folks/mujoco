@@ -13,7 +13,7 @@
 # limitations under the License.
 """Simulation-agnostic native viewer for MuJoCo models.
 
-See the documentation for viewer_app.py for more details on the architecture
+See the documentation for app/plugins.py for more details on the architecture
 separating the viewer and simulation.
 """
 
@@ -30,8 +30,8 @@ from mujoco.studio import viewer_protocol
 from mujoco.studio import window
 import numpy as np
 
-from mujoco.experimental.dear_imgui import dear_imgui as imgui
-from mujoco.experimental.implot import implot
+from mujoco.studio.dear_imgui import dear_imgui as imgui
+from mujoco.studio.implot import implot
 
 
 class NativeViewer(viewer_protocol.Viewer):
@@ -175,6 +175,11 @@ class NativeViewer(viewer_protocol.Viewer):
         draw_mode=draw_mode,
         shadows=self.render_flags.flags[mujoco.mjtRndFlag.mjRND_SHADOW],
         reflections=self.render_flags.flags[mujoco.mjtRndFlag.mjRND_REFLECTION],
+        skybox=self.render_flags.flags[mujoco.mjtRndFlag.mjRND_SKYBOX],
+        haze=self.render_flags.flags[mujoco.mjtRndFlag.mjRND_HAZE],
+        post_processing=self.render_flags.flags[
+            mujoco.mjtRndFlag.mjRND_POST_PROCESSING
+        ],
         headlight=self.model.vis.headlight.active != 0,
         headlight_color=tuple(self.model.vis.headlight.diffuse),
         headlight_intensity=self._model_scene.get_headlight_intensity()
@@ -200,6 +205,8 @@ class NativeViewer(viewer_protocol.Viewer):
         camera=ux_camera,
         shadows=False,
         reflections=False,
+        skybox=False,
+        haze=False,
         post_processing=False,
     )
 

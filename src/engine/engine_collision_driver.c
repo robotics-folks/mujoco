@@ -241,25 +241,39 @@ static int filterSphereBox(const mjtNum s[3], mjtNum bound, const mjtNum aabb[6]
 
 // return 1 if speculative collisions are enabled
 static inline int speculativeEnabled(const mjModel* m) {
-  // TODO(kylebayes): replace m->opt.timestep < 0 with an enable flag
-  return m->opt.timestep < 0 && !mjDISABLED(mjDSBL_NATIVECCD);
+  return mjENABLED(mjENBL_SPECULATIVE) && !mjDISABLED(mjDSBL_NATIVECCD);
 }
 
-// return step sweep distance if geom g moves faster than its minimum half-thickness
-static mjtNum geomFastSweep(const mjModel* m, const mjData* d, int g,
+
+// return minimum AABB half-thickness of geom g
+static inline mjtNum geomMinSize(const mjModel* m, int g) {
+  const mjtNum* size = m->geom_aabb + 6*g + 3;
+  return mju_min(size[0], mju_min(size[1], size[2]));
+}
+
+
+// return minimum half-thickness across a geom pair
+static inline mjtNum pairMinSize(const mjModel* m, int g1, int g2) {
+  if (m->geom_type[g1] == mjGEOM_PLANE) return geomMinSize(m, g2);
+  if (m->geom_type[g2] == mjGEOM_PLANE) return geomMinSize(m, g1);
+  return mju_min(geomMinSize(m, g1), geomMinSize(m, g2));
+}
+
+
+// return step sweep distance if geom g moves faster than min_size
+static mjtNum geomStepSweep(const mjModel* m, const mjData* d, int g, mjtNum min_size,
                             mjtNum dx[3], mjtNum dw[3]) {
   if (dx) mji_zero3(dx);
   if (dw) mji_zero3(dw);
   if (g < 0 || m->geom_type[g] == mjGEOM_PLANE || !mjc_GeomSupported(m->geom_type[g])) {
     return 0;
   }
-  const mjtNum* size = m->geom_aabb + 6*g + 3;
   mjtNum dx_copy[3], dw_copy[3];
   mjtNum s = mjc_geomStepMotion(m, d, g, m->opt.timestep, dx_copy, dw_copy);
 
-  // if the geom is moving slower than its minimum half-thickness, we do not need to consider it
+  // if the geom is moving slower than min_size, we do not need to consider it
   // for continuous collision detection
-  if (s < mju_min(size[0], mju_min(size[1], size[2]))) {
+  if (s < min_size) {
     return 0;
   }
 
@@ -269,15 +283,33 @@ static mjtNum geomFastSweep(const mjModel* m, const mjData* d, int g,
 }
 
 
-// return 1 if body b has any geom moving faster than its minimum half-thickness
-static int bodyHasFastGeom(const mjModel* m, const mjData* d, int b) {
-  if (b <= 0 || b >= m->nbody) {
+// return 1 if any geom in body pair (b1, b2) sweeps past the pair's minimum geom half-thickness
+static int bodyPairHasFastGeom(const mjModel* m, const mjData* d, int b1, int b2) {
+  int adr1 = m->body_geomadr[b1], num1 = m->body_geomnum[b1];
+  int adr2 = m->body_geomadr[b2], num2 = m->body_geomnum[b2];
+  mjtNum min_size = mjMAXVAL;
+  for (int i = 0; i < num1; i++) {
+    int g = adr1 + i;
+    if (m->geom_type[g] != mjGEOM_PLANE && mjc_GeomSupported(m->geom_type[g])) {
+      min_size = mju_min(min_size, geomMinSize(m, g));
+    }
+  }
+  for (int i = 0; i < num2; i++) {
+    int g = adr2 + i;
+    if (m->geom_type[g] != mjGEOM_PLANE && mjc_GeomSupported(m->geom_type[g])) {
+      min_size = mju_min(min_size, geomMinSize(m, g));
+    }
+  }
+  if (min_size >= mjMAXVAL) {
     return 0;
   }
-  int adr = m->body_geomadr[b];
-  int num = m->body_geomnum[b];
-  for (int i = 0; i < num; i++) {
-    if (geomFastSweep(m, d, adr + i, NULL, NULL) > 0) {
+  for (int i = 0; i < num1; i++) {
+    if (geomStepSweep(m, d, adr1 + i, min_size, NULL, NULL) > 0) {
+      return 1;
+    }
+  }
+  for (int i = 0; i < num2; i++) {
+    if (geomStepSweep(m, d, adr2 + i, min_size, NULL, NULL) > 0) {
       return 1;
     }
   }
@@ -292,8 +324,9 @@ static int mj_filterSphere(const mjModel* m, mjData* d, int g1, int g2, mjtNum m
 
   // if speculative collisions are enabled, compute the step sweep distance for each geom
   if (speculativeEnabled(m)) {
-    s1 = geomFastSweep(m, d, g1, dx1, NULL);
-    s2 = geomFastSweep(m, d, g2, dx2, NULL);
+    mjtNum min_size = pairMinSize(m, g1, g2);
+    s1 = geomStepSweep(m, d, g1, min_size, dx1, NULL);
+    s2 = geomStepSweep(m, d, g2, min_size, dx2, NULL);
   }
 
   // neither geom is a plane
@@ -796,7 +829,7 @@ void mj_collision(const mjModel* m, mjData* d) {
     // process bodyflex pair: midphase
     else if (!mjDISABLED(mjDSBL_MIDPHASE) && bvh1 >= 0 && bvh2 >= 0 &&
              !(speculativeEnabled(m) && isbody1 && isbody2 &&
-               (bodyHasFastGeom(m, d, bf1) || bodyHasFastGeom(m, d, bf2)))) {
+               bodyPairHasFastGeom(m, d, bf1, bf2))) {
       // filter groups for reducible flexes: one per geom for body:flex, one for flex:flex
       int group = -1;
       if (isbody1 && !isbody2) {
@@ -1377,7 +1410,7 @@ static void makeAAMM(const mjModel* m, mjData* d,
       mji_transpose3(axis, xmat);
       mjtNum r_half = m->geom_rbound[geom];
       mjtNum dx[3], dw[3];
-      mjtNum s = speculativeEnabled(m) ? geomFastSweep(m, d, geom, dx, dw) : 0;
+      mjtNum s = speculativeEnabled(m) ? geomStepSweep(m, d, geom, 0, dx, dw) : 0;
       mjtNum s_rot = s > 0 ? mju_norm3(dw) * r_half : 0;
 
       for (int j=0; j < 3; j++) {
@@ -1843,7 +1876,7 @@ static int mj_broadphase(const mjModel* m, mjData* d, mjPacked32* bfpair, int ma
 
 
 // set contact parameters
-static void mj_setContact(const mjModel* m, mjContact* con,
+static void mj_setContact(const mjModel* m, const mjData* d, mjContact* con,
                           int condim, mjtNum includemargin,
                           const mjtNum* solref, const mjtNum* solreffriction,
                           const mjtNum* solimp, const mjtNum* friction,
@@ -1871,6 +1904,39 @@ static void mj_setContact(const mjModel* m, mjContact* con,
 
   // complete frame
   mju_makeFrame(con->frame);
+
+  // compute relative surface velocity in contact frame: (tangent1, tangent2, spin)
+  mji_zero3(con->surfacevel);
+  if (m->flg_surfacevel) {
+    mjtNum svel[3] = {0, 0, 0}, sang[3] = {0, 0, 0};
+    int active = 0;
+    for (int side=0; side < 2; side++) {
+      int g = con->geom[side];
+      if (g < 0) {
+        // TODO(team): support flex
+        continue;
+      }
+      const mjtNum* sv = m->geom_surfacevel + 6*g;
+
+      // skip geom with no surface velocity
+      if (!sv[0] && !sv[1] && !sv[2] && !sv[3] && !sv[4] && !sv[5]) {
+        continue;
+      }
+      active = 1;
+
+      // rotate to world frame, add angular contribution at contact point
+      mjtNum sgn = side ? 1 : -1;
+      mjtNum vw[3], ww[3];
+      mj_geomSurfaceVelocity(m, d, g, con->pos, vw, ww);
+      mji_addToScl3(svel, vw, sgn);
+      mji_addToScl3(sang, ww, sgn);
+    }
+    if (active) {
+      con->surfacevel[0] = mju_dot3(con->frame + 3, svel);
+      con->surfacevel[1] = mju_dot3(con->frame + 6, svel);
+      con->surfacevel[2] = mju_dot3(con->frame + 0, sang);
+    }
+  }
 
   // clear fields that are computed later
   con->efc_address = -1;
@@ -1977,8 +2043,9 @@ static void collisionTask(const mjModel* m, mjData* d, void* arg, int thread_id,
               break;
             }
           }
-          if (!active && (geomFastSweep(m, d, g1, NULL, NULL) > 0 ||
-                          geomFastSweep(m, d, g2, NULL, NULL) > 0)) {
+          mjtNum min_size = pairMinSize(m, g1, g2);
+          if (!active && (geomStepSweep(m, d, g1, min_size, NULL, NULL) > 0 ||
+                          geomStepSweep(m, d, g2, min_size, NULL, NULL) > 0)) {
             int nccd = mjc_advanceGeomPair(m, d, g1, g2, margin, conbuffer + conpos,
                                            epabuffer + thread_id * conargs->ccd_size);
             if (nccd > 0) {
@@ -2132,7 +2199,7 @@ static void addPairContacts(const mjModel* m, mjData* d, const mjPreContact* pre
     con[i].vert[0] = v1;
     con[i].vert[1] = vert ? vert[i] : v2;
 
-    mj_setContact(m, con + i, condim, margin, solref, solreffriction, solimp, friction,
+    mj_setContact(m, d, con + i, condim, margin, solref, solreffriction, solimp, friction,
                   adhesion, spec);
   }
 }

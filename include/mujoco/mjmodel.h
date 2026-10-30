@@ -324,6 +324,7 @@ typedef struct mjModel_ {
   mjtSize nuser_sensor;           // number of mjtNums in sensor_user
   mjtSize nnames;                 // number of chars in all names
   mjtSize npaths;                 // number of chars in all paths
+  mjtSize nplastic;               // number of mjtNums in plastic state vector
 
   // sizes set after mjModel construction
   mjtSize nnames_map;             // number of slots in the names hash map
@@ -414,6 +415,7 @@ typedef struct mjModel_ {
   int*      jnt_bodyid;           // id of joint's body                       (njnt x 1)
   int*      jnt_actuatorid;       // actuator contributing damping / armature (njnt x 1)
   int*      jnt_group;            // group for visibility                     (njnt x 1)
+  int*      jnt_plasticadr;       // start addr in plastic state (-1: none)   (njnt x 1)
   mjtBool*  jnt_limited;          // does joint have limits                   (njnt x 1)
   mjtBool*  jnt_actfrclimited;    // does joint have actuator force limits    (njnt x 1)
   mjtBool*  jnt_actgravcomp;      // is gravcomp force applied via actuators  (njnt x 1)
@@ -423,6 +425,7 @@ typedef struct mjModel_ {
   mjtNum*   jnt_axis;             // local joint axis                         (njnt x 3)
   mjtNum*   jnt_stiffness;        // linear stiffness coefficient             (njnt x 1)
   mjtNum*   jnt_stiffnesspoly;    // high-order stiffness coefficients        (njnt x mjNPOLY)
+  mjtNum*   jnt_springyield;      // plastic yield threshold                  (njnt x 1)
   mjtNum*   jnt_range;            // joint limits                             (njnt x 2)
   mjtNum*   jnt_actfrcrange;      // range of total actuator force            (njnt x 2)
   mjtNum*   jnt_margin;           // min distance for limit detection         (njnt x 1)
@@ -464,6 +467,7 @@ typedef struct mjModel_ {
   int*      geom_priority;        // geom contact priority                    (ngeom x 1)
   int*      geom_plugin;          // plugin instance id; -1: not in use       (ngeom x 1)
   mjtByte*  geom_sameframe;       // same frame as body (mjtSameframe)        (ngeom x 1)
+  mjtBool*  geom_castshadow;      // does geom cast shadows                   (ngeom x 1)
   mjtNum*   geom_solmix;          // mixing coef for solref/imp in geom pair  (ngeom x 1)
   mjtNum*   geom_solref;          // constraint solver reference: contact     (ngeom x mjNREF)
   mjtNum*   geom_solimp;          // constraint solver impedance: contact     (ngeom x mjNIMP)
@@ -569,6 +573,7 @@ typedef struct mjModel_ {
   int*      flex_stiffnessadr;    // stiffness matrix address                 (nflex x 1)
   int*      flex_elemedgeadr;     // first element edge id address            (nflex x 1)
   int*      flex_bendingadr;      // first bending data address               (nflex x 1)
+  int*      flex_plasticadr;      // plastic state address; -1: elastic       (nflex x 1)
   int*      flex_shellnum;        // number of shells                         (nflex x 1)
   int*      flex_shelldataadr;    // first shell data address                 (nflex x 1)
   int*      flex_texcoordadr;     // address in flex_texcoord; -1: none       (nflex x 1)
@@ -599,6 +604,7 @@ typedef struct mjModel_ {
   mjtNum*   efm0_L;               // factor of M + (dt^2+dt*d)*K_bend         (nefm0L x 1)
   int*      efmC_perm;            // sparse factor order: vertex dof or -1    (nefmCvert x 1)
   mjtNum*   flex_damping;         // Rayleigh's damping coefficient           (nflex x 1)
+  mjtNum*   flex_yield;           // yield strain threshold; 0: elastic       (nflex x 1)
   mjtNum*   flex_edgestiffness;   // edge stiffness                           (nflex x 1)
   mjtNum*   flex_edgedamping;     // edge damping                             (nflex x 1)
   int*      flex_edgeequality;    // 0:none, 1:edges, 3:strain                (nflex x 1)
@@ -732,11 +738,13 @@ typedef struct mjModel_ {
   mjtNum*   eq_data;              // numeric data for constraint              (neq x mjNEQDATA)
 
   // tendons
+  int*      tendon_type;          // type of tendon (mjtTendon)               (ntendon x 1)
   int*      tendon_adr;           // address of first object in tendon's path (ntendon x 1)
   int*      tendon_num;           // number of objects in tendon's path       (ntendon x 1)
   int*      tendon_matid;         // material id for rendering                (ntendon x 1)
   int*      tendon_actuatorid;    // actuator contributing damping / armature (ntendon x 1)
   int*      tendon_group;         // group for visibility                     (ntendon x 1)
+  int*      tendon_plasticadr;    // start addr in plastic state (-1: none)   (ntendon x 1)
   int*      tendon_treenum;       // number of trees along tendon's path      (ntendon x 1)
   int*      tendon_treeid;        // first two trees along tendon's path      (ntendon x 2)
   int*      ten_J_rownnz;         // number of non-zeros in Jacobian row      (ntendon x 1)
@@ -759,6 +767,7 @@ typedef struct mjModel_ {
   mjtNum*   tendon_armature;      // inertia associated with tendon velocity  (ntendon x 1)
   mjtNum*   tendon_frictionloss;  // loss due to friction                     (ntendon x 1)
   mjtNum*   tendon_lengthspring;  // spring resting length range              (ntendon x 2)
+  mjtNum*   tendon_springyield;   // plastic yield threshold                  (ntendon x 1)
   mjtNum*   tendon_length0;       // tendon length in qpos0                   (ntendon x 1)
   mjtNum*   tendon_invweight0;    // inv. weight in qpos0                     (ntendon x 1)
   mjtNum*   tendon_user;          // user data                                (ntendon x nuser_tendon)
@@ -859,6 +868,7 @@ typedef struct mjModel_ {
   mjtNum*   key_mpos;             // key mocap position                       (nkey x nmocap*3)
   mjtNum*   key_mquat;            // key mocap quaternion                     (nkey x nmocap*4)
   mjtNum*   key_ctrl;             // key control                              (nkey x nu)
+  mjtNum*   key_plastic;          // key plastic state                        (nkey x nplastic)
 
   // names
   int*      name_bodyadr;         // body name pointers                       (nbody x 1)

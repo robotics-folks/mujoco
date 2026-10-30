@@ -20,70 +20,52 @@ endif()
 set(STUDIO_COMMON_LIBS
   mujoco::platform
   structs_header
-  structs_wrappers
   _render_filament_header
 )
 
-mujoco_pybind11_module(native_viewer_cc native_viewer.cc)
-target_link_libraries(native_viewer_cc PRIVATE ${STUDIO_COMMON_LIBS})
-
-mujoco_pybind11_module(ux ux.cc)
-target_link_libraries(ux PRIVATE ${STUDIO_COMMON_LIBS})
-
-mujoco_pybind11_module(sim sim.cc)
-target_link_libraries(sim PRIVATE ${STUDIO_COMMON_LIBS})
-
-mujoco_pybind11_module(window window.cc)
-target_link_libraries(window PRIVATE ${STUDIO_COMMON_LIBS})
+mujoco_pybind11_module(_studio
+  studio.cc
+  native_viewer.cc
+  ux.cc
+  sim.cc
+  window.cc
+)
+target_compile_definitions(_studio PRIVATE MUJOCO_STUDIO_COMBINED_MODULE)
+target_link_libraries(_studio PRIVATE ${STUDIO_COMMON_LIBS})
 
 add_subdirectory(web)
 
 set(MUJOCO_STUDIO_TARGETS
-    native_viewer_cc
-    ux
-    sim
-    window
-    ${MUJOCO_WEB_VIEWER_TARGETS}
+    _studio
     PARENT_SCOPE
 )
 
 # dear_imgui bindings
-mujoco_pybind11_module(dear_imgui ../experimental/dear_imgui/dear_imgui.cc)
+mujoco_pybind11_module(dear_imgui dear_imgui/dear_imgui.cc)
 target_link_libraries(dear_imgui PRIVATE
   mujoco::dep::dear_imgui
   mujoco::dep::dear_imgui_stdlib
 )
-target_include_directories(dear_imgui PRIVATE ../experimental/dear_imgui)
+target_include_directories(dear_imgui PRIVATE dear_imgui)
 set_target_properties(dear_imgui PROPERTIES
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/../experimental/dear_imgui"
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/dear_imgui"
 )
 
 # implot bindings
-mujoco_pybind11_module(implot ../experimental/implot/implot.cc)
+mujoco_pybind11_module(implot implot/implot.cc)
 target_link_libraries(implot PRIVATE
   mujoco::dep::implot
   mujoco::dep::dear_imgui
 )
-target_include_directories(implot PRIVATE ../experimental/dear_imgui)
+target_include_directories(implot PRIVATE dear_imgui)
 set_target_properties(implot PROPERTIES
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/../experimental/implot"
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/implot"
 )
 
 # Workaround for duplicate symbol error (wp_fractional_scale_manager_v1_interface)
 # when linking both GLFW (via Filament) and SDL2 statically on Linux.
 if(UNIX AND NOT APPLE)
-  set(STUDIO_PY_MODULES
-      native_viewer_cc
-      ux
-      sim
-      window
-      headless_ui
-  )
-  foreach(target ${STUDIO_PY_MODULES})
-    if(TARGET ${target})
-      target_link_options(${target} PRIVATE "-Wl,--allow-multiple-definition")
-    endif()
-  endforeach()
+  target_link_options(_studio PRIVATE "-Wl,--allow-multiple-definition")
 endif()
 
 if(APPLE)
@@ -93,26 +75,10 @@ if(APPLE)
   # gives every module it creates exactly one: @loader_path. That is correct for
   # the modules at the mujoco/ package root, which sit next to libmujoco, and
   # wrong for these, which are installed below it -- in
-  # mujoco/studio/, mujoco/experimental/dear_imgui/ and so on --
+  # mujoco/studio/, mujoco/studio/dear_imgui/ and so on --
   # while libmujoco stays at the root. So append the hop back up to the root.
-  #
-  # Append to BUILD_RPATH rather than calling install_name_tool from an
-  # add_custom_command(TARGET ...) POST_BUILD hook the way
-  # mujoco_pybind11_module does: that form only accepts targets created in the
-  # same directory, which excludes the web/ modules below.
-  foreach(target native_viewer_cc ux sim window)
-    set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH "@loader_path/..")
-  endforeach()
+  set_property(TARGET _studio APPEND PROPERTY BUILD_RPATH "@loader_path/..")
   foreach(target dear_imgui implot)
-    set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH "@loader_path/../..")
-  endforeach()
-
-  # One @loader_path level deeper: these are installed in
-  # mujoco/studio/web/. web/CMakeLists.txt sets this list only on
-  # the branch that builds the two modules natively, and leaves it unset under
-  # Emscripten and when implot or netimgui are missing, so the foreach doubles
-  # as the check for whether they exist.
-  foreach(target ${MUJOCO_WEB_VIEWER_TARGETS})
     set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH "@loader_path/../..")
   endforeach()
 endif()

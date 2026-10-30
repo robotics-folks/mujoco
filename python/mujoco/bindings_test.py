@@ -498,6 +498,40 @@ class MuJoCoBindingsTest(parameterized.TestCase):
     self.assertIn('xpos:', view_repr)
     self.assertEndsWith(view_repr, '>')
 
+  def test_named_indexing_plastic(self):
+    model = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="slide" type="slide" stiffness="10" springref="0.2" springyield="0.1"/>
+          <geom size=".1"/>
+        </body>
+        <body>
+          <joint name="elastic" type="hinge"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed name="t_plastic" stiffness="20" springlength="0.1 0.3" springyield="0.05">
+          <joint joint="slide" coef="1"/>
+        </fixed>
+      </tendon>
+      <keyframe>
+        <key name="k0" plastic="0.25 0.15 0.35"/>
+      </keyframe>
+    </mujoco>
+    """)
+    data = mujoco.MjData(model)
+    self.assertEqual(model.jnt('slide').plasticadr[0], 0)
+    np.testing.assert_allclose(model.jnt('slide').springyield, [0.1])
+    self.assertEqual(model.jnt('elastic').plasticadr[0], -1)
+    self.assertEqual(data.jnt('elastic').plastic.shape, (0,))
+    np.testing.assert_allclose(data.jnt('slide').plastic, [0.2])
+    self.assertEqual(model.tendon('t_plastic').plasticadr[0], 1)
+    np.testing.assert_allclose(model.tendon('t_plastic').springyield, [0.05])
+    np.testing.assert_allclose(data.tendon('t_plastic').plastic, [0.1, 0.3])
+    np.testing.assert_allclose(model.key('k0').plastic, [0.25, 0.15, 0.35])
+
   def test_named_indexing_body_repr_in_data(self):
     view_repr = repr(self.data.body('mybox'))
     self.assertStartsWith(view_repr, '<_MjDataBodyViews')
@@ -861,6 +895,17 @@ class MuJoCoBindingsTest(parameterized.TestCase):
       contact.friction = expected_friction[-1]
     self.assertLen(expected_friction, expected_ncon)
     np.testing.assert_array_equal(self.data.contact.friction, expected_friction)
+
+    expected_surfacevel = []
+    for contact in self.data.contact:
+      expected_surfacevel.append(
+          np.array(np.random.uniform(size=3), dtype=DTYPE)
+      )
+      contact.surfacevel = expected_surfacevel[-1]
+    self.assertLen(expected_surfacevel, expected_ncon)
+    np.testing.assert_array_equal(
+        self.data.contact.surfacevel, expected_surfacevel
+    )
 
     expected_H = []  # pylint: disable=invalid-name
     for contact in self.data.contact:
@@ -1406,7 +1451,7 @@ Euler integrator, semi-implicit in velocity.
     self.assertEqual(mujoco.mjtEnableBit.mjENBL_OVERRIDE, 1 << 0)
     self.assertEqual(mujoco.mjtEnableBit.mjENBL_ENERGY, 1 << 1)
     self.assertEqual(mujoco.mjtEnableBit.mjENBL_FWDINV, 1 << 2)
-    self.assertEqual(mujoco.mjtEnableBit.mjNENABLE, 7)
+    self.assertEqual(mujoco.mjtEnableBit.mjNENABLE, 8)
     self.assertEqual(mujoco.mjtGeom.mjGEOM_PLANE, 0)
     self.assertEqual(mujoco.mjtGeom.mjGEOM_HFIELD, 1)
     self.assertEqual(mujoco.mjtGeom.mjGEOM_SPHERE, 2)

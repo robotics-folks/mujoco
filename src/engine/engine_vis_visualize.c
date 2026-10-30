@@ -73,7 +73,7 @@ static void makeLabel(const mjModel* m, mjtObj type, int id, char* label) {
 
 
 // convert HSV to RGB
-void hsv2rgb(float *RGB, float H, float S, float V) {
+void mjv_hsv2rgb(float *RGB, float H, float S, float V) {
   float R, G, B;
 
   if (S <= 0) {
@@ -131,7 +131,7 @@ static void islandColor(float rgba[4], int h, int awake) {
     saturation *= 0.7;
   }
 
-  hsv2rgb(rgba, hue, saturation, value);
+  mjv_hsv2rgb(rgba, hue, saturation, value);
   rgba[3] = 1;
 }
 
@@ -392,6 +392,7 @@ void mjv_initGeom(mjvGeom* geom, int type, const mjtNum* size,
   geom->specular     = 0.5;
   geom->shininess    = 0.5;
   geom->reflectance  = 0;
+  geom->castshadow   = 1;
   geom->label[0]     = 0;
   geom->modelrbound  = 0;
 }
@@ -681,44 +682,43 @@ static void addContactGeoms(const mjModel* m, mjData* d, const mjvOption* vopt, 
       f2f(contactrgba, thisgeom->rgba, 4);
       releaseGeom(&thisgeom, scn);
 
-      // surface velocity: one arrow per moving surface, pointing along the
-      // tangential material velocity at the contact point
-      const mjtNum kVelocityMap = 0.5;  // units of time: arrow length = velocity * kVelocityMap
-      for (int side=0; side < 2; side++) {
-        int g = con->geom[side];
-        if (g < 0) {
-          // TODO(team): support flex
-          continue;
-        }
-        const mjtNum* sv = m->geom_surfacevel + 6*g;
-        if (!sv[0] && !sv[1] && !sv[2] && !sv[3] && !sv[4] && !sv[5]) {
-          continue;
-        }
+      // surface velocity: relative to static side, or symmetric if both move
+      if (efc_adr >= 0 && con->dim > 1 && (con->surfacevel[0] || con->surfacevel[1])) {
+        const mjtNum kVelocityMap = 0.5;  // units of time: arrow length = velocity * kVelocityMap
+        mjtNum vw[3];
+        mju_scl3(vw, con->frame + 3, -con->surfacevel[0]);
+        mju_addToScl3(vw, con->frame + 6, -con->surfacevel[1]);
+        if (mju_norm3(vw) >= mjMINVAL) {
+          int movable[2] = {0, 0};
+          for (int k=0; k < 2; k++) {
+            if (con->geom[k] >= 0) {
+              movable[k] = (m->body_treeid[m->geom_bodyid[con->geom[k]]] >= 0);
+            } else {
+              int body[729];
+              int nb = mj_contactBodyWeight(m, d, con, k, body, NULL);
+              for (int j=0; j < nb; j++) {
+                if (m->body_treeid[body[j]] >= 0) {
+                  movable[k] = 1;
+                  break;
+                }
+              }
+            }
+          }
+          if (movable[0] && !movable[1]) {
+            mju_scl3(vw, vw, -1);
+          }
 
-        // material velocity at the contact point, world frame
-        mjtNum vw[3], ww[3];
-        mj_geomSurfaceVelocity(m, d, g, con->pos, vw, ww);
-
-        // project out the normal component: only the tangential part acts
-        mjtNum vn = mju_dot3(vw, con->frame);
-        mju_addToScl3(vw, con->frame, -vn);
-        if (mju_norm3(vw) < mjMINVAL) {
-          continue;
+          mjtNum to[3];
+          mju_addScl3(to, con->pos, vw, kVelocityMap);
+          thisgeom = acquireGeom(scn, i, category, objtype);
+          if (!thisgeom) {
+            return;
+          }
+          int arrow = (movable[0] == movable[1]) ? mjGEOM_ARROW2 : mjGEOM_ARROW;
+          mjv_connector(thisgeom, arrow, m->vis.scale.forcewidth * scl, con->pos, to);
+          f2f(thisgeom->rgba, contactrgba, 4);
+          releaseGeom(&thisgeom, scn);
         }
-
-        // anchor slightly off the contact point on the owning geom's side
-        mjtNum from[3], to[3];
-        mjtNum offset = (side ? 1 : -1) * 0.5 * m->vis.scale.forcewidth * scl;
-        mju_addScl3(from, con->pos, con->frame, offset);
-        mju_addScl3(to, from, vw, kVelocityMap);
-
-        thisgeom = acquireGeom(scn, i, category, objtype);
-        if (!thisgeom) {
-          return;
-        }
-        mjv_connector(thisgeom, mjGEOM_ARROW, m->vis.scale.forcewidth * scl, from, to);
-        f2f(thisgeom->rgba, contactrgba, 4);
-        releaseGeom(&thisgeom, scn);
       }
     }
 
@@ -1092,8 +1092,9 @@ static void addGeomGeoms(const mjModel* m, mjData* d, const mjvOption* vopt,
                   d->geom_xpos+3*i, d->geom_xmat+9*i, NULL);
     thisgeom->dataid = m->geom_dataid[i];
 
-    // copy rbound from model
+    // copy rbound and castshadow from model
     thisgeom->modelrbound = (float)m->geom_rbound[i];
+    thisgeom->castshadow = m->geom_castshadow[i];
 
     // set material properties
     float* rgba = m->geom_rgba+4*i;
@@ -1286,12 +1287,15 @@ static void addSiteGeoms(const mjModel* m, mjData* d, const mjvOption* vopt,
 int mjv_isCatenary(const mjModel* m, const mjData* d, int i, mjtNum* length) {
   int has_stiffness = m->tendon_stiffness[i] ||
                       !mju_isZero(m->tendon_stiffnesspoly+mjNPOLY*i, mjNPOLY);
+  const mjtNum* lengthspring = m->tendon_plasticadr[i] >= 0 ?
+                               d->plastic + m->tendon_plasticadr[i] :
+                               m->tendon_lengthspring + 2*i;
 
   // tendon has a deadband spring
   int limitedspring =
     has_stiffness                         &&    // positive stiffness
-    m->tendon_lengthspring[2*i] == 0      &&    // range lower-bound is 0
-    m->tendon_lengthspring[2*i+1] > 0;          // range upper-bound is positive
+    lengthspring[0] == 0                  &&    // range lower-bound is 0
+    lengthspring[1] > 0;                        // range upper-bound is positive
 
   // tendon has a simple length constraint, but is currently not limited
   mjtNum ten_length = d->ten_length[i];
@@ -1329,7 +1333,7 @@ int mjv_isCatenary(const mjModel* m, const mjData* d, int i, mjtNum* length) {
     if (limitedconstraint) {
       *length = m->tendon_range[2*i+1];
     } else {
-      *length = m->tendon_lengthspring[2*i+1];
+      *length = lengthspring[1];
     }
   }
 

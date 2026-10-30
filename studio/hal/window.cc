@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -24,6 +25,7 @@
 #include <SDL_events.h>
 #include <SDL_hints.h>
 #include <SDL_render.h>
+#include <SDL_stdinc.h>
 #include <SDL_surface.h>
 #include <SDL_syswm.h>
 #include <SDL_version.h>
@@ -31,13 +33,12 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <imgui.h>
 #include <mujoco/mujoco.h>
-#include "user/user_resource.h"
 #include "studio/hal/graphics_mode.h"
 #include "studio/ux/fonts.h"
 
 // Because X11/Xlib.h defines Status.
 #ifdef Status
-#undef Status
+  #undef Status
 #endif
 
 #if defined(__APPLE__)
@@ -45,8 +46,9 @@ extern void* GetNativeWindowOsx(void* window);
 #endif
 
 #if defined(__EMSCRIPTEN__)
-#include <emscripten/em_js.h>
+  #include <emscripten/em_js.h>
 
+// clang-format off
 EM_JS(bool, PlatformIsApple, (), {
   if (typeof navigator === "undefined") {
     return false;
@@ -59,12 +61,12 @@ EM_JS(bool, PlatformIsApple, (), {
   }
   return /Macintosh|Mac OS X/i.test(navigator.userAgent || "");
 });
+// clang-format on
 #endif
 
 namespace mujoco::studio {
 
-static void InitImGui(SDL_Window* window, float content_scale,
-                      bool load_fonts) {
+static void InitImGui(SDL_Window* window, float content_scale, bool load_fonts) {
   ImGui::CreateContext();
 
   ImGuiIO& io = ImGui::GetIO();
@@ -132,13 +134,11 @@ Window::Window(std::string_view title, int width, int height, Config config)
     mju_error("Unsupported window config: %d", config_.gfx_mode);
   }
 
-  const float content_scale =
-      std::max(1.0f, ImGui_ImplSDL2_GetContentScaleForDisplay(0));
+  const float content_scale = std::max(1.0f, ImGui_ImplSDL2_GetContentScaleForDisplay(0));
   width_ = width * content_scale;
   height_ = height * content_scale;
-  sdl_window_ =
-      SDL_CreateWindow(title.data(), SDL_WINDOWPOS_UNDEFINED,
-                       SDL_WINDOWPOS_UNDEFINED, width_, height_, window_flags);
+  sdl_window_ = SDL_CreateWindow(title.data(), SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                                 width_, height_, window_flags);
   if (!sdl_window_) {
     mju_error("Error creating window: %s", SDL_GetError());
   }
@@ -168,8 +168,7 @@ Window::Window(std::string_view title, int width, int height, Config config)
 #elif defined(__WIN32__)
     native_window_ = reinterpret_cast<void*>(wmi.info.win.window);
 #elif defined(__APPLE__)
-    native_window_ =
-        GetNativeWindowOsx(reinterpret_cast<void*>(wmi.info.cocoa.window));
+    native_window_ = GetNativeWindowOsx(reinterpret_cast<void*>(wmi.info.cocoa.window));
 #endif
   }
 
@@ -181,18 +180,18 @@ Window::Window(std::string_view title, int width, int height, Config config)
 
 Window::~Window() {
   ImGui_ImplSDL2_Shutdown();
+  if (ImGui::GetCurrentContext() != nullptr) {
+    ImGui::DestroyContext(nullptr);
+  }
   SDL_DestroyWindow(sdl_window_);
   SDL_Quit();
 }
 
-void Window::SetTitle(std::string_view title) {
-  SDL_SetWindowTitle(sdl_window_, title.data());
-}
+void Window::SetTitle(std::string_view title) { SDL_SetWindowTitle(sdl_window_, title.data()); }
 
 void Window::Resize(int width, int height) {
   SDL_SetWindowSize(sdl_window_, width, height);
-  SDL_SetWindowPosition(sdl_window_, SDL_WINDOWPOS_CENTERED,
-                        SDL_WINDOWPOS_CENTERED);
+  SDL_SetWindowPosition(sdl_window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 
   SDL_GetWindowSize(sdl_window_, &width_, &height_);
   int drawable_width = width_;
@@ -201,12 +200,8 @@ void Window::Resize(int width, int height) {
   scale_ = (float)drawable_width / (float)width_;
 }
 
-void Window::DisableWindowResizing() {
-  SDL_SetWindowResizable(sdl_window_, SDL_FALSE);
-}
-void Window::EnableWindowResizing() {
-  SDL_SetWindowResizable(sdl_window_, SDL_TRUE);
-}
+void Window::DisableWindowResizing() { SDL_SetWindowResizable(sdl_window_, SDL_FALSE); }
+void Window::EnableWindowResizing() { SDL_SetWindowResizable(sdl_window_, SDL_TRUE); }
 
 std::string Window::GetDropFile() {
   std::string tmp;
@@ -258,13 +253,11 @@ void Window::Present(std::span<const std::byte> pixels) {
   // buffer of size width_ * height_ * 3.
   if (IsHeadless(config_.gfx_mode)) {
     if (pixels.size() != width_ * height_ * 3) {
-      mju_error("Offscreen mode expects RGB buffer of size %d",
-                width_ * height_ * 3);
+      mju_error("Offscreen mode expects RGB buffer of size %d", width_ * height_ * 3);
     }
 
     SDL_Surface* surface = SDL_GetWindowSurface(sdl_window_);
-    const unsigned char* src =
-        reinterpret_cast<const unsigned char*>(pixels.data());
+    const unsigned char* src = reinterpret_cast<const unsigned char*>(pixels.data());
     unsigned char* dst = static_cast<unsigned char*>(surface->pixels);
 
     for (int i = 0; i < height_; ++i) {

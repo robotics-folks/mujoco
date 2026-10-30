@@ -336,6 +336,8 @@
      - :math:`Q`
    * - :ref:`body/joint/springref<body-joint-springref>`
      - :math:`Q`
+   * - :ref:`body/joint/springyield<body-joint-springyield>`
+     - :math:`Q`
    * - :ref:`body/joint/armature<body-joint-armature>`
      - :math:`F\,T^{2}\,Q^{-1}`
    * - :ref:`body/joint/damping<body-joint-damping>`
@@ -574,6 +576,8 @@
      - :math:`T`
    * - :ref:`flexcomp/elasticity/thickness<flexcomp-elasticity-thickness>`
      - :math:`L`
+   * - :ref:`flexcomp/elasticity/yield<flexcomp-elasticity-yield>`
+     - :math:`1`
    * - :ref:`flexcomp/elasticity/sectionsize<flexcomp-elasticity-sectionsize>`
      - :math:`L`
    * - :ref:`flexcomp/contact/friction<flexcomp-contact-friction>`
@@ -640,6 +644,8 @@
      - :math:`F`
    * - :ref:`tendon/spatial/springlength<tendon-spatial-springlength>`
      - :math:`Q`
+   * - :ref:`tendon/spatial/springyield<tendon-spatial-springyield>`
+     - :math:`Q`
    * - :ref:`tendon/spatial/width<tendon-spatial-width>`
      - :math:`L`
    * - :ref:`tendon/spatial/margin<tendon-spatial-margin>`
@@ -671,6 +677,8 @@
    * - :ref:`tendon/fixed/frictionloss<tendon-fixed-frictionloss>`
      - :math:`F`
    * - :ref:`tendon/fixed/springlength<tendon-fixed-springlength>`
+     - :math:`Q`
+   * - :ref:`tendon/fixed/springyield<tendon-fixed-springyield>`
      - :math:`Q`
    * - :ref:`tendon/fixed/margin<tendon-fixed-margin>`
      - :math:`Q`
@@ -1545,4 +1553,6 @@
    * - :ref:`keyframe/key/mquat<keyframe-key-mquat>`
      - :math:`1`
    * - :ref:`keyframe/key/ctrl<keyframe-key-ctrl>`
+     - *varies*
+   * - :ref:`keyframe/key/plastic<keyframe-key-plastic>`
      - *varies*

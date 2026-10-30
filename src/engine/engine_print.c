@@ -729,6 +729,7 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
   (void)na;
   (void)nu;
   (void)nmocap;
+  (void)nplastic;
 
   const mjtSize* object_class;
 
@@ -1146,6 +1147,58 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
       fprintf(fp, "\n");
     }
 
+    // check plastic for difference
+    if (m->nplastic) {
+      for (int j=0; j < m->njnt; j++) {
+        if (m->jnt_plasticadr[j] >= 0) {
+          int adr = m->jnt_plasticadr[j];
+          int qposadr = m->jnt_qposadr[j];
+          int jnt_nq = m->jnt_type[j] == mjJNT_BALL ? 4 : 1;
+          for (int d=0; d < jnt_nq; d++) {
+            if (m->qpos_spring[qposadr + d] != m->key_plastic[i*m->nplastic + adr + d]) {
+              k = 7;
+              break;
+            }
+          }
+          if (k == 7) break;
+        }
+      }
+      for (int j=0; j < m->ntendon && k != 7; j++) {
+        if (m->tendon_plasticadr[j] >= 0) {
+          int adr = m->tendon_plasticadr[j];
+          if (m->tendon_lengthspring[2*j] != m->key_plastic[i*m->nplastic + adr] ||
+              m->tendon_lengthspring[2*j+1] != m->key_plastic[i*m->nplastic + adr + 1]) {
+            k = 7;
+            break;
+          }
+        }
+      }
+      for (int j=0; j < m->nflex && k != 7; j++) {
+        if (m->flex_plasticadr[j] >= 0) {
+          int adr = m->flex_plasticadr[j];
+          int pnum = 0;
+          if (m->flex_stiffnessadr[j] >= 0 && m->flex_stiffness[m->flex_stiffnessadr[j]] != 0) {
+            pnum += ((m->flex_dim[j] == 2) ? 3 : 6) * m->flex_elemnum[j];
+          }
+          for (int d=0; d < pnum; d++) {
+            if (m->key_plastic[i*m->nplastic + adr + d] != 0) {
+              k = 7;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // print if different
+    if (k == 7) {
+      fprintf(fp, "key_plastic%d   ", i);
+      for (int j=0; j < m->nplastic; j++) {
+        fprintf(fp, float_format, m->key_plastic[i*m->nplastic + j]);
+      }
+      fprintf(fp, "\n");
+    }
+
 
     // new line if any data was written
     if (k) {
@@ -1388,6 +1441,7 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
 
     fprintf(fp, "\n");
   }
+  printArray2d("PLASTIC", m->nplastic, 1, d->plastic, fp, float_format);
   printArray2d("QACC_WARMSTART", m->nv, 1, d->qacc_warmstart, fp, float_format);
   printArray2d("CTRL", m->nu, 1, d->ctrl, fp, float_format);
   printArray2d("QFRC_APPLIED", m->nv, 1, d->qfrc_applied, fp, float_format);
@@ -1782,6 +1836,7 @@ void mj_printFormattedScene(const mjvScene* s, const char* filename, const char*
     printNum(fp, "    specular", geom->specular, float_format);
     printNum(fp, "    shininess", geom->shininess, float_format);
     printNum(fp, "    reflectance", geom->reflectance, float_format);
+    printInt(fp, "    castshadow", geom->castshadow);
     fprintf(fp,  "\n");
   }
   fprintf(fp,  "\n");

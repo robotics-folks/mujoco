@@ -473,6 +473,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   opt.graph_conditional = True
   opt.run_collision_detection = True
   opt.warn_overflow = int(types.OverflowType.ALL)
+  opt.deterministic = int(types.DeterminismType.NONE)
   opt.run_rne_postconstraint = False
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
@@ -489,6 +490,18 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  if not util_pkg.check_version("mujoco>=3.16.1"):
+    m.eq_data = np.pad(mjm.eq_data, ((0, 0), (0, 1)))
+  if not util_pkg.check_version("mujoco>=3.17.1"):
+    if not hasattr(mjm, "nplastic"):
+      m.nplastic = 0
+    if not hasattr(mjm, "jnt_plasticadr"):
+      m.jnt_plasticadr = np.full(mjm.njnt, -1, dtype=np.int32)
+    if not hasattr(mjm, "tendon_plasticadr"):
+      m.tendon_plasticadr = np.full(mjm.ntendon, -1, dtype=np.int32)
+    if not hasattr(mjm, "flex_plasticadr"):
+      m.flex_plasticadr = np.full(mjm.nflex, -1, dtype=np.int32)
 
   m.opt = opt
   m.callback = types.Callback()
@@ -977,11 +990,16 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   m.nJfs = m.flexstrain_J_colind.size
 
+  # tendon type: older mujoco versions imply it from the first wrap object
+  if not util_pkg.check_version("mujoco>=3.17.1"):
+    is_fixed = mjm.wrap_type[mjm.tendon_adr] == mujoco.mjtWrap.mjWRAP_JOINT
+    m.tendon_type = np.where(is_fixed, types.TendonType.FIXED, types.TendonType.SPATIAL)
+
   # fixed tendon
   m.tendon_jnt_adr, m.wrap_jnt_adr = [], []
   for i in range(mjm.ntendon):
     adr = mjm.tendon_adr[i]
-    if mjm.wrap_type[adr] == mujoco.mjtWrap.mjWRAP_JOINT:
+    if m.tendon_type[i] == types.TendonType.FIXED:
       tendon_num = mjm.tendon_num[i]
       for j in range(tendon_num):
         m.tendon_jnt_adr.append(i)
@@ -1046,16 +1064,19 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.sensor_limitvel_adr = np.nonzero(
     (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITVEL) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
   )[0]
+  acc_excluded_sensors = (
+    mujoco.mjtSensor.mjSENS_TOUCH,
+    mujoco.mjtSensor.mjSENS_CONTACT,
+    mujoco.mjtSensor.mjSENS_JOINTLIMITFRC,
+    mujoco.mjtSensor.mjSENS_TENDONLIMITFRC,
+    mujoco.mjtSensor.mjSENS_TENDONACTFRC,
+  )
   m.sensor_acc_adr = np.nonzero(
-    (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)
-    & ~is_contact
-    & (
-      (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TOUCH)
-      | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITFRC)
-      | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITFRC)
-      | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONACTFRC)
-    )
+    (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC) & ~np.isin(mjm.sensor_type, acc_excluded_sensors)
   )[0]
+  m.sensor_stage_pos_adr = np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)[0]
+  m.sensor_stage_vel_adr = np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)[0]
+  m.sensor_stage_acc_adr = np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)[0]
   # map each ray to its sensor id and each sensor to its starting ray index
   m.sensor_rangefinder_adr = np.repeat(rf_sensors, rf_nrays)
   m.rangefinder_sensor_adr = np.full(mjm.nsensor, -1)
@@ -1372,6 +1393,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nsensor_vel": len(m.sensor_vel_adr),
       "nsensor_limitvel": len(m.sensor_limitvel_adr),
       "nsensor_acc": len(m.sensor_acc_adr),
+      "nsensor_stage_pos": len(m.sensor_stage_pos_adr),
+      "nsensor_stage_vel": len(m.sensor_stage_vel_adr),
+      "nsensor_stage_acc": len(m.sensor_stage_acc_adr),
       "nsensor_touch": len(m.sensor_touch_adr),
       "nsensor_limitfrc": len(m.sensor_limitfrc_adr),
       "nsensor_tendonactfrc": len(m.sensor_tendonactfrc_adr),
@@ -2031,6 +2055,12 @@ def make_data(
       if mjm.nhistory > 0
       else wp.zeros((nworld, 0), dtype=float)
     ),
+    # plastic
+    "plastic": (
+      wp.array(np.tile(mjd.plastic, (nworld, 1)), shape=(nworld, mjm.nplastic), dtype=float)
+      if getattr(mjm, "nplastic", 0) > 0
+      else wp.zeros((nworld, 0), dtype=float)
+    ),
     # island arrays
     "nisland": None,
     "tree_island": None,
@@ -2220,6 +2250,34 @@ def put_data(
       continue
     if f.name in ["flex", "elem", "vert"] and mjm.nflex == 0:
       contact_kwargs[f.name] = wp.empty(0, dtype=wp.vec2i)
+      continue
+    if f.name == "surfacevel" and not util_pkg.check_version("mujoco>=3.17.1"):
+      val = None
+      if mjm.flg_surfacevel and mjd.ncon > 0:
+        svel = np.zeros((mjd.ncon, 3))
+        sang = np.zeros((mjd.ncon, 3))
+        for side, sgn in ((0, -1.0), (1, 1.0)):
+          geom = mjd.contact.geom[: mjd.ncon, side]
+          valid = geom >= 0
+          g = geom[valid]
+          sv = mjm.geom_surfacevel[g]
+          xmat = mjd.geom_xmat[g].reshape((-1, 3, 3))
+          ang = np.einsum("nij,nj->ni", xmat, sv[:, 3:])
+          lin = np.einsum("nij,nj->ni", xmat, sv[:, :3]) + np.cross(ang, mjd.contact.pos[: mjd.ncon][valid] - mjd.geom_xpos[g])
+          svel[valid] += sgn * lin
+          sang[valid] += sgn * ang
+        frame = mjd.contact.frame[: mjd.ncon].reshape((-1, 3, 3))
+        val = np.stack(
+          (
+            np.einsum("ni,ni->n", frame[:, 1], svel),
+            np.einsum("ni,ni->n", frame[:, 2], svel),
+            np.einsum("ni,ni->n", frame[:, 0], sang),
+          ),
+          axis=-1,
+        )
+        val = np.tile(val, (nworld, 1))
+        val = np.pad(val, ((0, naconmax - val.shape[0]), (0, 0)))
+      contact_kwargs[f.name] = _create_array(val, f.type, sizes)
       continue
     val = getattr(mjd.contact, f.name)
     val = np.tile(val, (nworld,) + (1,) * (val.ndim - 1))
@@ -2548,6 +2606,9 @@ def get_data_into(
   if mjm.nhistory > 0:
     result.history[:] = d.history.numpy()[world_id]
 
+  if getattr(mjm, "nplastic", 0) > 0:
+    result.plastic[:] = d.plastic.numpy()[world_id]
+
   if mjm.nuserdata > 0:
     result.userdata[:] = d.userdata.numpy()[world_id]
 
@@ -2561,6 +2622,8 @@ def get_data_into(
   result.contact.solreffriction[:ncon] = d.contact.solreffriction.numpy()[ncon_filter]
   result.contact.solimp[:ncon] = d.contact.solimp.numpy()[ncon_filter]
   result.contact.adhesion[:ncon] = d.contact.adhesion.numpy()[ncon_filter]
+  if util_pkg.check_version("mujoco>=3.17.1"):
+    result.contact.surfacevel[:ncon] = d.contact.surfacevel.numpy()[ncon_filter]
   result.contact.dim[:ncon] = d.contact.dim.numpy()[ncon_filter]
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
   is_passive = (contact_type[ncon_filter] & types.ContactType.PASSIVE) != 0
@@ -2839,6 +2902,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
     contact_adhesion_out: wp.array[float],
+    contact_surfacevel_out: wp.array[wp.vec3],
   ):
     conid = wp.tid()
 
@@ -2873,6 +2937,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_type_out[conid] = 0
     contact_geomcollisionid_out[conid] = 0
     contact_adhesion_out[conid] = 0.0
+    contact_surfacevel_out[conid] = wp.vec3(0.0)
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_sleep(
@@ -2914,6 +2979,50 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
     if elemid < nv:
       dof_awake_ind_out[worldid, elemid] = elemid
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_plastic(
+    # Model:
+    njnt: int,
+    ntendon: int,
+    nplastic: int,
+    qpos_spring: wp.array2d[float],
+    jnt_type: wp.array[int],
+    jnt_qposadr: wp.array[int],
+    jnt_plasticadr: wp.array[int],
+    tendon_plasticadr: wp.array[int],
+    tendon_lengthspring: wp.array2d[wp.vec2],
+    # In:
+    reset_in: wp.array[bool],
+    # Data out:
+    plastic_out: wp.array2d[float],
+  ):
+    worldid = wp.tid()
+
+    if wp.static(reset is not None):
+      if not reset_in[worldid]:
+        return
+
+    for i in range(nplastic):
+      plastic_out[worldid, i] = 0.0
+
+    qpos_spring_id = worldid % qpos_spring.shape[0]
+    for j in range(njnt):
+      padr = jnt_plasticadr[j]
+      if padr >= 0:
+        qadr = jnt_qposadr[j]
+        jtype = jnt_type[j]
+        nq_j = 4 if jtype == types.JointType.BALL else 1
+        for k in range(nq_j):
+          plastic_out[worldid, padr + k] = qpos_spring[qpos_spring_id, qadr + k]
+
+    tendon_lengthspring_id = worldid % tendon_lengthspring.shape[0]
+    for t in range(ntendon):
+      padr = tendon_plasticadr[t]
+      if padr >= 0:
+        lengthspring = tendon_lengthspring[tendon_lengthspring_id, t]
+        plastic_out[worldid, padr + 0] = lengthspring[0]
+        plastic_out[worldid, padr + 1] = lengthspring[1]
 
   if reset is None:
     reset_input = wp.ones(d.nworld, dtype=bool)
@@ -2970,6 +3079,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.contact.type,
       d.contact.geomcollisionid,
       d.contact.adhesion,
+      d.contact.surfacevel,
     ],
   )
 
@@ -3036,6 +3146,25 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   if m.nhistory > 0:
     history.reset_history(m, d, reset=reset_input)
 
+  if m.nplastic > 0:
+    wp.launch(
+      reset_plastic,
+      dim=d.nworld,
+      inputs=[
+        m.njnt,
+        m.ntendon,
+        m.nplastic,
+        m.qpos_spring,
+        m.jnt_type,
+        m.jnt_qposadr,
+        m.jnt_plasticadr,
+        m.tendon_plasticadr,
+        m.tendon_lengthspring,
+        reset_input,
+      ],
+      outputs=[d.plastic],
+    )
+
   if sleep_enabled:
     sleep.update_sleep(m, d)
 
@@ -3098,7 +3227,7 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
   # Call normal reset using the mask
   reset_data(m, d, reset_mask)
 
-  # Set time, qpos, qvel, act, ctrl, mocap_pos, mocap_quat from the keyframe.
+  # Set time, qpos, qvel, act, ctrl, mocap_pos, mocap_quat, plastic from the keyframe.
   @wp.kernel(module="unique", enable_backward=False)
   def reset_keyframe_data(
     # Model:
@@ -3107,6 +3236,7 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
     nu: int,
     na: int,
     nmocap: int,
+    nplastic: int,
     key_time: wp.array[float],
     key_qpos: wp.array2d[float],
     key_qvel: wp.array2d[float],
@@ -3114,6 +3244,7 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
     key_mpos: wp.array2d[wp.vec3],
     key_mquat: wp.array2d[wp.quat],
     key_ctrl: wp.array2d[float],
+    key_plastic: wp.array2d[float],
     # In:
     key_in: wp.array[int],
     reset_in: wp.array[bool],
@@ -3125,6 +3256,7 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
     ctrl_out: wp.array2d[float],
     mocap_pos_out: wp.array2d[wp.vec3],
     mocap_quat_out: wp.array2d[wp.quat],
+    plastic_out: wp.array2d[float],
   ):
     worldid = wp.tid()
 
@@ -3144,6 +3276,8 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
       mocap_quat_out[worldid, i] = key_mquat[key, i]
     for i in range(nu):
       ctrl_out[worldid, i] = key_ctrl[key, i]
+    for i in range(nplastic):
+      plastic_out[worldid, i] = key_plastic[key, i]
 
   wp.launch(
     reset_keyframe_data,
@@ -3154,6 +3288,7 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
       m.nu,
       m.na,
       m.nmocap,
+      m.nplastic,
       m.key_time,
       m.key_qpos,
       m.key_qvel,
@@ -3161,6 +3296,7 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
       m.key_mpos,
       m.key_mquat,
       m.key_ctrl,
+      m.key_plastic,
       key_input,
       reset_mask,
     ],
@@ -3172,6 +3308,7 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
       d.ctrl,
       d.mocap_pos,
       d.mocap_quat,
+      d.plastic,
     ],
   )
 
@@ -3193,6 +3330,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.integrator": types.IntegratorType,
     "opt.solver": types.SolverType,
     "opt.warn_overflow": types.OverflowType,
+    "opt.deterministic": types.DeterminismType,
   }
   # MuJoCo pybind11 enums don't support iteration, so we provide explicit mappings
   mj_enum_fields = {
@@ -3208,6 +3346,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.graph_conditional",
     "opt.contact_sensor_maxmatch",
     "opt.warn_overflow",
+    "opt.deterministic",
     "opt.run_collision_detection",
     "opt.run_rne_postconstraint",
   }
@@ -3243,6 +3382,14 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
         continue
 
       typ = type(getattr(obj, attr))
+
+      if key == "opt.deterministic":
+        if isinstance(val, str) and val.upper() in ("TRUE", "FALSE"):
+          val = val.upper() == "TRUE"
+        if isinstance(val, (bool, np.bool_)):
+          val = int(types.DeterminismType.ALL if val else types.DeterminismType.NONE)
+        elif isinstance(val, str) and val.isdigit():
+          val = int(val)
 
       if key in mj_enum_fields and isinstance(val, str):
         enum_member = val.strip().upper()

@@ -80,6 +80,7 @@ mjCFlexcomp::mjCFlexcomp(void) {
   doftype      = mjFCOMPDOF_FULL;
   has_dim      = false;
   has_origin   = false;
+  has_flatskin = false;
   file_or_mesh = false;
 
   mjs_defaultPlugin(&plugin);
@@ -207,10 +208,10 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
   }
   if (!res) { return false; }
 
-  // force flatskin shading for box, cylinder and 3D grid
-  if (type == mjFCOMPTYPE_BOX ||
-      type == mjFCOMPTYPE_CYLINDER ||
-      (type == mjFCOMPTYPE_GRID && dflex->dim == 3)) {
+  // default flatskin shading for box, cylinder and 3D grid unless explicitly set
+  if (!has_flatskin && (type == mjFCOMPTYPE_BOX ||
+                        type == mjFCOMPTYPE_CYLINDER ||
+                        (type == mjFCOMPTYPE_GRID && dflex->dim == 3))) {
     dflex->flatskin = true;
   }
 
@@ -1528,26 +1529,71 @@ void inline ComputeBending(
 // bend angle tolerance of a straight 1D flex vertex in the reference configuration
 static constexpr double kRodStraightTol = 1e-4;
 
+// curvature binormal kb = 2 e0 x e1 / (|e0||e1| + e0.e1) of hinge (xa, xv, xb), with e0 = xv - xa
+// and e1 = xb - xv, and optionally the edge lengths; returns false if the hinge is degenerate
+static bool RodCurvatureBinormal(const double* xa,
+                                 const double* xv,
+                                 const double* xb,
+                                 double        kb[3],
+                                 double*       l0_out,
+                                 double*       l1_out) {
+  double e0[3] = {xv[0] - xa[0], xv[1] - xa[1], xv[2] - xa[2]};
+  double e1[3] = {xb[0] - xv[0], xb[1] - xv[1], xb[2] - xv[2]};
+  double l0    = sqrt(mjuu_dot3(e0, e0));
+  double l1    = sqrt(mjuu_dot3(e1, e1));
+  double denom = l0 * l1 + mjuu_dot3(e0, e1);
+  if (l0 < mjMINVAL || l1 < mjMINVAL || denom < mjMINVAL) { return false; }
+  double cross[3];
+  mjuu_crossvec(cross, e0, e1);
+  double scl = 2.0 / denom;
+  kb[0]      = scl * cross[0];
+  kb[1]      = scl * cross[1];
+  kb[2]      = scl * cross[2];
+  if (l0_out) { *l0_out = l0; }
+  if (l1_out) { *l1_out = l1; }
+  return true;
+}
+
+// unit axes (u, v) orthogonal to the edge (x1, x2); any such axes can be used, since the bending
+// energy of a hinge pair does not depend on rotations of the axes about the edge
+static void RodEdgeFrame(const double* x1, const double* x2, double u[3], double v[3]) {
+  double t[3] = {x2[0] - x1[0], x2[1] - x1[1], x2[2] - x1[2]};
+  mjuu_normvec(t, 3);
+
+  // project (0, 1, 0), or (0, 0, 1) if the edge is nearly along y, orthogonal to the edge
+  int    axis = (-0.5 < t[1] && t[1] < 0.5) ? 1 : 2;
+  double a[3] = {0, 0, 0};
+  a[axis]     = 1;
+  double s    = mjuu_dot3(t, a);
+
+  u[0] = a[0] - s * t[0];
+  u[1] = a[1] - s * t[1];
+  u[2] = a[2] - s * t[2];
+  mjuu_normvec(u, 3);
+  mjuu_crossvec(v, t, u);
+}
+
 // compute isotropic rod bending data for a 1D flex, following Bergou et al., "Discrete Elastic
-// Rods", https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf. One 3-vertex bending stencil is stored
-// in flex_bending for every vertex shared by exactly two edges; vertices with other valences carry
-// no bending energy.
-//   layout: bending[0] = number of stencils, then per stencil
-//           [v_prev, v, v_next, EI / (|e_prev| + |e_next|)]
+// Rods", https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf. Every vertex shared by exactly two edges
+// is a hinge with stiffness k = EI / (|e_prev| + |e_next|); vertices with other valences carry no
+// bending energy.
 //   EI: bending rigidity, Young's modulus times the second moment of area of the cross-section
-// The reference configuration must be straight at every interior vertex: without material frames,
-// the isotropic energy of a curved reference would only resist the magnitude of the curvature.
-// returns 1 on success, or 0 with the id of the first degenerate vertex in *bad or of the first
-// bent one in *bent
+// Hinges bent by more than kRodStraightTol in the reference configuration are curved. Adjacent
+// curved hinges are stored as a pair across every edge they share, splitting the stiffness of each
+// hinge evenly among its pairs; all other hinges are stored singly.
+//   layout: bending[0] = number of records, then per record
+//           single hinge: [v_prev, v, v_next, -1, k, 0, |kb0|, 0, 0, 0], |kb0| = 0 if straight
+//           hinge pair:   [v0, v1, v2, v3, k1 / n1, k2 / n2, om0[4]] for hinges v1 and v2, with n
+//                         the number of pairs of a hinge and om0 the reference curvature binormals
+//                         of both hinges along the axes of RodEdgeFrame(v1, v2)
+// returns 1 on success, or 0 with the id of the first degenerate vertex in *bad
 static int ComputeRodBending(std::vector<double>&                    bending,
                              const double*                           pos,
                              int                                     nvert,
                              const std::vector<std::pair<int, int>>& edges,
                              double                                  EI,
-                             int*                                    bad,
-                             int*                                    bent) {
-  *bad  = -1;
-  *bent = -1;
+                             int*                                    bad) {
+  *bad = -1;
 
   // vertex adjacency
   std::vector<std::vector<int>> neighbors(nvert);
@@ -1556,36 +1602,74 @@ static int ComputeRodBending(std::vector<double>&                    bending,
     neighbors[e.second].push_back(e.first);
   }
 
-  bending.assign(1, 0);
+  // hinge stiffness and reference curvature
+  std::vector<double> stiffness(nvert, 0);
+  std::vector<double> curvature(nvert, 0);
   for (int v = 0; v < nvert; v++) {
     if (neighbors[v].size() != 2) { continue; }
-    int           va    = neighbors[v][0];
-    int           vb    = neighbors[v][1];
-    const double* xa    = pos + 3 * va;
-    const double* xv    = pos + 3 * v;
-    const double* xb    = pos + 3 * vb;
-    double        e0[3] = {xv[0] - xa[0], xv[1] - xa[1], xv[2] - xa[2]};
-    double        e1[3] = {xb[0] - xv[0], xb[1] - xv[1], xb[2] - xv[2]};
-    double        l0    = sqrt(mjuu_dot3(e0, e0));
-    double        l1    = sqrt(mjuu_dot3(e1, e1));
-    double        denom = l0 * l1 + mjuu_dot3(e0, e1);
-    if (l0 < mjMINVAL || l1 < mjMINVAL || denom < mjMINVAL) {
+    const double* xa = pos + 3 * neighbors[v][0];
+    const double* xv = pos + 3 * v;
+    const double* xb = pos + 3 * neighbors[v][1];
+    double        kb[3], l0, l1;
+    if (!RodCurvatureBinormal(xa, xv, xb, kb, &l0, &l1)) {
       *bad = v;
       return 0;
     }
+    stiffness[v] = EI / (l0 + l1);
 
     // reference curvature binormal magnitude 2*tan(phi/2), approximately the bend angle phi
-    double cross[3];
-    mjuu_crossvec(cross, e0, e1);
-    if (2 * sqrt(mjuu_dot3(cross, cross)) / denom > kRodStraightTol) {
-      *bent = v;
-      return 0;
-    }
+    double norm = sqrt(mjuu_dot3(kb, kb));
+    if (norm > kRodStraightTol) { curvature[v] = norm; }
+  }
 
-    bending.push_back(va);
+  // number of pairs of each hinge
+  std::vector<int> npair(nvert, 0);
+  for (const auto& e : edges) {
+    if (curvature[e.first] > 0 && curvature[e.second] > 0) {
+      npair[e.first]++;
+      npair[e.second]++;
+    }
+  }
+
+  // hinge pairs across edges shared by curved hinges
+  bending.assign(1, 0);
+  for (const auto& e : edges) {
+    int v1 = e.first;
+    int v2 = e.second;
+    if (curvature[v1] == 0 || curvature[v2] == 0) { continue; }
+    int    v0 = neighbors[v1][0] == v2 ? neighbors[v1][1] : neighbors[v1][0];
+    int    v3 = neighbors[v2][0] == v1 ? neighbors[v2][1] : neighbors[v2][0];
+    double kb1[3], kb2[3], u[3], v[3];
+    RodCurvatureBinormal(pos + 3 * v0, pos + 3 * v1, pos + 3 * v2, kb1, nullptr, nullptr);
+    RodCurvatureBinormal(pos + 3 * v1, pos + 3 * v2, pos + 3 * v3, kb2, nullptr, nullptr);
+    RodEdgeFrame(pos + 3 * v1, pos + 3 * v2, u, v);
+
+    bending.push_back(v0);
+    bending.push_back(v1);
+    bending.push_back(v2);
+    bending.push_back(v3);
+    bending.push_back(stiffness[v1] / npair[v1]);
+    bending.push_back(stiffness[v2] / npair[v2]);
+    bending.push_back(mjuu_dot3(kb1, u));
+    bending.push_back(mjuu_dot3(kb1, v));
+    bending.push_back(mjuu_dot3(kb2, u));
+    bending.push_back(mjuu_dot3(kb2, v));
+    bending[0]++;
+  }
+
+  // single hinges: straight, or curved without curved neighbors
+  for (int v = 0; v < nvert; v++) {
+    if (neighbors[v].size() != 2 || npair[v] > 0) { continue; }
+    bending.push_back(neighbors[v][0]);
     bending.push_back(v);
-    bending.push_back(vb);
-    bending.push_back(EI / (l0 + l1));
+    bending.push_back(neighbors[v][1]);
+    bending.push_back(-1);
+    bending.push_back(stiffness[v]);
+    bending.push_back(0);
+    bending.push_back(curvature[v]);
+    bending.push_back(0);
+    bending.push_back(0);
+    bending.push_back(0);
     bending[0]++;
   }
   return 1;
@@ -2198,12 +2282,14 @@ mjCFlex::mjCFlex(mjCModel* _model) {
   if (_model) compiler = &_model->spec.compiler;
 
   // clear internal variables
-  nvert    = 0;
-  nnode    = 0;
-  nedge    = 0;
-  nelem    = 0;
-  rigid    = false;
-  centered = false;
+  nvert       = 0;
+  nnode       = 0;
+  nedge       = 0;
+  nelem       = 0;
+  plasticadr_ = -1;
+  plasticnum_ = 0;
+  rigid       = false;
+  centered    = false;
 
   PointToLocal();
   CopyFromSpec();
@@ -2220,9 +2306,49 @@ mjCFlex& mjCFlex::operator=(const mjCFlex& other) {
     this->spec                    = other.spec;
     *static_cast<mjCFlex_*>(this) = static_cast<const mjCFlex_&>(other);
     *static_cast<mjsFlex*>(this)  = static_cast<const mjsFlex&>(other);
+    plasticadr_                   = -1;
+    plasticnum_                   = 0;
   }
   PointToLocal();
   return *this;
+}
+
+
+void mjCFlex::ResetId() {
+  id          = -1;
+  plasticadr_ = -1;
+  plasticnum_ = 0;
+}
+
+
+void mjCFlex::ForgetKeyframes(const std::vector<std::string>& names, bool keep) {
+  for (auto it = plastic_.begin(); it != plastic_.end();) {
+    bool found = std::find(names.begin(), names.end(), it->first) != names.end();
+    if (found != keep) {
+      it = plastic_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+
+int mjCFlex::PlasticNum() const {
+  if (!stiffness.empty() || !bending.empty()) {
+    if (stressyield > 0 && !interpolated && dim >= 2 && !stiffness.empty() && stiffness[0] != 0) {
+      return (dim == 2 ? 3 : 6) * nelem;
+    }
+    return 0;
+  }
+  if (spec.stressyield <= 0 || !spec_nodebody_.empty() || spec.dim < 2 || spec.young <= 0) {
+    return 0;
+  }
+  int num_elem = (int)spec_elem_.size() / (spec.dim + 1);
+  if (num_elem <= 0) { return 0; }
+  if ((spec.dim == 2 && spec.elastic2d >= 2 && spec.thickness > 0) || spec.dim == 3) {
+    return (spec.dim == 2 ? 3 : 6) * num_elem;
+  }
+  return 0;
 }
 
 
@@ -2865,6 +2991,12 @@ void mjCFlex::Compile(const mjVFS* vfs) {
     throw mjCError(this, "stable Neo-Hookean elasticity requires integrator='discrete'");
   }
 
+  // yield checks
+  if (stressyield < 0) { throw mjCError(this, "yield cannot be negative"); }
+  if (stressyield > 0 && (interpolated || dim < 2)) {
+    throw mjCError(this, "flex plasticity requires a non-interpolated 2d or 3d flex");
+  }
+
   // set nvert, rigid, centered; check size
   if (vert_.empty()) {
     centered = true;
@@ -3184,16 +3316,9 @@ void mjCFlex::Compile(const mjVFS* vfs) {
       } else {
         throw mjCError(this, "unknown 1D flex section %d", nullptr, section);
       }
-      int bad, bent;
-      if (!ComputeRodBending(bending, vertxpos.data(), nvert, edge, young * I, &bad, &bent)) {
-        if (bad >= 0) {
-          throw mjCError(this, "degenerate 1D flex hinge at vertex %d", nullptr, bad);
-        }
-        throw mjCError(this,
-                       "1D flex elasticity requires a straight reference configuration, "
-                       "vertex %d is bent",
-                       nullptr,
-                       bent);
+      int bad;
+      if (!ComputeRodBending(bending, vertxpos.data(), nvert, edge, young * I, &bad)) {
+        throw mjCError(this, "degenerate 1D flex hinge at vertex %d", nullptr, bad);
       }
       if (bending[0] == 0) { bending.clear(); }
     }
@@ -3327,6 +3452,74 @@ void mjCFlex::Compile(const mjVFS* vfs) {
                              idx);
             }
           }
+        }
+      }
+    }
+  }
+
+  // disallow joints on the parent/ancestor body of an unpinned 3-slider flex
+  if (!rigid) {
+    auto free_slider_parent = [&](int bid) -> const mjCBody* {
+      if (bid <= 0) { return nullptr; }
+      const mjCBody* pbody = model->Bodies()[bid];
+      if (pbody->joints.size() != 3 || !pbody->geoms.empty() || !pbody->bodies.empty()) {
+        return nullptr;
+      }
+      for (const mjCJoint* jnt : pbody->joints) {
+        if (jnt->spec.type != mjJNT_SLIDE) { return nullptr; }
+      }
+      return pbody->parent;
+    };
+
+    const mjCBody* common_parent    = nullptr;
+    bool           all_free_sliders = true;
+    int            num_active       = 0;
+
+    if (!interpolated) {
+      for (int bid : vertbodyid) {
+        const mjCBody* parent = free_slider_parent(bid);
+        if (!parent || (common_parent && parent != common_parent)) {
+          all_free_sliders = false;
+          break;
+        }
+        common_parent = parent;
+        num_active++;
+      }
+    } else {
+      int cx = spec.cellcount[0], cy = spec.cellcount[1], cz = spec.cellcount[2];
+      int nx = cx * spec.order + 1;
+      int ny = cy * spec.order + 1;
+      int nz = cz * spec.order + 1;
+      for (int gi = 0; gi < nx && all_free_sliders; gi++) {
+        for (int gj = 0; gj < ny && all_free_sliders; gj++) {
+          for (int gk = 0; gk < nz && all_free_sliders; gk++) {
+            bool supported = elastic2d ? (gi == 0 ||
+                                          gi == nx - 1 ||
+                                          gj == 0 ||
+                                          gj == ny - 1 ||
+                                          gk == 0 ||
+                                          gk == nz - 1)
+                                       : !NodeInEmptyCells(gi, gj, gk);
+            if (!supported) { continue; }
+            int            idx    = gi * ny * nz + gj * nz + gk;
+            const mjCBody* parent = free_slider_parent(nodebodyid[idx]);
+            if (!parent || (common_parent && parent != common_parent)) {
+              all_free_sliders = false;
+              break;
+            }
+            common_parent = parent;
+            num_active++;
+          }
+        }
+      }
+    }
+
+    if (all_free_sliders && num_active > 0 && common_parent && common_parent->id > 0) {
+      for (const mjCBody* anc = common_parent; anc && anc->id > 0; anc = anc->parent) {
+        if (!anc->joints.empty()) {
+          throw mjCError(this,
+                         "body '%s' has joints but no flex vertices/nodes are pinned to it",
+                         anc->name.c_str());
         }
       }
     }

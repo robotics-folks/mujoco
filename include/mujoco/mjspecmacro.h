@@ -150,6 +150,7 @@
     X   ( mjtAlignFree,  align,           1         ) \
     XVEC( double,        stiffness,       mjNPOLY+1 ) \
     X   ( double,        springref,       1         ) \
+    X   ( double,        springyield,     1         ) \
     XVEC( double,        springdamper,    2         ) \
     X   ( mjtLimited,    limited,         1         ) \
     XVEC( double,        range,           2         ) \
@@ -304,6 +305,7 @@
     X   ( double,         poisson,       1      ) \
     X   ( double,         damping,       1      ) \
     X   ( double,         thickness,     1      ) \
+    X   ( double,         stressyield,   1      ) \
     X   ( int,            elastic2d,     1      ) \
     X   ( int,            elastic3d,     1      ) \
     X   ( mjtFlexSection, section,       1      ) \
@@ -471,6 +473,7 @@
     X   ( mjsElement*,   element,         1         ) \
     XVEC( double,        stiffness,       mjNPOLY+1 ) \
     XVEC( double,        springlength,    2         ) \
+    X   ( double,        springyield,     1         ) \
     XVEC( double,        damping,         mjNPOLY+1 ) \
     X   ( double,        frictionloss,    1         ) \
     XVEC( mjtNum,        solref_friction, mjNREF    ) \
@@ -602,6 +605,7 @@
     X( mjDoubleVec*, mpos,    1 ) \
     X( mjDoubleVec*, mquat,   1 ) \
     X( mjDoubleVec*, ctrl,    1 ) \
+    X( mjDoubleVec*, plastic, 1 ) \
     X( mjString*,    info,    1 )
 
 

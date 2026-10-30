@@ -13,7 +13,7 @@
 # limitations under the License.
 """Simulation-agnostic web viewer for MuJoCo models.
 
-See the documentation for viewer_app.py for more details on the architecture
+See the documentation for app/plugins.py for more details on the architecture
 separating the viewer and simulation.
 
 The WebViewer streams UI and simulation state to a browser:
@@ -56,8 +56,8 @@ from mujoco.studio.web import state_payload
 from mujoco.studio.web import web_server
 import numpy as np
 
-from mujoco.experimental.dear_imgui import dear_imgui as imgui
-from mujoco.experimental.implot import implot
+from mujoco.studio.dear_imgui import dear_imgui as imgui
+from mujoco.studio.implot import implot
 
 # File extensions a dropped file may load as a model.
 _MODEL_EXTENSIONS = ('.xml', '.urdf', '.mjb', '.mjz', '.zip')
@@ -370,7 +370,7 @@ class WebViewer(viewer_protocol.Viewer):
     written to a temporary directory here, preserving names and relative
     paths — a dropped folder's asset references resolve, and the mjz/zip
     decoder can locate an archive's root XML by the archive's own name —
-    and the regular drop-loading flow applies (ViewerApp sends a
+    and the regular drop-loading flow applies (studio_app.App sends a
     LoadModelEvent; the sim thread parses the file).
     """
     try:
