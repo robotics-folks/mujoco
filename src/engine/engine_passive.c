@@ -513,8 +513,9 @@ static void mj_flexPassiveBend(const mjModel* m, mjData* d, int f,
 
 // passive forces for 1D flex bending: isotropic discrete elastic rod without twist, see
 // Bergou et al., "Discrete Elastic Rods", https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf
-//   energy per hinge: k |kb|^2, with k = EI / (|e0| + |e1|) in the straight reference
-//   damping: Rayleigh on the rate of |kb|, so that rigid rotations are not damped
+//   energy per hinge: k |kb|^2, with k = EI / (|e0| + |e1|) in the reference; curved references
+//   compare kb with its reference value up to rotations about the edges, see mjROD_HINGE_SIZE
+//   damping: Rayleigh, restricted so that rigid rotations are not damped
 static void mj_flexPassiveBend1D(const mjModel* m, mjData* d, int f,
                                  int enbl_spring, int enbl_damper) {
   int bendingadr = m->flex_bendingadr[f];
@@ -544,33 +545,44 @@ static void mj_flexPassiveBend1D(const mjModel* m, mjData* d, int f,
 
   for (int h = 0; h < nhinge; h++) {
     const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
-    int v[3] = {(int)hinge[0], (int)hinge[1], (int)hinge[2]};
-    mjtNum kb[3], J[27];
-    if (!mj_rodHinge(xpos + 3*v[0], xpos + 3*v[1], xpos + 3*v[2], kb, J)) {
-      continue;
-    }
+    int nvrt = mj_rodHingeVert(hinge);
+    int v[4] = {(int)hinge[0], (int)hinge[1], (int)hinge[2], (int)hinge[3]};
 
-    // w: weight in kb space, mapped to vertex forces as -J'w
-    mjtNum w[3] = {0}, Wd[9];
-    mj_rodHingeWeights(enbl_spring ? w : NULL, NULL, enbl_damper ? Wd : NULL, kb, hinge[3]);
+    // w: weight in kb (single hinge) or om (hinge pair) space, mapped to vertex forces as -J'w
+    mjtNum J[48], w[4] = {0}, Wd[16];
+    if (nvrt == 3) {
+      mjtNum kb[3];
+      if (!mj_rodHinge(xpos + 3*v[0], xpos + 3*v[1], xpos + 3*v[2], kb, J)) {
+        continue;
+      }
+      mj_rodHingeWeights(enbl_spring ? w : NULL, NULL, enbl_damper ? Wd : NULL,
+                         kb, hinge[4], hinge[6]);
+    } else {
+      mjtNum om[4];
+      if (!mj_rodPair(xpos + 3*v[0], xpos + 3*v[1], xpos + 3*v[2], xpos + 3*v[3], om, J)) {
+        continue;
+      }
+      mj_rodPairWeights(enbl_spring ? w : NULL, NULL, enbl_damper ? Wd : NULL,
+                        om, hinge[4], hinge[5], hinge + 6);
+    }
 
     // damper weight: Wd J vel
-    mjtNum wd[3] = {0};
+    mjtNum wd[4] = {0};
     if (enbl_damper) {
-      mjtNum kbdot[3] = {0};
-      for (int r = 0; r < 3; r++) {
-        for (int i = 0; i < 3; i++) {
-          kbdot[r] += mju_dot3(J + 9*r + 3*i, vvel + 3*v[i]);
+      mjtNum udot[4] = {0};
+      for (int r = 0; r < nvrt; r++) {
+        for (int i = 0; i < nvrt; i++) {
+          udot[r] += mju_dot3(J + 3*nvrt*r + 3*i, vvel + 3*v[i]);
         }
       }
-      mji_mulMatVec3(wd, Wd, kbdot);
+      mju_mulMatVec(wd, Wd, udot, nvrt, nvrt);
     }
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < nvrt; i++) {
       for (int c = 0; c < 3; c++) {
-        for (int r = 0; r < 3; r++) {
-          frc[3*v[i]+c] -= J[9*r + 3*i + c] * w[r];
-          dmp[3*v[i]+c] -= J[9*r + 3*i + c] * wd[r];
+        for (int r = 0; r < nvrt; r++) {
+          frc[3*v[i]+c] -= J[3*nvrt*r + 3*i + c] * w[r];
+          dmp[3*v[i]+c] -= J[3*nvrt*r + 3*i + c] * wd[r];
         }
       }
     }
@@ -610,6 +622,7 @@ static void mj_flexPassiveStretch(const mjModel* m, mjData* d, int f,
   mjtNum* vel = d->flexedge_velocity + m->flex_edgeadr[f];
   mjtNum* deformed = d->flexedge_length + m->flex_edgeadr[f];
   mjtNum* reference = m->flexedge_length0 + m->flex_edgeadr[f];
+  const mjtNum* plastic = m->flex_plasticadr[f] >= 0 ? d->plastic + m->flex_plasticadr[f] : NULL;
 
   mj_markStack(d);
   mjtNum* frc = mjSTACKALLOC(d, 3*m->flex_vertnum[f], mjtNum);
@@ -628,7 +641,8 @@ static void mj_flexPassiveStretch(const mjModel* m, mjData* d, int f,
     // shared quadratic energy in squared-edge-length differences
     const mjtNum* packed = k + (dim == 3 ? 24 : 21)*t;
     mjtNum elongation[6];
-    mj_stretchElongation(elongation, edgeelem + t*nedge, deformed, reference, nedge);
+    mj_stretchElongation(elongation, edgeelem + t*nedge, deformed, reference,
+                         plastic ? plastic + nedge*t : NULL, nedge);
     mj_stretchElasticity(metric, tension, packed, elongation, nedge);
 
     mjtNum grad[4][3], pressure = 0;
@@ -709,13 +723,16 @@ static void mj_springdamper(const mjModel* m, mjData* d) {
 
         int padr = m->jnt_qposadr[j];
         int dadr = m->jnt_dofadr[j];
+        const mjtNum* qspring = m->jnt_plasticadr[j] >= 0 ?
+                                d->plastic + m->jnt_plasticadr[j] :
+                                m->qpos_spring + padr;
 
         switch ((mjtJoint) m->jnt_type[j]) {
         case mjJNT_FREE:
           // apply force
           {
             mjtNum dif[3];
-            mji_sub3(dif, d->qpos+padr, m->qpos_spring+padr);
+            mji_sub3(dif, d->qpos+padr, qspring);
             mjtNum r = mju_norm3(dif);
             mjtNum k = mju_polyForce(stiffness, spoly, r, mjNPOLY, 0);
             mji_addToScl3(d->qfrc_spring + dadr, dif, -k);
@@ -724,6 +741,7 @@ static void mj_springdamper(const mjModel* m, mjData* d) {
           // continue with rotations
           dadr += 3;
           padr += 3;
+          qspring += 3;
           mjFALLTHROUGH;
 
         case mjJNT_BALL:
@@ -732,7 +750,7 @@ static void mj_springdamper(const mjModel* m, mjData* d) {
             mjtNum dif[3], quat[4];
             mji_copy4(quat, d->qpos+padr);
             mju_normalize4(quat);
-            mji_subQuat(dif, quat, m->qpos_spring + padr);
+            mji_subQuat(dif, quat, qspring);
             mjtNum r = mju_norm3(dif);
             mjtNum k = mju_polyForce(stiffness, spoly, r, mjNPOLY, 0);
 
@@ -745,7 +763,7 @@ static void mj_springdamper(const mjModel* m, mjData* d) {
         case mjJNT_HINGE:
           {
             // apply force or torque
-            mjtNum x = d->qpos[padr] - m->qpos_spring[padr];
+            mjtNum x = d->qpos[padr] - qspring[0];
             d->qfrc_spring[dadr] = -x * mju_polyForce(stiffness, spoly, x, mjNPOLY, 0);
           }
           break;

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(NETIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../experimental/netimgui)
+set(NETIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../netimgui)
 
 if(EMSCRIPTEN)
   add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
@@ -156,25 +156,16 @@ else()
     return()
   endif()
 
-  mujoco_pybind11_module(headless_ui headless_ui.cc)
-  target_link_libraries(headless_ui PRIVATE
-    mujoco
-    mujoco::platform  # for the shared Studio font loading (ux/fonts)
+  target_sources(_studio PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/headless_ui.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/state_payload_py.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/state_payload.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/state_payload.h
+  )
+  target_link_libraries(_studio PRIVATE
     mujoco::dep::dear_imgui
     mujoco::dep::implot
     netimgui
   )
-
-  mujoco_pybind11_module(state_payload state_payload_py.cc state_payload.cc state_payload.h)
-  target_link_libraries(state_payload PRIVATE
-    mujoco
-    structs_header
-    structs_wrappers
-  )
-
-  set(MUJOCO_WEB_VIEWER_TARGETS
-      headless_ui
-      state_payload
-      PARENT_SCOPE
-  )
+  target_compile_definitions(_studio PRIVATE MUJOCO_STUDIO_WITH_WEB)
 endif()

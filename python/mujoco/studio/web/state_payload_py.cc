@@ -39,11 +39,12 @@ static py::bytes SerializeStatePayload(
     const mujoco::python::MjvPerturbWrapper& perturb,
     const mujoco::python::MjvOptionWrapper& vis_options,
     const mujoco::python::MjModelWrapper& model,
-    const std::vector<uint8_t>& render_flags,
-    const std::vector<mujoco::python::MjvGeomWrapper>& extra_geoms) {
+    const std::vector<uint8_t>& render_flags, const py::iterable& extra_geoms) {
   std::vector<mjvGeom> geoms;
-  geoms.reserve(extra_geoms.size());
-  for (const mujoco::python::MjvGeomWrapper& geom_wrapper : extra_geoms) {
+  geoms.reserve(py::len_hint(extra_geoms));
+  for (py::handle item : extra_geoms) {
+    const auto& geom_wrapper =
+        py::cast<const mujoco::python::MjvGeomWrapper&>(item);
     if (geom_wrapper.get()) {
       geoms.push_back(*geom_wrapper.get());
     }
@@ -108,7 +109,9 @@ static py::tuple ParseModelBundle(const py::bytes& bundle) {
       resources);
 }
 
-PYBIND11_MODULE(state_payload, m, pybind11::mod_gil_not_used()) {
+namespace mujoco::python::studio {
+
+void InitStatePayload(py::module_& m) {
   py::module_::import("mujoco._structs");
   m.doc() = "MuJoCo web viewer state payload serialization";
 
@@ -118,3 +121,11 @@ PYBIND11_MODULE(state_payload, m, pybind11::mod_gil_not_used()) {
   m.def("parse_model_bundle", &ParseModelBundle);
   m.attr("MAX_EXTRA_GEOMS") = mujoco::studio::kMaxExtraGeoms;
 }
+
+}  // namespace mujoco::python::studio
+
+#ifndef MUJOCO_STUDIO_COMBINED_MODULE
+PYBIND11_MODULE(state_payload, m, pybind11::mod_gil_not_used()) {
+  mujoco::python::studio::InitStatePayload(m);
+}
+#endif

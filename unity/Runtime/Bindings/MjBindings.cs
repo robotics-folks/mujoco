@@ -157,7 +157,8 @@ public enum mjtEnableBit : int{
   mjENBL_SLEEP = 16,
   mjENBL_DIAGEXACT = 32,
   mjENBL_IPC = 64,
-  mjNENABLE = 7,
+  mjENBL_SPECULATIVE = 128,
+  mjNENABLE = 8,
 }
 public enum mjtJoint : int{
   mjJNT_FREE = 0,
@@ -257,6 +258,10 @@ public enum mjtEq : int{
   mjEQ_FLEXVERT = 5,
   mjEQ_FLEXSTRAIN = 6,
   mjEQ_DISTANCE = 7,
+}
+public enum mjtTendon : int{
+  mjTENDON_FIXED = 0,
+  mjTENDON_SPATIAL = 1,
 }
 public enum mjtWrap : int{
   mjWRAP_NONE = 0,
@@ -488,11 +493,12 @@ public enum mjtState : int{
   mjSTATE_MOCAP_QUAT = 2048,
   mjSTATE_USERDATA = 4096,
   mjSTATE_PLUGIN = 8192,
-  mjNSTATE = 14,
-  mjSTATE_PHYSICS = 30,
-  mjSTATE_FULLPHYSICS = 8223,
+  mjSTATE_PLASTIC = 16384,
+  mjNSTATE = 15,
+  mjSTATE_PHYSICS = 16414,
+  mjSTATE_FULLPHYSICS = 24607,
   mjSTATE_USER = 8128,
-  mjSTATE_INTEGRATION = 16383,
+  mjSTATE_INTEGRATION = 32767,
 }
 public enum mjtConstraint : int{
   mjCNSTR_EQUALITY = 0,
@@ -770,7 +776,8 @@ public enum mjtRndFlag : int{
   mjRND_SEGMENT = 8,
   mjRND_IDCOLOR = 9,
   mjRND_CULL_FACE = 10,
-  mjNRNDFLAG = 11,
+  mjRND_POST_PROCESSING = 11,
+  mjNRNDFLAG = 12,
 }
 public enum mjtStereo : int{
   mjSTEREO_NONE = 0,
@@ -1165,6 +1172,7 @@ public unsafe struct mjModel_ {
   public UInt64 nuser_sensor;
   public UInt64 nnames;
   public UInt64 npaths;
+  public UInt64 nplastic;
   public UInt64 nnames_map;
   public UInt64 nJmom;
   public UInt64 ngravcomp;
@@ -1231,6 +1239,7 @@ public unsafe struct mjModel_ {
   public int* jnt_bodyid;
   public int* jnt_actuatorid;
   public int* jnt_group;
+  public int* jnt_plasticadr;
   public byte* jnt_limited;
   public byte* jnt_actfrclimited;
   public byte* jnt_actgravcomp;
@@ -1240,6 +1249,7 @@ public unsafe struct mjModel_ {
   public double* jnt_axis;
   public double* jnt_stiffness;
   public double* jnt_stiffnesspoly;
+  public double* jnt_springyield;
   public double* jnt_range;
   public double* jnt_actfrcrange;
   public double* jnt_margin;
@@ -1275,6 +1285,7 @@ public unsafe struct mjModel_ {
   public int* geom_priority;
   public int* geom_plugin;
   public byte* geom_sameframe;
+  public byte* geom_castshadow;
   public double* geom_solmix;
   public double* geom_solref;
   public double* geom_solimp;
@@ -1370,6 +1381,7 @@ public unsafe struct mjModel_ {
   public int* flex_stiffnessadr;
   public int* flex_elemedgeadr;
   public int* flex_bendingadr;
+  public int* flex_plasticadr;
   public int* flex_shellnum;
   public int* flex_shelldataadr;
   public int* flex_texcoordadr;
@@ -1400,6 +1412,7 @@ public unsafe struct mjModel_ {
   public double* efm0_L;
   public int* efmC_perm;
   public double* flex_damping;
+  public double* flex_yield;
   public double* flex_edgestiffness;
   public double* flex_edgedamping;
   public int* flex_edgeequality;
@@ -1515,11 +1528,13 @@ public unsafe struct mjModel_ {
   public double* eq_solref;
   public double* eq_solimp;
   public double* eq_data;
+  public int* tendon_type;
   public int* tendon_adr;
   public int* tendon_num;
   public int* tendon_matid;
   public int* tendon_actuatorid;
   public int* tendon_group;
+  public int* tendon_plasticadr;
   public int* tendon_treenum;
   public int* tendon_treeid;
   public int* ten_J_rownnz;
@@ -1542,6 +1557,7 @@ public unsafe struct mjModel_ {
   public double* tendon_armature;
   public double* tendon_frictionloss;
   public double* tendon_lengthspring;
+  public double* tendon_springyield;
   public double* tendon_length0;
   public double* tendon_invweight0;
   public double* tendon_user;
@@ -1626,6 +1642,7 @@ public unsafe struct mjModel_ {
   public double* key_mpos;
   public double* key_mquat;
   public double* key_ctrl;
+  public double* key_plastic;
   public int* name_bodyadr;
   public int* name_jntadr;
   public int* name_geomadr;
@@ -1687,6 +1704,7 @@ public unsafe struct mjContact_ {
   public fixed double solreffriction[2];
   public fixed double solimp[5];
   public double adhesion;
+  public fixed double surfacevel[3];
   public double mu;
   public fixed double H[36];
   public int dim;
@@ -5795,6 +5813,7 @@ public unsafe struct mjData_ {
   public double* qvel;
   public double* act;
   public double* history;
+  public double* plastic;
   public double* qacc_warmstart;
   public double* plugin_state;
   public double* ctrl;
@@ -6071,6 +6090,7 @@ public unsafe struct mjvGeom_ {
   public float shininess;
   public float reflectance;
   public fixed float texrepeat[2];
+  public byte castshadow;
   public fixed char label[100];
   public float camdist;
   public float modelrbound;
@@ -6251,7 +6271,7 @@ public unsafe struct mjvScene_ {
   public fixed float rotate[4];
   public float scale;
   public int stereo;
-  public fixed byte flags[11];
+  public fixed byte flags[12];
   public int framewidth;
   public fixed float framergb[3];
   public int status;

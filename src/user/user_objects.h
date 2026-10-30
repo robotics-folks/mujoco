@@ -847,8 +847,9 @@ class mjCJoint_ : public mjCBase {
   mjCBody* body;  // joint's body
 
   // variable used for temporarily storing the state of the joint
-  std::map<std::string, std::array<mjtNum, 7>> qpos_;  // qpos at the previous step
-  std::map<std::string, std::array<mjtNum, 6>> qvel_;  // qvel at the previous step
+  std::map<std::string, std::array<mjtNum, 7>> qpos_;     // qpos at the previous step
+  std::map<std::string, std::array<mjtNum, 6>> qvel_;     // qvel at the previous step
+  std::map<std::string, std::array<mjtNum, 7>> plastic_;  // plastic at the previous step
 
   // variable-size data
   std::vector<double> userdata_;
@@ -891,6 +892,7 @@ class mjCJoint : public mjCJoint_, private mjsJoint {
 
   mjtNum* qpos(const std::string& state_name);
   mjtNum* qvel(const std::string& state_name);
+  mjtNum* plastic(const std::string& state_name);
   void    ForgetKeyframes(const std::vector<std::string>& names, bool keep = false);
   void    ResetId();
 
@@ -906,8 +908,9 @@ class mjCJoint : public mjCJoint_, private mjsJoint {
   void AnchorToSpec(bool anchor, bool direction);
 
   // variables that should not be copied during copy assignment
-  int qposadr_;  // address of dof in data->qpos
-  int dofadr_;   // address of dof in data->qvel
+  int qposadr_;     // address of dof in data->qpos
+  int dofadr_;      // address of dof in data->qvel
+  int plasticadr_;  // address in data->plastic
 };
 
 
@@ -1198,6 +1201,8 @@ class mjCFlex_ : public mjCBase {
   int                              nnode;         // number of nodes
   int                              nedge;         // number of edges
   int                              nelem;         // number of elements
+  int                              plasticadr_;   // plastic state address
+  int                              plasticnum_;   // number of plastic state variables
   std::vector<int>                 elemmatid_;    // element material ids
   bool                             rigid;         // all vertices attached to the same body
   bool                             centered;      // all vertices coordinates (0,0,0)
@@ -1240,7 +1245,8 @@ class mjCFlex_ : public mjCBase {
   std::vector<int>         spec_elemtexcoord_;
 
   // caching
-  std::vector<double> cached_stiffness_;  // cached stiffness matrix
+  std::vector<double>                        cached_stiffness_;  // cached stiffness matrix
+  std::map<std::string, std::vector<double>> plastic_;
 };
 
 class mjCFlex : public mjCFlex_, private mjsFlex {
@@ -1280,6 +1286,9 @@ class mjCFlex : public mjCFlex_, private mjsFlex {
     material_.clear();
   }
 
+  std::vector<double>& plastic(const std::string& state_name) { return plastic_[state_name]; }
+  int                  PlasticNum() const;
+
   // gauge of the lowest frame or body which contains the bodies of the vertices and nodes
   mjCGauge BodyGauge() const;
 
@@ -1303,6 +1312,8 @@ class mjCFlex : public mjCFlex_, private mjsFlex {
 
   // scale the compiled copy: positions by the gauges of their bodies, the rest by that of the flex
   void ApplyGauge();
+  void ForgetKeyframes(const std::vector<std::string>& names, bool keep = false);
+  void ResetId();
 
   std::vector<double> vert0_;     // vertex positions in [0, 1]^d in the bounding box
   std::vector<int>    vertcell_;  // finite cell index for vertex; -1: none
@@ -2006,7 +2017,11 @@ class mjCEquality : public mjCEquality_, private mjsEquality {
 
 class mjCTendon_ : public mjCBase {
  protected:
-  int matid;  // material id for rendering
+  int matid;        // material id for rendering
+  int plasticadr_;  // address in data->plastic
+
+  // variable used for temporarily storing the state of the tendon
+  std::map<std::string, std::array<mjtNum, 2>> plastic_;  // plastic at the previous step
 
   // variable-size data
   std::string         material_;
@@ -2064,8 +2079,15 @@ class mjCTendon : public mjCTendon_, private mjsTendon {
   mjCGauge PathGauge() const;
   int      Linear() const;
 
+  mjtNum* plastic(const std::string& state_name);
+  void    ForgetKeyframes(const std::vector<std::string>& names, bool keep = false);
+
+  // tendon type: fixed if the path is non-empty and has only joints, otherwise spatial
+  mjtTendon Type() const;
+
  private:
   void Compile(void);  // compiler
+  void ResetId();
 
   // scale the compiled copy by the gauge, or back
   void ApplyGauge(bool inverse = false);
@@ -2404,6 +2426,7 @@ typedef struct mjKeyInfo_ {
   bool   ctrl;
   bool   mpos;
   bool   mquat;
+  bool   plastic;
 } mjKeyInfo;
 
 class mjCKey_ : public mjCBase {
@@ -2424,12 +2447,14 @@ class mjCKey_ : public mjCBase {
   std::vector<double> mpos_;
   std::vector<double> mquat_;
   std::vector<double> ctrl_;
+  std::vector<double> plastic_;
   std::vector<double> spec_qpos_;
   std::vector<double> spec_qvel_;
   std::vector<double> spec_act_;
   std::vector<double> spec_mpos_;
   std::vector<double> spec_mquat_;
   std::vector<double> spec_ctrl_;
+  std::vector<double> spec_plastic_;
 };
 
 class mjCKey : public mjCKey_, private mjsKey {

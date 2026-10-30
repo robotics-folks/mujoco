@@ -41,8 +41,7 @@ int LaunchStudio(int argc, char** argv, LauncherConfig config) {
 
   const char* session_type = std::getenv("XDG_SESSION_TYPE");
   const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
-  if ((session_type && std::string_view(session_type) == "wayland") ||
-      wayland_display) {
+  if ((session_type && std::string_view(session_type) == "wayland") || wayland_display) {
     if (config.gfx_mode.empty()) {
       config.gfx_mode = "opengl_headless";
     } else if (config.gfx_mode == "opengl") {
@@ -53,17 +52,16 @@ int LaunchStudio(int argc, char** argv, LauncherConfig config) {
     }
   }
 
-  mujoco::studio::GraphicsMode gfx_mode =
-      mujoco::studio::GraphicsModeFromString(
-          config.gfx_mode, mujoco::studio::GraphicsMode::FilamentOpenGl);
+  mujoco::studio::GraphicsMode gfx_mode = mujoco::studio::GraphicsModeFromString(
+      config.gfx_mode, mujoco::studio::GraphicsMode::FilamentOpenGl);
 
   // Use config values if they are set (non-default), otherwise use flags.
   mujoco::studio::App app({
-    .width = config.window_width,
-    .height = config.window_height,
-    .ini_path = ini_path,
-    .gfx_mode = gfx_mode,
-    .title = config.title,
+      .width = config.window_width,
+      .height = config.window_height,
+      .ini_path = ini_path,
+      .gfx_mode = gfx_mode,
+      .title = config.title,
   });
 
   if (config.model_file.empty()) {
