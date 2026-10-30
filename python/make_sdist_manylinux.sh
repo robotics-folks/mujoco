@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-py_version="py310"
+Fpy_version="py310"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -61,6 +61,8 @@ ${py_bin} "${package_dir}"/mujoco/codegen/generate_function_traits.py > \
     mujoco/function_traits.h
 ${py_bin} "${package_dir}"/mujoco/codegen/generate_spec_bindings.py > \
     mujoco/specs.cc.inc
+${py_bin} "${package_dir}"/mujoco/codegen/generate_mjrf_bindings.py > \
+    mujoco/render_filament_generated.cc.inc
 export PYTHONPATH="${old_pythonpath}"
 
 # Copy over the LICENSE file.

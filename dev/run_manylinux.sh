@@ -22,6 +22,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 command -v fzf >/dev/null 2>&1 && HAS_FZF=true || HAS_FZF=false
+command -v podman >/dev/null 2>&1 && HAS_PODMAN=true || HAS_PODMAN=false
+
+dockerish_build_cmd="docker buildx build"
+dockerish_run_cmd="docker run"
+if [[ "${HAS_PODMAN}" == "true" ]]; then
+    dockerish_build_cmd="podman build"
+    dockerish_run_cmd="podman run"
+fi
 
 modes=(
     "build"
@@ -38,14 +46,14 @@ fi
 case "$MODE" in
     build)
         echo "Building docker image ..."
-        docker buildx build $NO_CACHE_CMD \
+        ${dockerish_build_cmd} $NO_CACHE_CMD \
             -t $DOCKER_IMAGE \
             -f dev/build_manylinux.Dockerfile \
             . --platform linux/amd64
         ;;
     run)
         echo "Running docker container ..."
-        docker run -it --rm --network host \
+        ${dockerish_run_cmd} -it --rm --network host \
             -v $(pwd)/python/dist/:/mujoco/python/dist/ \
             ${DOCKER_IMAGE}
         ;;

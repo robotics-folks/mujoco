@@ -1,7 +1,7 @@
 import argparse
 
 import mujoco as mj
-import mujoco.experimental.studio.window
+import mujoco.studio.window
 import numpy as np
 from mujoco import mjrf
 from mujoco.rendering.filament import model_scene, renderer
