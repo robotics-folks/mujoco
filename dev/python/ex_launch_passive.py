@@ -4,12 +4,7 @@ from typing import Literal
 
 import mujoco as mj
 import tyro
-from mujoco.experimental.studio import (
-  launch_passive,
-  step_control,
-  viewer_app,
-  viewer_protocol,
-)
+from mujoco.studio import launch_passive, step_control, viewer_app, viewer_protocol
 
 
 @dataclass

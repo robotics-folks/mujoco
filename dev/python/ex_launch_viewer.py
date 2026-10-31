@@ -6,7 +6,7 @@ from typing import Literal
 
 import mujoco as mj
 import tyro
-from mujoco.experimental.studio import (
+from mujoco.studio import (
   launch_native,
   launch_thread,
   messages,
