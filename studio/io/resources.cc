@@ -14,6 +14,7 @@
 
 #include "studio/io/resources.h"
 
+#include <cstdio>
 #include <filesystem>  // NOLINT(build/c++17)
 #include <fstream>
 #include <ios>
@@ -38,22 +39,32 @@ std::string Resolve(std::string_view path) {
   std::string_view subpath = path.substr(path.find(':') + 1);
   std::filesystem::path module_dir = GetModuleDir((void*)&Resolve);
   if (module_dir.empty()) {
-    return std::string("assets/") + std::string(subpath);
+    auto r_path = std::string("assets/") + std::string(subpath);
+    std::printf("Resolve - 0 : %s\n", r_path.c_str());
+    return r_path;
   }
   std::filesystem::path resources_dir = module_dir.parent_path() / "Resources";
   if (std::filesystem::exists(resources_dir / "assets")) {
-    return (resources_dir / "assets" / subpath).string();
+    auto r_path = (resources_dir / "assets" / subpath).string();
+    std::printf("Resolve - 1 : %s\n", r_path.c_str());
+    return r_path;
   }
   if (std::filesystem::exists(module_dir / "assets")) {
-    return (module_dir / "assets" / subpath).string();
+    auto r_path = (module_dir / "assets" / subpath).string();
+    std::printf("Resolve - 2 : %s\n", r_path.c_str());
+    return r_path;
   }
   // For a module at the Python package root such as mujoco/_render_filament,
   // assets are staged in the studio package directory.
   std::filesystem::path studio_assets = module_dir / "studio" / "assets";
   if (std::filesystem::exists(studio_assets)) {
-    return (studio_assets / subpath).string();
+    auto r_path = (studio_assets / subpath).string();
+    std::printf("Resolve - 3 : %s\n", r_path.c_str());
+    return r_path;
   }
-  return (module_dir / "assets" / subpath).string();
+  auto r_path = (module_dir / "assets" / subpath).string();
+  std::printf("Resolve - 4 : %s\n", r_path.c_str());
+  return r_path;
 }
 
 class FileResource {

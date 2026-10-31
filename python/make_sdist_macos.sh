@@ -21,6 +21,8 @@ fi
 # Figure out the path to this script (https://stackoverflow.com/a/246128).
 package_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
+command -v uv >/dev/null 2>&1 && py_pip="uv pip" || py_pip="python -m pip"
+
 if [[ "$(uname)" == CYGWIN* || "$(uname)" == MINGW* ]]; then
   package_dir="$(cygpath -m ${package_dir})"
   readonly tmp_dir="$(TMPDIR="${LOCALAPPDATA//\\/$'/'}/Temp" mktemp -d)"
@@ -28,7 +30,7 @@ else
   readonly tmp_dir="$(mktemp -d)"
 fi
 
-uv pip install --no-build-isolation \
+${py_pip} install --no-build-isolation \
     --index-url "${PYPI_INDEX_URL:-https://pypi.org/simple/}" \
     --upgrade --require-hashes \
     -r ${package_dir}/make_sdist_requirements.txt

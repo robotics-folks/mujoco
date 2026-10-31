@@ -101,9 +101,28 @@ cp build/compile_commands.json .
 
 echo "Installing to target dir ..."
 
-source build_common.sh
+if [[ "${build_filament}" == "ON" ]]; then
+    source build_common.sh
 
-install_studio_platform ${ROOT_DIR}/build ${USER_INSTALL_DIR}
+    install_studio_platform ${ROOT_DIR}/build ${USER_INSTALL_DIR}
+else
+    rm -rf ${USER_INSTALL_DIR}
+    mkdir -p ${USER_INSTALL_DIR}
+
+    cmake --install ${ROOT_DIR}/build --prefix ${USER_INSTALL_DIR}
+
+    case "$(uname -s)" in
+        Darwin) plugin_ext="dylib" ;;
+        MINGW*|MSYS*|CYGWIN*) plugin_ext="dll" ;;
+        *) plugin_ext="so" ;;
+    esac
+
+    mkdir -p ${USER_INSTALL_DIR}/mujoco_plugin
+    for plugin in actuator elasticity sensor sdf_plugin; do
+        find ${ROOT_DIR}/build -name "*${plugin}.${plugin_ext}" \
+            -exec cp {} "${USER_INSTALL_DIR}/mujoco_plugin/" \; 2>/dev/null || true
+    done
+fi
 
 # -----------------------------------------------------------------------
 

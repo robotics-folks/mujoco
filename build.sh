@@ -182,5 +182,3 @@ if [[ "${build_python}" == "ON" ]]; then
 
     uv build -v --wheel --force-pep517 ${ROOT_DIR}/python/dist/mujoco-*.tar.gz --out-dir ${ROOT_DIR}/python/dist
 fi
-
-
