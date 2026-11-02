@@ -19,6 +19,7 @@
 #include "engine/engine_inline.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
+#include "engine/engine_util_spatial_avx.h"  // IWYU pragma: keep
 
 
 //------------------------------ quaternion operations ---------------------------------------------
@@ -54,40 +55,52 @@ void mju_rotVecQuat(mjtNum res[3], const mjtNum vec[3], const mjtNum quat[4]) {
 
 // negate quaternion
 void mju_negQuat(mjtNum res[4], const mjtNum quat[4]) {
+#ifdef mjUSEAVX
+  mju_negQuat_avx(res, quat);
+#else
   res[0] = quat[0];
   res[1] = -quat[1];
   res[2] = -quat[2];
   res[3] = -quat[3];
+#endif
 }
 
 
 // multiply quaternions
 void mju_mulQuat(mjtNum res[4], const mjtNum qa[4], const mjtNum qb[4]) {
+#ifdef mjUSEAVX
+  mju_mulQuat_avx(res, qa, qb);
+#else
   mjtNum tmp[4] = {
-    qa[0]*qb[0] - qa[1]*qb[1] - qa[2]*qb[2] - qa[3]*qb[3],
-    qa[0]*qb[1] + qa[1]*qb[0] + qa[2]*qb[3] - qa[3]*qb[2],
-    qa[0]*qb[2] - qa[1]*qb[3] + qa[2]*qb[0] + qa[3]*qb[1],
-    qa[0]*qb[3] + qa[1]*qb[2] - qa[2]*qb[1] + qa[3]*qb[0]
+    (qa[0]*qb[0] - qa[1]*qb[1]) + (-qa[2]*qb[2] - qa[3]*qb[3]),
+    (qa[0]*qb[1] + qa[1]*qb[0]) + ( qa[2]*qb[3] - qa[3]*qb[2]),
+    (qa[0]*qb[2] - qa[1]*qb[3]) + ( qa[2]*qb[0] + qa[3]*qb[1]),
+    (qa[0]*qb[3] + qa[1]*qb[2]) + (-qa[2]*qb[1] + qa[3]*qb[0])
   };
   res[0] = tmp[0];
   res[1] = tmp[1];
   res[2] = tmp[2];
   res[3] = tmp[3];
+#endif
 }
 
 
 // multiply quaternion and axis
 void mju_mulQuatAxis(mjtNum res[4], const mjtNum quat[4], const mjtNum axis[3]) {
+#ifdef mjUSEAVX
+  mju_mulQuatAxis_avx(res, quat, axis);
+#else
   mjtNum tmp[4] = {
     -quat[1]*axis[0] - quat[2]*axis[1] - quat[3]*axis[2],
-    quat[0]*axis[0] + quat[2]*axis[2] - quat[3]*axis[1],
-    quat[0]*axis[1] + quat[3]*axis[0] - quat[1]*axis[2],
-    quat[0]*axis[2] + quat[1]*axis[1] - quat[2]*axis[0]
+     quat[0]*axis[0] - quat[3]*axis[1] + quat[2]*axis[2],
+     quat[3]*axis[0] + quat[0]*axis[1] - quat[1]*axis[2],
+    -quat[2]*axis[0] + quat[1]*axis[1] + quat[0]*axis[2]
   };
   res[0] = tmp[0];
   res[1] = tmp[1];
   res[2] = tmp[2];
   res[3] = tmp[3];
+#endif
 }
 
 
@@ -142,42 +155,12 @@ void mju_subQuat(mjtNum res[3], const mjtNum qa[4], const mjtNum qb[4]) {
 
 // convert quaternion to 3D rotation matrix
 void mju_quat2Mat(mjtNum res[9], const mjtNum quat[4]) {
-  // null quat: identity
-  if (quat[0] == 1 && quat[1] == 0 && quat[2] == 0 && quat[3] == 0) {
-    res[0] = 1;
-    res[1] = 0;
-    res[2] = 0;
-    res[3] = 0;
-    res[4] = 1;
-    res[5] = 0;
-    res[6] = 0;
-    res[7] = 0;
-    res[8] = 1;
-  }
-
-  // regular processing
-  else {
-    mjtNum q00 = quat[0]*quat[0];
-    mjtNum q01 = quat[0]*quat[1];
-    mjtNum q02 = quat[0]*quat[2];
-    mjtNum q03 = quat[0]*quat[3];
-    mjtNum q11 = quat[1]*quat[1];
-    mjtNum q12 = quat[1]*quat[2];
-    mjtNum q13 = quat[1]*quat[3];
-    mjtNum q22 = quat[2]*quat[2];
-    mjtNum q23 = quat[2]*quat[3];
-    mjtNum q33 = quat[3]*quat[3];
-
-    res[0] = q00 + q11 - q22 - q33;
-    res[4] = q00 - q11 + q22 - q33;
-    res[8] = q00 - q11 - q22 + q33;
-
-    res[1] = 2*(q12 - q03);
-    res[2] = 2*(q13 + q02);
-    res[3] = 2*(q12 + q03);
-    res[5] = 2*(q23 - q01);
-    res[6] = 2*(q13 - q02);
-    res[7] = 2*(q23 + q01);
+  if (res == quat) {
+    mjtNum tmp[4];
+    mji_copy4(tmp, quat);
+    mji_quat2Mat(res, tmp);
+  } else {
+    mji_quat2Mat(res, quat);
   }
 }
 
@@ -390,32 +373,44 @@ int mju_mat2Rot(mjtNum quat[4], const mjtNum mat[9]) {
 void mju_mulPose(mjtNum posres[3], mjtNum quatres[4],
                  const mjtNum pos1[3], const mjtNum quat1[4],
                  const mjtNum pos2[3], const mjtNum quat2[4]) {
-  // quatres = quat1*quat2
-  mji_mulQuat(quatres, quat1, quat2);
-  mju_normalize4(quatres);
+  mjtNum ptmp[3], qtmp[4];
 
-  // posres = quat1*pos2 + pos1
-  mji_rotVecQuat(posres, pos2, quat1);
-  mji_addTo3(posres, pos1);
+  // ptmp = quat1*pos2 + pos1
+  mji_rotVecQuat(ptmp, pos2, quat1);
+  mji_addTo3(ptmp, pos1);
+
+  // qtmp = quat1*quat2
+  mji_mulQuat(qtmp, quat1, quat2);
+  mju_normalize4(qtmp);
+
+  mji_copy3(posres, ptmp);
+  mji_copy4(quatres, qtmp);
 }
 
 
 // negate pose
 void mju_negPose(mjtNum posres[3], mjtNum quatres[4], const mjtNum pos[3], const mjtNum quat[4]) {
-  // qres = neg(quat)
-  mji_negQuat(quatres, quat);
+  mjtNum ptmp[3], qtmp[4];
 
-  // pres = -neg(quat)*pos
-  mji_rotVecQuat(posres, pos, quatres);
-  mju_scl3(posres, posres, -1);
+  // qtmp = neg(quat)
+  mji_negQuat(qtmp, quat);
+
+  // posres = -neg(quat)*pos
+  mji_rotVecQuat(ptmp, pos, qtmp);
+  mji_scl3(posres, ptmp, -1);
+
+  mji_copy4(quatres, qtmp);
 }
 
 
 // transform vector by pose
 void mju_trnVecPose(mjtNum res[3], const mjtNum pos[3], const mjtNum quat[4], const mjtNum vec[3]) {
+  mjtNum tmp[3];
+
   // res = quat*vec + pos
-  mji_rotVecQuat(res, vec, quat);
-  mji_addTo3(res, pos);
+  mji_rotVecQuat(tmp, vec, quat);
+  mji_addTo3(tmp, pos);
+  mji_copy3(res, tmp);
 }
 
 

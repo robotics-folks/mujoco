@@ -187,6 +187,47 @@ Engine
   from ``geom_surfacevel`` when ``mjModel.flg_surfacevel`` is set, and external contact generators can write it
   directly (setting ``flg_surfacevel = 1`` if no geom specifies ``surfacevel``). Contact-point visualization now draws
   a single relative tangential velocity arrow per active frictional contact.
+- Added ``xiquat``, ``geom_xquat``, and ``site_xquat`` to :ref:`mjData`, storing the Cartesian quaternion orientations
+  of body inertias, geoms, and sites alongside ``ximat``, ``geom_xmat``, and ``site_xmat``.
+
+Compiler
+^^^^^^^^
+.. admonition:: Breaking changes
+   :class: attention
+
+   - Models that :ref:`include<include>` the same file through different paths, which previously loaded, are now
+     rejected with ``already included``.
+
+     **Migration:** Remove redundant ``<include>`` elements referencing the same file.
+
+   - :ref:`Height fields<asset-hfield>` with :ref:`nrow<asset-hfield-nrow>` or :ref:`ncol<asset-hfield-ncol>` less than
+     2 are now rejected at compile time.
+
+     **Migration:** Ensure height fields have ``nrow >= 2`` and ``ncol >= 2``.
+
+   - :ref:`Fixed tendons<tendon-fixed>` referencing ``ball``/``free`` or duplicate joints or with negative
+     :ref:`armature<tendon-fixed-armature>`, :ref:`spatial tendon<tendon-spatial>`
+     :ref:`pulleys<spatial-pulley>` with non-positive :ref:`divisor<spatial-pulley-divisor>`, and
+     :ref:`camprojection<sensor-camprojection>` or camera-attached :ref:`rangefinder<sensor-rangefinder>` sensors
+     referencing an invalid camera or a camera with non-positive :ref:`resolution<body-camera-resolution>` are now
+     rejected at compile time.
+
+     **Migration:** Ensure fixed tendons wrap distinct ``slide`` or ``hinge`` joints with non-negative armature,
+     pulley divisors are positive, and cameras referenced by ``camprojection`` or ``rangefinder`` sensors have
+     positive resolution.
+
+   - :ref:`Skins<deformable-skin>` with out-of-range face vertex indices and :ref:`mjs_makeMesh`
+     ``mjMESH_BUILTIN_CONE`` calls with fewer than 3 edges or ``radius`` outside ``[0, 1]`` are now rejected at
+     compile time.
+
+     **Migration:** Ensure skin face indices are in ``[0, nvert)`` and cone mesh parameters specify at least 3 edges
+     and a radius in ``[0, 1]``.
+
+- :ref:`default/tendon<default-tendon>` in MJCF now accepts :ref:`armature<tendon-fixed-armature>`,
+  :ref:`actuatorfrclimited<tendon-spatial-actuatorfrclimited>`, and
+  :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` (previously emitted when saving XML, which then failed
+  schema validation on reload).
+- :ref:`mj_encode` now supports binary MJB output for :ref:`mjSpec` via the ``model/vnd.mujoco.mjb`` content type.
 
 Filament Rendering
 ^^^^^^^^^^^^^^^^^^
@@ -217,12 +258,41 @@ Bug fixes
   ``qpos_spring``. Previously their cached poses could be left at ``qpos_spring``. It also no longer overwrites
   ``cam_xpos``, ``cam_xmat``, ``light_xpos`` and ``light_xdir`` in :ref:`mjData`, which left static cameras and lights
   with tracking or targeting at their fixed-mode poses.
+- Fixed a bug where tendon actuators saturated by :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` still
+  contributed to implicit actuator derivatives.
+- Fixed several MJCF XML loading and saving bugs:
+
+  - :ref:`include<include>` no longer double-prefixes the model directory on nested or relative paths.
+  - Loading MJCF now applies enclosing :ref:`frame<frame>` transforms to :ref:`flexcomp<body-flexcomp>`, and allows
+    explicit :at:`range` or :ref:`inheritrange<actuator-position-inheritrange>` attributes on actuator shortcuts to
+    override conflicting defaults.
+  - Saving MJCF (:ref:`mj_saveLastXML`, :ref:`mj_saveXML`, :ref:`mj_saveXMLString`) now preserves
+    :ref:`texture<asset-texture>` :ref:`nchannel<asset-texture-nchannel>` and clamps emitted
+    :ref:`gridlayout<asset-texture-gridlayout>` to ``gridsize`` (while loading resets ``gridlayout`` when an authored
+    ``gridsize`` differs from the inherited default), compares material :ref:`layer<material-layer>` textures, camera
+    :ref:`sensorsize<body-camera-sensorsize>`, and light :ref:`texture<body-light-texture>` against default classes, and
+    writes all attributes on plugin-backed meshes and :at:`reftype`/:at:`refname` on plugin sensors.
+- :ref:`mj_ray` now scales SDF hit distances by ``1 / ||vec||`` for non-unit ray vectors, and ``mju_rayTriangle``
+  rejects triangle intersections behind the ray origin.
+- :ref:`mj_resetData`, :ref:`mj_copyData`, and :ref:`mj_recompile` now preserve the destination :ref:`mjData` thread
+  pool instead of dropping and leaking it.
+- :ref:`mjs_delete` (``MjSpec.delete`` in Python) now removes deleted default classes from the class lookup map
+  instead of leaving dangling pointers; :ref:`mj_copyBack` (``MjSpec.copy_back`` in Python) preserves material
+  ``metallic``, ``roughness``, and ``texuniform`` attributes; :ref:`mjs_findChild` no longer matches a non-world body
+  against itself; and :ref:`mjs_setToMuscle` accepts ``NULL`` ``timeconst`` and ``range`` pointers.
+- Legacy ``.msh`` meshes with mirrored :ref:`scale<asset-mesh-scale>` no longer double-flip face winding (which
+  inverted faces), and ``.msh`` files without vertex normals no longer populate empty face normals or reject custom
+  normals on recompilation.
 
 Documentation
 ^^^^^^^^^^^^^
 - Added documentation for :ref:`MuJoCo Studio <Studio>`, covering :ref:`web <StudioWebViewers>` and
   :ref:`native <StudioNativeViewers>` viewers, :ref:`architecture <StudioArchitecture>`, and
   :ref:`Python <StudioPythonPlugins>` and :ref:`C++ <StudioCpp>` development.
+- Added a :ref:`Model tuning <CTuning>` guide to the Modeling chapter---covering the fidelity--speed trade-off,
+  :ref:`tuning defaults <CTuningDefaults>`, priority-ordered :ref:`global <CTuningGlobal>` and
+  :ref:`model-level <CTuningModel>` parameters, :ref:`deformables <CTuningDeformable>`, and
+  :ref:`system identification <CTuningSysid>`---along with module documentation for :ref:`mujoco.sysid <PySysid>`.
 
 Version 3.17.0 (October 22, 2026)
 ---------------------------------

@@ -42,8 +42,8 @@ int mju_cholFactor(mjtNum* restrict mat, int n, mjtNum mindiag) {
       tmp -= mju_dot(mat+j*n, mat+j*n, j);
     }
 
-    // correct diagonal values below threshold
-    int deficient = tmp < mindiag;
+    // correct diagonal values below threshold (negated >= so NaN counts as deficient)
+    int deficient = !(tmp >= mindiag);
     if (deficient) {
       tmp = mindiag;
       rank--;
@@ -111,7 +111,7 @@ int mju_cholUpdate(mjtNum* restrict mat, mjtNum* restrict x, int n, int flg_plus
       // prepare constants
       Lkk = mat[k*(n+1)];
       tmp = Lkk*Lkk + (flg_plus ? x[k]*x[k] : -x[k]*x[k]);
-      if (tmp < mjMINVAL) {
+      if (!(tmp >= mjMINVAL)) {
         tmp = mjMINVAL;
         rank--;
       }
@@ -154,19 +154,26 @@ int mju_cholFactorSparse(mjtNum* mat, int n, mjtNum mindiag,
 
     // update row r diagonal
     mjtNum tmp = mat[adr+nnz-1];
-    if (tmp < mindiag) {
+    int deficient = !(tmp >= mindiag);
+    if (deficient) {
       tmp = mindiag;
       rank--;
     }
     mat[adr+nnz-1] = mju_sqrt(tmp);
-    tmp = 1/mat[adr+nnz-1];
 
-    // update row r before diagonal
-    for (int i=0; i < nnz-1; i++) {
-      mat[adr+i] *= tmp;
+    // clear off-diagonals if deficient
+    if (deficient) {
+      mju_zero(mat+adr, nnz-1);
+    } else {
+      tmp = 1/mat[adr+nnz-1];
+
+      // update row r before diagonal
+      for (int i=0; i < nnz-1; i++) {
+        mat[adr+i] *= tmp;
+      }
     }
 
-    // update row c<r where mat(r,c)!=0
+    // update row c<r where mat(r,c)!=0 (zero coefficients still merge the pattern)
     for (int i=0; i < nnz-1; i++) {
       // get column index
       int c = colind[adr+i];
@@ -660,7 +667,7 @@ int cholFactorSupernode(
     mjtNum* restrict row_s = Lptr_s[s];
     int nnz_s = L_nnz - s;
     mjtNum diag = row_s[nnz_s-1];
-    int deficient = diag < mindiag;
+    int deficient = !(diag >= mindiag);
     if (deficient) {
       diag = mindiag;
       rank_dec++;
@@ -729,7 +736,7 @@ int mju_cholFactorNumeric(mjtNum* restrict L, int n, mjtNum mindiag,
       ns = 1;
       const mjtNum* restrict Hptr = H + H_adr;
       mjtNum diag = Hptr[L_nnz-1];
-      int deficient = diag < mindiag;
+      int deficient = !(diag >= mindiag);
       if (deficient) {
         diag = mindiag;
         rank--;
@@ -780,6 +787,8 @@ int mju_cholFactorNumeric(mjtNum* restrict L, int n, mjtNum mindiag,
 
 
 // sparse reverse-order Cholesky solve
+//  requires a complete factor: supernode detection assumes that L(r,c) != 0 (r > c) implies
+//  struct(L(r,0:c)) is a subset of struct(L(c,0:c)), which incomplete factors may violate
 void mju_cholSolveSparse(mjtNum* restrict res, const mjtNum* restrict mat,
                          const mjtNum* vec, int n,
                          const int* restrict rownnz, const int* restrict rowadr,
@@ -936,7 +945,7 @@ int mju_cholUpdateSparse(mjtNum* restrict mat, const mjtNum* restrict x, int n, 
     // update diagonal, handle rank-deficient case
     mjtNum diag = mat[adr+nnz];
     mjtNum tmp = diag*diag + (flg_plus ? x_row*x_row : -x_row*x_row);
-    if (tmp < mjMINVAL) {
+    if (!(tmp >= mjMINVAL)) {
       tmp = mjMINVAL;
       rank--;
     }
@@ -1039,19 +1048,19 @@ mjtNum mju_cholFactorBand(mjtNum* restrict mat, int ntotal, int nband, int ndens
                      (width_jj == 1 ? mat[adr_jj-1]*mat[adr_jj-1] : 0);
     mjtNum Ljj = diagadd + diagmul*mat[adr_jj] + mat[adr_jj] - left_jj;
 
-    // update mindiag
-    if (Ljj < mindiag || mindiag < 0) {
-      mindiag = Ljj;
-    }
-
     // stop if rank-deficient
-    if (Ljj < mjMINVAL) {
+    if (!(Ljj >= mjMINVAL)) {
       return 0;
     }
 
     // compute Ljj, scale = 1/Ljj
     Ljj = mju_sqrt(Ljj);
     mjtNum scale = 1 / Ljj;
+
+    // update mindiag
+    if (Ljj < mindiag || mindiag < 0) {
+      mindiag = Ljj;
+    }
 
     // compute L(i,j) for i > j, sparse part
     int adr_ij = adr_jj + nband - 1;
@@ -1088,19 +1097,19 @@ mjtNum mju_cholFactorBand(mjtNum* restrict mat, int ntotal, int nband, int ndens
     mjtNum Ljj = diagadd + diagmul*mat[adr_jj] + mat[adr_jj] -
                  mju_dot(mat+adr_jj-j, mat+adr_jj-j, j);
 
-    // update mindiag
-    if (Ljj < mindiag || mindiag < 0) {
-      mindiag = Ljj;
-    }
-
     // stop if rank-deficient
-    if (Ljj < mjMINVAL) {
+    if (!(Ljj >= mjMINVAL)) {
       return 0;
     }
 
     // compute Ljj, scale = 1/Ljj
     Ljj = mju_sqrt(Ljj);
     mjtNum scale = 1 / Ljj;
+
+    // update mindiag
+    if (Ljj < mindiag || mindiag < 0) {
+      mindiag = Ljj;
+    }
 
     // compute L(i,j) for i > j
     int adr_ij = adr_jj + ntotal;
@@ -2080,7 +2089,7 @@ static int cholInsert(mjtNum* restrict R, mjtNum* restrict temp, mjtNum* restric
 
   // diagonal entry l_22
   mjtNum diag = H[idx*(n+1)] - mju_dot(rowp, rowp, p);
-  if (diag < mjMINVAL) {
+  if (!(diag >= mjMINVAL)) {
     return -1;
   }
   mjtNum l22 = mju_sqrt(diag);
@@ -2180,8 +2189,12 @@ int mju_boxQPoption(mjtNum* res, mjtNum* R, int* index,               // outputs
 
   // no bounds: return Newton point
   if (!lower && !upper) {
-    // try to factorize
-    mju_copy(R, H, n*n);
+    // try to factorize (only lower triangle of H is read and written to R)
+    for (int i=0; i < n; i++) {
+      for (int j=0; j <= i; j++) {
+        R[i*n+j] = H[i*n+j];
+      }
+    }
     int rank = mju_cholFactor(R, n, mjMINVAL);
     if (rank == n) {
       mju_cholSolve(res, R, g, n);
@@ -2411,16 +2424,16 @@ int mju_boxQPoption(mjtNum* res, mjtNum* R, int* index,               // outputs
       }
       value = oldvalue - reduction;
 
-      // increment and break if step is too small
+      // repeat until relative improvement >= Armijo, or break if step is too small
       nstep++;
-      step = step*backtrack;
-      if (step < minstep) {
-        status = mjBOXQP_MAX_LS_ITER;
-        break;
-      }
-
-      // repeat until relative improvement >= Armijo
       improvement = -reduction / (step*sdotg);
+      if (improvement < armijo) {
+        step = step*backtrack;
+        if (step < minstep) {
+          status = mjBOXQP_MAX_LS_ITER;
+          break;
+        }
+      }
     } while (improvement < armijo);
 
 
@@ -2434,6 +2447,12 @@ int mju_boxQPoption(mjtNum* res, mjtNum* R, int* index,               // outputs
       if (written > 0) {
         logptr = minInt(logptr + written, logsz);
       }
+    }
+
+    // stop if line search failed without accepting rejected candidate
+    if (status == mjBOXQP_MAX_LS_ITER) {
+      value = oldvalue;
+      break;
     }
 
     // accept candidate

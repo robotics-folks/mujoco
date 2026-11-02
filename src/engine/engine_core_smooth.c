@@ -45,6 +45,7 @@ void mj_kinematics1(const mjModel* m, mjData* d) {
   mju_zero3(d->xpos);
   mju_unit4(d->xquat);
   mju_zero3(d->xipos);
+  mju_unit4(d->xiquat);
   mju_zero(d->xmat, 9);
   mju_zero(d->ximat, 9);
   d->xmat[0] = d->xmat[4] = d->xmat[8] = 1;
@@ -183,7 +184,7 @@ void mj_kinematics1(const mjModel* m, mjData* d) {
     // assign xquat and xpos, construct xmat
     mji_copy4(d->xquat+4*i, xquat);
     mji_copy3(d->xpos+3*i, xpos);
-    mju_quat2Mat(d->xmat+9*i, xquat);
+    mji_quat2Mat(d->xmat+9*i, xquat);
   }
 }
 
@@ -201,9 +202,9 @@ void mj_kinematics2(const mjModel* m, mjData* d) {
     // skip static body
     if (sleep_enabled && d->body_awake[i] == mjS_STATIC) continue;
 
-    mj_local2Global(d, d->xipos+3*i, d->ximat+9*i,
-                    m->body_ipos+3*i, m->body_iquat+4*i,
-                    i, m->body_sameframe[i]);
+    mj_local2GlobalQuat(d, d->xipos+3*i, d->xiquat+4*i, d->ximat+9*i,
+                        m->body_ipos+3*i, m->body_iquat+4*i,
+                        i, m->body_sameframe[i]);
   }
 
   // compute/copy Cartesian positions and orientations of geoms
@@ -216,9 +217,9 @@ void mj_kinematics2(const mjModel* m, mjData* d) {
     int start = m->body_geomadr[i];
     int end = start + m->body_geomnum[i];
     for (int g=start; g < end; g++) {
-      mj_local2Global(d, d->geom_xpos+3*g, d->geom_xmat+9*g,
-                      m->geom_pos+3*g, m->geom_quat+4*g,
-                      m->geom_bodyid[g], m->geom_sameframe[g]);
+      mj_local2GlobalQuat(d, d->geom_xpos+3*g, d->geom_xquat+4*g, d->geom_xmat+9*g,
+                          m->geom_pos+3*g, m->geom_quat+4*g,
+                          m->geom_bodyid[g], m->geom_sameframe[g]);
     }
   }
 
@@ -230,9 +231,9 @@ void mj_kinematics2(const mjModel* m, mjData* d) {
     // skip site in sleeping or static body
     if (sleep_enabled && d->body_awake[bodyid] != mjS_AWAKE) continue;
 
-    mj_local2Global(d, d->site_xpos+3*i, d->site_xmat+9*i,
-                    m->site_pos+3*i, m->site_quat+4*i,
-                    bodyid, m->site_sameframe[i]);
+    mj_local2GlobalQuat(d, d->site_xpos+3*i, d->site_xquat+4*i, d->site_xmat+9*i,
+                        m->site_pos+3*i, m->site_quat+4*i,
+                        bodyid, m->site_sameframe[i]);
   }
 }
 
@@ -1222,7 +1223,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
       {
         // get data
         int idslider = m->actuator_trnid[2*i+1];
-        mjtNum rod = m->actuator_cranklength[out];
+        mjtNum rod = m->actuator_cranklength[i];
         mjtNum axis[3] = {d->site_xmat[9 * idslider + 2],
                           d->site_xmat[9 * idslider + 5],
                           d->site_xmat[9 * idslider + 8]};
@@ -1328,10 +1329,8 @@ void mj_transmission(const mjModel* m, mjData* d) {
         if (!moment_row) moment_row = mjSTACKALLOC(d, nv, mjtNum);
 
         // relative rotation as expmap in the refsite frame
-        mjtNum quat[4], refquat[4], vec[3];
-        mji_mulQuat(quat, d->xquat+4*m->site_bodyid[id], m->site_quat+4*id);
-        mji_mulQuat(refquat, d->xquat+4*m->site_bodyid[refid], m->site_quat+4*refid);
-        mji_subQuat(vec, quat, refquat);
+        mjtNum vec[3];
+        mji_subQuat(vec, d->site_xquat+4*id, d->site_xquat+4*refid);
 
         // relative rotational Jacobian in global frame
         mj_jacSite(m, d, NULL, jacS, id);
@@ -1488,16 +1487,9 @@ void mj_transmission(const mjModel* m, mjData* d) {
 
         // rotational transmission
         if (!mju_isZero(gear+3, 3)) {
-          mjtNum refquat[4];
-
-          // get site and refsite quats from parent bodies (avoiding mju_mat2Quat)
-          mjtNum quat[4];
-          mji_mulQuat(quat, d->xquat+4*m->site_bodyid[id], m->site_quat+4*id);
-          mji_mulQuat(refquat, d->xquat+4*m->site_bodyid[refid], m->site_quat+4*refid);
-
           // convert difference to expmap (axis-angle)
           mjtNum vec[3];
-          mji_subQuat(vec, quat, refquat);
+          mji_subQuat(vec, d->site_xquat+4*id, d->site_xquat+4*refid);
 
           // add length: dot product with gear
           length[out] += mju_dot3(vec, gear+3);
@@ -2469,22 +2461,12 @@ void mj_rnePostConstraint(const mjModel* m, mjData* d) {
       }
       break;
 
-    case mjEQ_FLEXSTRAIN: {
-      // increment: trilinear uses 2 center (I1,J-1) + 3*ngauss shear, quadratic uses 6*ngauss
-      k = m->eq_obj1id[id];
-      int interp_k = m->flex_interp[k];
-      int order = interp_k < 0 ? -interp_k : interp_k;
-      int nodenum = m->flex_nodenum[k];
-      if (order && nodenum) {
-        int nquad = order + 1;
-        int ngauss = nquad * nquad * nquad;
-        int ncells = m->flex_cellnum[3*k+0]
-                   * m->flex_cellnum[3*k+1]
-                   * m->flex_cellnum[3*k+2];
-        i += ncells * ((order == 1) ? (2 + 3 * ngauss) : (6 * ngauss));
+    case mjEQ_FLEXSTRAIN:
+      // advance past all rows instantiated for this strain constraint
+      while (i < ne && d->efc_id[i] == id) {
+        i++;
       }
       break;
-    }
 
     default:
       mjERROR("unknown constraint type type %d", m->eq_type[id]);    // SHOULD NOT OCCUR

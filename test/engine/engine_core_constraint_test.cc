@@ -1944,5 +1944,141 @@ TEST_F(CoreConstraintTest, ArenaOverflowClearsRowCounts) {
   }
 }
 
+// tiny tangential residual T where T^3 underflows must not poison contact.H
+TEST_F(CoreConstraintTest, EllipticConeHessianSmallTangent) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option cone="elliptic"/>
+    <worldbody>
+      <geom type="plane" size="1 1 .1"/>
+      <body pos="0 0 .099">
+        <freejoint/>
+        <geom size=".1" condim="6" friction="1 .01 .001"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+  ASSERT_EQ(d->ncon, 1);
+  ASSERT_EQ(d->nefc, 6);
+
+  const mjContact& con = d->contact[0];
+  const mjtNum mu = con.mu;
+  const mjtNum Dm = d->efc_D[0] / (mu * mu * (1 + mu * mu));
+
+  // T > 0 where T^2 is normal but T^3 underflows to 0 (even with subnormals),
+  // while orthogonal tangent components are 0 so Inf * 0 would produce NaN
+  const mjtNum T = MjEps(1e-110, 1e-17);
+  const mjtNum N = -0.5 * T / mu;
+  mjtNum jar[6] = {N / mu, T / con.friction[0], 0, 0, 0, 0};
+
+  mjtNum cost = 0;
+  mj_constraintUpdate(m.get(), d.get(), jar, &cost, /*flg_coneHessian=*/1);
+
+  EXPECT_EQ(d->efc_state[0], mjCNSTRSTATE_CONE);
+  EXPECT_FALSE(mju_isBad(cost));
+  for (int j = 0; j < 6; j++) {
+    EXPECT_FALSE(mju_isBad(d->efc_force[j])) << "row " << j;
+  }
+  for (int j = 0; j < 36; j++) {
+    EXPECT_FALSE(mju_isBad(d->contact[0].H[j])) << "entry " << j;
+  }
+
+  // check exact analytical cone Hessian entries along and orthogonal to Uhat_1
+  const mjtNum f0 = con.friction[0];
+  const mjtNum f1 = con.friction[1];
+  EXPECT_THAT(d->contact[0].H[0], MjNear(Dm * mu * mu, 1e-12, 1e-5));
+  EXPECT_THAT(d->contact[0].H[1], MjNear(-Dm * mu * mu * f0, 1e-12, 1e-5));
+  EXPECT_EQ(d->contact[0].H[2], 0);
+  EXPECT_THAT(d->contact[0].H[7], MjNear(Dm * mu * mu * f0 * f0, 1e-12, 1e-5));
+  EXPECT_THAT(d->contact[0].H[14],
+              MjNear(Dm * (mu * mu + 0.5) * f1 * f1, 1e-12, 1e-5));
+}
+
+TEST_F(CoreConstraintTest, TendonEqualitySetsEfcadr) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b1" pos="0 0 1">
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <geom size=".1"/>
+      </body>
+      <body name="b2" pos="1 0 1">
+        <joint name="j2" type="slide" axis="1 0 0"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t1"><joint joint="j1" coef="1"/></fixed>
+      <fixed name="t2"><joint joint="j2" coef="1"/></fixed>
+    </tendon>
+    <equality>
+      <connect body1="b1" anchor="0 0 0"/>
+      <tendon tendon1="t1" tendon2="t2"/>
+    </equality>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+
+  // connect adds 3 efc rows (0..2); tendon equality (eq index 1) starts at
+  // efcadr 3
+  EXPECT_EQ(d->tendon_efcadr[0], 3);
+  EXPECT_EQ(d->tendon_efcadr[1], 3);
+}
+
+TEST_F(CoreConstraintTest, ZeroJacobianTendonDoesNotSetEfcadr) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <site name="s1" pos="0 0 0"/>
+      <site name="s2" pos="1 0 0"/>
+      <body pos="0 0 1">
+        <joint type="slide" axis="0 0 1"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <spatial name="t_eq">
+        <site site="s1"/>
+        <site site="s2"/>
+      </spatial>
+      <spatial name="t_fric" frictionloss="1">
+        <site site="s1"/>
+        <site site="s2"/>
+      </spatial>
+      <spatial name="t_lim" limited="true" range="0 0.5">
+        <site site="s1"/>
+        <site site="s2"/>
+      </spatial>
+    </tendon>
+    <equality>
+      <tendon tendon1="t_eq"/>
+    </equality>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+
+  for (int jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
+    m->opt.jacobian = jacobian;
+    MjDataPtr d = MakeData(m);
+    mj_forward(m.get(), d.get());
+
+    EXPECT_EQ(d->nefc, 0);
+    EXPECT_EQ(d->tendon_efcadr[0], -1);
+    EXPECT_EQ(d->tendon_efcadr[1], -1);
+    EXPECT_EQ(d->tendon_efcadr[2], -1);
+  }
+}
+
 }  // namespace
 }  // namespace mujoco

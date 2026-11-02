@@ -183,6 +183,63 @@ TEST_F(BoxQPTest, UnboundedQP) {
   EXPECT_EQ(nfree, -1);
 }
 
+TEST_F(BoxQPTest, LineSearchFailureRejectsCandidateAndStops) {
+  static const int n = 2;
+  mjtNum H[n * n] = {100, 90, 90, 100};
+  mjtNum g[n] = {-190, 0};
+  mjtNum lower[n] = {-100, 0};
+  mjtNum upper[n] = {100, 100};
+  mjtNum res[n] = {0, 0};
+  int index[n];
+  mjtNum R[n * (n + 7)];
+  char log[1024] = {0};
+
+  // Clipped step=1 increases objective (+3100 > 0); backtrack=0.5 < minstep=0.6
+  // fails line search.
+  mju_boxQPoption(res, R, index, H, g, n, lower, upper, /*maxiter=*/5,
+                  /*mingrad=*/MjTol(1e-12, 1e-5), /*backtrack=*/0.5,
+                  /*minstep=*/0.6, /*armijo=*/0.1, log, sizeof(log));
+
+  EXPECT_MJTNUM_EQ(res[0], 0);
+  EXPECT_MJTNUM_EQ(res[1], 0);
+  EXPECT_THAT(std::string(log),
+              ::testing::HasSubstr("Maximum line-search iterations exceeded"));
+}
+
+TEST_F(BoxQPTest, LineSearchEvaluatesArmijoBeforeBacktrack) {
+  static constexpr int n = 2;
+  mjtNum H[n * n] = {100.0, -90.0, -90.0, 100.0};
+  mjtNum g[n] = {-10.0, -10.0};
+  mjtNum lower[n] = {-10.0, -10.0};
+  mjtNum upper[n] = {0.58, 10.0};
+  mjtNum res[n] = {0.0, 0.0};
+  mjtNum R[n * (n + 7)] = {0.0};
+  int index[n] = {-1, -1};
+
+  // At step=1.0, clipped candidate (0.58, 1.0) has Armijo ratio 0.059 < 0.1;
+  // backtracks to 0.5.
+  int nfree = mju_boxQPoption(res, R, index, H, g, n, lower, upper,
+                              /*maxiter=*/1, /*mingrad=*/MjTol(1e-12, 1e-5),
+                              /*backtrack=*/0.5, /*minstep=*/MjTol(1e-10, 1e-6),
+                              /*armijo=*/0.1, nullptr, 0);
+  EXPECT_EQ(nfree, 2);
+  EXPECT_MJTNUM_EQ(res[0], 0.5);
+  EXPECT_MJTNUM_EQ(res[1], 0.5);
+}
+
+TEST_F(BoxQPTest, UnboundedUpperTrianglePoisoned) {
+  static constexpr int n = 2;
+  mjtNum H[n * n] = {4.0, -999.0, 2.0, 5.0};
+  mjtNum g[n] = {-4.0, -2.0};
+  mjtNum res[n] = {0.0, 0.0};
+  mjtNum R[n * (n + 7)] = {77.0, 77.0, 77.0, 77.0};
+  int index[n] = {-1, -1};
+
+  int nfree = mju_boxQP(res, R, index, H, g, n, nullptr, nullptr);
+  EXPECT_EQ(nfree, n);
+  EXPECT_MJTNUM_EQ(R[1], 77.0);
+}
+
 // small bounded QP with asymmetric Hessian (upper triangle ignored)
 TEST_F(BoxQPTest, AsymmetricUpperIgnored) {
   // small arrays, allocate on stack
@@ -702,6 +759,16 @@ TEST_F(BandMatrixTest, Solve) {
   }
 }
 
+TEST_F(BandMatrixTest, CholFactorBandReturnsMinFactorizedDiag) {
+  mjtNum B[3] = {9.0, 0.0, 4.0};
+  mjtNum minDiag =
+      mju_cholFactorBand(B, /*ntotal=*/2, /*nband=*/1, /*ndense=*/1,
+                         /*diagadd=*/0, /*diagmul=*/0);
+  EXPECT_MJTNUM_EQ(B[mju_bandDiag(0, 2, 1, 1)], 3.0);
+  EXPECT_MJTNUM_EQ(B[mju_bandDiag(1, 2, 1, 1)], 2.0);
+  EXPECT_MJTNUM_EQ(minDiag, 2.0);
+}
+
 using EngineUtilSolveTest = MujocoTest;
 
 TEST_F(EngineUtilSolveTest, MjuCholFactorSymbolic) {
@@ -1122,6 +1189,100 @@ TEST_F(EngineUtilSolveTest, CholFactorNumericClampDecouples) {
   for (int i = 0; i < nnz; i++) {
     EXPECT_LE(mju_abs(L[i]), 1) << "entry " << i;
   }
+}
+
+// NaN pivots must trigger rank-deficiency clamping and row decoupling rather
+// than bypassing `diag < mindiag` and poisoning the factor with NaN while
+// reporting full rank.
+TEST_F(EngineUtilSolveTest, CholFactorNaNPivotClamps) {
+  MjModelPtr model = LoadModelFromString("<mujoco/>");
+  MjDataPtr d = MakeData(model);
+  const mjtNum nan = std::numeric_limits<mjtNum>::quiet_NaN();
+
+  // rows {0, 1, 2} form a 3-row supernode; row 3 is an isolated leaf
+  constexpr int n = 4;
+  mjtNum H[n * n] = {
+      4, 1, 1, 0, 1, 4, 1, 0, 1, 1, 4, 0, 0, 0, 0, 4,
+  };
+  mjtNum sparseH[n * n];
+  int H_rownnz[n], H_rowadr[n], H_colind[n * n];
+  mju_dense2sparse(sparseH, H, n, n, H_rownnz, H_rowadr, H_colind, n * n);
+
+  int L_rownnz[n], L_rowadr[n], LT_rownnz[n], LT_rowadr[n];
+  int nnz = mju_cholFactorSymbolic(nullptr, L_rownnz, L_rowadr, nullptr,
+                                   LT_rownnz, LT_rowadr, nullptr, H_rownnz,
+                                   H_rowadr, H_colind, n, d.get());
+  int L_colind[n * n], LT_colind[n * n], LT_map[n * n];
+  mju_cholFactorSymbolic(L_colind, L_rownnz, L_rowadr, LT_colind, LT_rownnz,
+                         LT_rowadr, LT_map, H_rownnz, H_rowadr, H_colind, n,
+                         d.get());
+
+  // poison supernode pivot (1, 1) and leaf pivot (3, 3) with NaN
+  H[1 * n + 1] = nan;
+  H[3 * n + 3] = nan;
+  for (int r : {1, 3}) {
+    for (int k = H_rowadr[r]; k < H_rowadr[r] + H_rownnz[r]; k++) {
+      if (H_colind[k] == r) {
+        sparseH[k] = nan;
+      }
+    }
+  }
+
+  // dense mju_cholFactor
+  mjtNum L_dense[n * n];
+  mju_copy(L_dense, H, n * n);
+  EXPECT_EQ(mju_cholFactor(L_dense, n, mjMINVAL), n - 2);
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j <= i; j++) {
+      EXPECT_FALSE(mju_isBad(L_dense[i * n + j]))
+          << "dense (" << i << ", " << j << ")";
+    }
+  }
+  EXPECT_EQ(L_dense[1 * n + 1], mju_sqrt(mjMINVAL));
+  EXPECT_EQ(L_dense[3 * n + 3], mju_sqrt(mjMINVAL));
+
+  // sparse mju_cholFactorNumeric (hits both leaf fast path and supernode path)
+  mjtNum L_num[n * n], scratch[n];
+  EXPECT_EQ(
+      mju_cholFactorNumeric(L_num, n, mjMINVAL, L_rownnz, L_rowadr, L_colind,
+                            LT_rownnz, LT_rowadr, LT_colind, LT_map, sparseH,
+                            H_rownnz, H_rowadr, H_colind, scratch),
+      n - 2);
+  for (int i = 0; i < nnz; i++) {
+    EXPECT_FALSE(mju_isBad(L_num[i])) << "numeric entry " << i;
+  }
+  EXPECT_EQ(L_num[L_rowadr[1] + L_rownnz[1] - 1], mju_sqrt(mjMINVAL));
+  EXPECT_EQ(L_num[L_rowadr[1]], 0);
+  EXPECT_EQ(L_num[L_rowadr[3] + L_rownnz[3] - 1], mju_sqrt(mjMINVAL));
+
+  // sparse reference mju_cholFactorSparse
+  mjtNum L_ref[n * n];
+  int L_ref_rownnz[n], L_ref_colind[n * n];
+  for (int r = 0; r < n; r++) {
+    int lower_nnz = 0;
+    for (int k = 0; k < H_rownnz[r]; k++) {
+      int c = H_colind[H_rowadr[r] + k];
+      if (c <= r) {
+        L_ref[L_rowadr[r] + lower_nnz] = sparseH[H_rowadr[r] + k];
+        L_ref_colind[L_rowadr[r] + lower_nnz] = c;
+        lower_nnz++;
+      }
+    }
+    L_ref_rownnz[r] = lower_nnz;
+  }
+  EXPECT_EQ(mju_cholFactorSparse(L_ref, n, mjMINVAL, L_ref_rownnz, L_rowadr,
+                                 L_ref_colind, d.get()),
+            n - 2);
+  for (int r = 0; r < n; r++) {
+    for (int k = 0; k < L_ref_rownnz[r]; k++) {
+      EXPECT_FALSE(mju_isBad(L_ref[L_rowadr[r] + k]))
+          << "sparse (" << r << ", " << k << ")";
+    }
+  }
+
+  // banded mju_cholFactorBand returns 0 on NaN pivot
+  mjtNum B[n] = {2, nan, 2, 2};
+  EXPECT_EQ(mju_cholFactorBand(B, n, /*nband=*/1, /*ndense=*/0, 0, 0), 0);
 }
 
 // ----------------------------- dense LU --------------------------------------
