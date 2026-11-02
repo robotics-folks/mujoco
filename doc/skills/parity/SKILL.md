@@ -18,6 +18,22 @@ description: >-
 
 > [!TIP]
 >
+> **Official MuJoCo documentation (`doc/*.rst`):** Read short chapters like
+> [`../../mjwarp/index.rst`](../../mjwarp/index.rst) (`.. _mjwDiff:`,
+> `.. _mjwOverflow:`, `.. _mjwPairwise:`, `.. _mjwBoxBox:`),
+> [`../../mjx.rst`](../../mjx.rst) (`.. _MjxFeatureParity:`), and
+> [`../../programming/simulation.rst`](../../programming/simulation.rst)
+> (`.. _siIntegrationState:`, `.. _siWarmstart:`) directly when in a MuJoCo
+> checkout; for large files like
+> [`../../computation/index.rst`](../../computation/index.rst) (`.. _Pipeline:`,
+> `.. _piStages:`) and
+> [`../../APIreference/functions.rst`](../../APIreference/functions.rst), grep
+> the literal `.. _Label:` anchor. Outside a checkout, fetch
+> `https://mujoco.readthedocs.io/en/latest/<path>.html` (or `/en/stable/` for
+> released pages; `functions.rst` renders inside
+> `APIreference/APIfunctions.html`, and Sphinx anchors lowercase the label,
+> e.g. `.. _mjwDiff:` → `#mjwdiff`).
+>
 > **Related skills:**
 >
 > -   [mujoco-accelerated](../accelerated/SKILL.md) — GPU/TPU batch simulation
@@ -664,3 +680,13 @@ MuJoCo against MJX (`from mujoco import mjx`):
   present in `dx.contact`; active contacts satisfy
   `dx.contact.dist < dx.contact.includemargin` (ignore slots within
   `dist_tolerance` of `includemargin`).
+
+---
+
+## 6. Key References
+
+-   [MJWarp Differences from MuJoCo & Colliders](../../mjwarp/index.rst) (`.. _mjwDiff:`, `.. _mjwOverflow:`, `.. _mjwPairwise:`, `.. _mjwBoxBox:`)
+-   [MJX Feature Parity & Sharp Bits](../../mjx.rst) (`.. _MjxFeatureParity:`, `.. _MjxSharpBits:`)
+-   [Forward Pipeline Stages, Actuation & Solvers](../../computation/index.rst) (`.. _Pipeline:`, `.. _piStages:`, `.. _geActuation:`, `.. _Solver:`, `.. _Collision:`)
+-   [Integration State (`mjSTATE_INTEGRATION`) & Solver Warmstart](../../programming/simulation.rst) (`.. _siIntegrationState:`, `.. _siWarmstart:`)
+-   [C Forward Subcomponent API](../../APIreference/functions.rst) (`.. _Components:`, `.. _Subcomponents:`)

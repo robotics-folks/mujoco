@@ -23,6 +23,7 @@
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
 #include <mujoco/mjxmacro.h>
 #include "engine/engine_init.h"
+#include "engine/engine_inline.h"
 #include "engine/engine_core_util.h"
 #include "engine/engine_core_smooth.h"
 #include "engine/engine_memory.h"
@@ -586,20 +587,18 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
       if (m->eq_objtype[i] == mjOBJ_BODY) {
         // compute orientation error: neg(q1) * q0 * relpose (axis components only)
         mjtNum* relpose = data+6;
-        mju_mulQuat(quat, d->xquat+4*id[0], relpose);   // quat = q0*relpose
-        mju_negQuat(quat1, d->xquat+4*id[1]);           // quat1 = neg(q1)
+        mji_mulQuat(quat, d->xquat+4*id[0], relpose);   // quat = q0*relpose
+        mji_negQuat(quat1, d->xquat+4*id[1]);           // quat1 = neg(q1)
       }
 
       // orientation, site semantic
       else {
-        mjtNum quat_site1[4];
-        mju_mulQuat(quat, d->xquat+4*body_id[0], m->site_quat+4*id[0]);
-        mju_mulQuat(quat_site1, d->xquat+4*body_id[1], m->site_quat+4*id[1]);
-        mju_negQuat(quat1, quat_site1);
+        mji_copy4(quat, d->site_xquat+4*id[0]);
+        mji_negQuat(quat1, d->site_xquat+4*id[1]);
       }
 
-      mju_mulQuat(quat2, quat1, quat);
-      mju_scl3(cpos+3, quat2+1, torquescale);         // scale axis components by torquescale
+      mji_mulQuat(quat2, quat1, quat);
+      mji_scl3(cpos+3, quat2+1, torquescale);         // scale axis components by torquescale
 
       // correct rotation Jacobian: 0.5 * neg(q1) * (jac0-jac1) * q0 * relpose
       for (int j=0; j < NV; j++) {
@@ -609,8 +608,8 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
         axis[2] = jac[0][5*NV+j];
 
         // apply formula
-        mju_mulQuatAxis(quat2, quat1, axis);    // quat2 = neg(q1)*(jac0-jac1)
-        mju_mulQuat(quat3, quat2, quat);        // quat3 = neg(q1)*(jac0-jac1)*q0*relpose
+        mji_mulQuatAxis(quat2, quat1, axis);    // quat2 = neg(q1)*(jac0-jac1)
+        mji_mulQuat(quat3, quat2, quat);        // quat3 = neg(q1)*(jac0-jac1)*q0*relpose
 
         // correct Jacobian
         jac[0][3*NV+j] = 0.5*quat3[1];
@@ -651,11 +650,6 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
         } else {                            // tendon object
           pos[j][0] = d->ten_length[id[j]];
           ref[j] = m->tendon_length0[id[j]];
-
-          // set tendon_efcadr
-          if (d->tendon_efcadr[id[j]] == -1) {
-            d->tendon_efcadr[id[j]] = i;
-          }
 
           // copy Jacobian: sparse or dense
           if (issparse) {
@@ -954,10 +948,21 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
 
     // add constraint
     if (size) {
+      int efcadr = d->nefc;
       mj_addConstraint(m, d, jac[0], cpos, 0, 0,
                        size, mjCNSTR_EQUALITY, i,
                        issparse ? NV : 0,
                        issparse ? chain : NULL);
+
+      // set tendon_efcadr
+      if (m->eq_type[i] == mjEQ_TENDON && d->nefc > efcadr) {
+        if (d->tendon_efcadr[id[0]] == -1) {
+          d->tendon_efcadr[id[0]] = efcadr;
+        }
+        if (id[1] >= 0 && d->tendon_efcadr[id[1]] == -1) {
+          d->tendon_efcadr[id[1]] = efcadr;
+        }
+      }
     }
   }
 
@@ -1252,7 +1257,7 @@ static int mj_instantiateFriction(const mjModel* m, mjData* d, int count_only, i
                            1, mjCNSTR_FRICTION_TENDON, i, 0, NULL);
         }
         // set tendon_efcadr
-        if (d->tendon_efcadr[i] == -1) {
+        if (d->nefc > efcadr && d->tendon_efcadr[i] == -1) {
           d->tendon_efcadr[i] = efcadr;
         }
       }
@@ -1427,7 +1432,7 @@ static int mj_instantiateLimit(const mjModel* m, mjData* d, int count_only, int*
                              1, mjCNSTR_LIMIT_TENDON, i, 0, NULL);
           }
           // set tendon_efcadr
-          if (d->tendon_efcadr[i] == -1) {
+          if (d->nefc > efcadr && d->tendon_efcadr[i] == -1) {
             d->tendon_efcadr[i] = efcadr;
           }
         }
@@ -3395,10 +3400,16 @@ void mj_constraintUpdate_impl(int ne, int nf, int nefc,
           s += 0.5*Dm*NmT*NmT;
         }
 
+        // unit tangent vector
+        mjtNum Uhat[5];
+        for (int j=1; j < dim; j++) {
+          Uhat[j-1] = U[j] / T;
+        }
+
         // force: - ds/djar = dU/djar * ds/dU  (dU/djar = diag(mu, friction))
         force[i] = -Dm*NmT*mu;
         for (int j=1; j < dim; j++) {
-          force[i+j] = -force[i]/T*U[j]*friction[j-1];
+          force[i+j] = -force[i]*Uhat[j-1]*friction[j-1];
         }
 
         // set state
@@ -3409,23 +3420,22 @@ void mj_constraintUpdate_impl(int ne, int nf, int nefc,
           // get Hessian pointer
           mjtNum* H = contact[id[i]].H;
 
-          // set first row: (1, -mu/T * U)
-          mjtNum scl = -mu/T;
+          // set first row: (1, -mu * Uhat)
           H[0] = 1;
           for (int j=1; j < dim; j++) {
-            H[j] = scl*U[j];
+            H[j] = -mu*Uhat[j-1];
           }
 
-          // set upper block: mu*N/T^3 * U*U'
-          scl = mu*N/(T*T*T);
+          // set upper block: (mu*N/T) * Uhat*Uhat'
+          mjtNum scl = mu*(N/T);
           for (int k=1; k < dim; k++) {
             for (int j=k; j < dim; j++) {
-              H[k*dim+j] = scl*U[j]*U[k];
+              H[k*dim+j] = scl*Uhat[j-1]*Uhat[k-1];
             }
           }
 
           // add to diagonal: (mu^2 - mu*N/T) * I
-          scl = mu*mu - mu*N/T;
+          scl = mu*mu - scl;
           for (int j=1; j < dim; j++) {
             H[j*(dim+1)] += scl;
           }

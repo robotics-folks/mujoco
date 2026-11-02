@@ -921,5 +921,82 @@ TEST_F(SolverTest, NewtonFallsBackToCGOnArenaExhaustion) {
   EXPECT_EQ(dense_tight->warning[mjWARN_BADQACC].number, 0);
 }
 
+// Elliptic cone Hessian and PrimalEval remain finite when the initial iterate
+// has a tangential residual T > 0 small enough that T^3 underflows to zero.
+TEST_F(SolverTest, EllipticConeSmallTangentNoNaN) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option cone="elliptic"/>
+    <worldbody>
+      <geom type="plane" size="1 1 .1"/>
+      <body pos="0 0 .099">
+        <freejoint/>
+        <geom size=".1" condim="6" friction="1 .01 .001" solref="-0 -1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  // zero contact stiffness at rest so efc_aref == 0: a tiny x warmstart gives
+  // N == 0 and T^2 normal but T^3 == 0, i.e. the middle zone of the cone at
+  // alpha = 0 (CG reaches it only via PrimalEval, Newton also via the Hessian)
+  const mjtNum tiny_ax = MjEps(1e-130, 1e-18);
+  for (mjtSolver solver : {mjSOL_NEWTON, mjSOL_CG}) {
+    for (mjtJacobian jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
+      model->opt.solver = solver;
+      model->opt.jacobian = jacobian;
+      MjDataPtr data = MakeData(model);
+      data->qacc_warmstart[0] = tiny_ax;
+
+      mj_step(model.get(), data.get());
+      EXPECT_EQ(data->warning[mjWARN_BADQACC].number, 0)
+          << "solver " << solver << ", jacobian " << jacobian;
+      for (int j = 0; j < model->nv; j++) {
+        EXPECT_FALSE(mju_isBad(data->qacc[j]))
+            << "dof " << j << ", solver " << solver << ", jacobian "
+            << jacobian;
+      }
+    }
+  }
+}
+
+TEST_F(SolverTest, UnconstrainedMetricIslandBeyondMaxStat) {
+  std::string xml = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG"/>
+    <default><geom size=".1" contype="0" conaffinity="0"/></default>
+    <worldbody>)";
+  for (int i = 0; i < mjNISLAND; i++) {
+    xml += "<body><joint type='slide' frictionloss='1'/><geom/></body>";
+  }
+  xml += R"(
+      <body><joint name="ja" type="slide"/><geom/></body>
+      <body><joint name="jb" type="slide"/><geom/></body>
+    </worldbody>
+    <tendon>
+      <fixed damping="1"><joint joint="ja" coef="1"/><joint joint="jb" coef="1"/></fixed>
+    </tendon>
+  </mujoco>)";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // Island 0 sets solver_nnz[0] = 1 (nJ). Because solver_nnz immediately
+  // follows solver_niter[mjNISLAND] in mjData, an out-of-range write to
+  // solver_niter[mjNISLAND] for island 20 (nefc == 0) would land on and
+  // clobber solver_nnz[0].
+  mj_forward(model.get(), data.get());
+
+  ASSERT_EQ(data->nisland, mjNISLAND + 1);
+  ASSERT_EQ(data->island_nefc[mjNISLAND], 0);
+  EXPECT_EQ(data->solver_nnz[0], 1);
+}
+
 }  // namespace
 }  // namespace mujoco

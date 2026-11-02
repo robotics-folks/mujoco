@@ -11,24 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Deprecated compatibility shim; use ``mujoco.studio.app`` instead."""
 
-from mujoco.studio.app import inputs as viewer_app_events
-from mujoco.studio.app import plugins
-
-SIM_PLUGINS = plugins.SIM_PLUGINS
-ViewerApp = plugins.App
-ViewerAppConfig = plugins.Config
-ViewerAppInitEvent = plugins.InitEvent
-imgui = plugins.imgui
-install_console_hooks = plugins.install_console_hooks
-
-__all__ = [
-    'SIM_PLUGINS',
-    'ViewerApp',
-    'ViewerAppConfig',
-    'ViewerAppInitEvent',
-    'imgui',
-    'install_console_hooks',
-    'viewer_app_events',
-]
+mujoco_test(
+  sdf_test
+  PROPERTIES
+  ENVIRONMENT
+  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:sdf_plugin>"
+)

@@ -1652,6 +1652,12 @@ def rungekutta4(m: Model, d: Data):
   wp.copy(d.qpos, qpos_t0)
   wp.copy(d.qvel, qvel_t0)
 
+  # last stage's acceleration, the most recent solve: warm start for the next step
+  qacc_last = wp.clone(d.qacc)
+
+  # effective acceleration of the step (RK weighted combination), read by delayed sensors
+  wp.copy(d.qacc, qacc_rk)
+
   if m.na:
     wp.copy(d.act, act_t0)
     wp.copy(d.act_dot, act_dot_rk)
@@ -1666,6 +1672,7 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.subtree_com, subtree_com_t0)
 
   _advance(m, d, qacc_rk, qvel_rk)
+  wp.copy(d.qacc_warmstart, qacc_last)
 
 
 @wp.kernel
@@ -2375,8 +2382,10 @@ def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: 
   )
 
 
-def implicit_qlu(m: Model, d: Data):
-  """Sets d.qLU = M - dt * qDeriv in D-structure, including RNE derivatives."""
+def implicit_qlu(m: Model, d: Data, qLU: Optional[wp.array2d[float]] = None):
+  """Sets qLU (d.qLU if None) = M - dt * qDeriv in D-structure, including RNE derivatives."""
+  qLU = d.qLU if qLU is None else qLU
+
   # Smooth velocity derivatives into M-structure
   qH_M = wp.empty((d.nworld, m.nC), dtype=float)
   derivative.deriv_smooth_vel(m, d, qH_M)
@@ -2386,13 +2395,13 @@ def implicit_qlu(m: Model, d: Data):
     _map_m2d,
     dim=(d.nworld, m.nD),
     inputs=[m.mapM2D, qH_M],
-    outputs=[d.qLU],
+    outputs=[qLU],
   )
 
   # Compute RNE derivatives, scale by timestep, and add in-place to qLU.
   # Note: inverse dynamics Coriolis enters equations of motion as -qfrc_bias,
   # so M - dt * df/dv = M + dt * d(qfrc_bias)/dv.
-  derivative.deriv_rne_vel(m, d, d.qLU)
+  derivative.deriv_rne_vel(m, d, qLU)
 
 
 @event_scope
