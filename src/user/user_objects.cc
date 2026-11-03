@@ -2625,16 +2625,21 @@ mjCFrame* mjCBody::ToFrame(bool mergeinertial) {
   // merge the inertial into the parent; this can fail, do it before anything is modified
   if (mergeinertial && parent->name != "world") {
     // an inertial is either given in the spec, or inferred from geoms when compiling
-    bool given         = !InfersInertial() && mjuu_defined(spec.ipos[0]) && spec.mass >= mjMINVAL;
     bool inferred      = InfersInertial() && !geoms.empty();
-    bool parent_given  = !parent->InfersInertial() && mjuu_defined(parent->spec.ipos[0]);
+    bool given         = !inferred && mjuu_defined(spec.ipos[0]) && spec.mass >= mjMINVAL;
     bool parent_infers = parent->InfersInertial() && !parent->geoms.empty();
+    bool parent_given  = !parent_infers && mjuu_defined(parent->spec.ipos[0]);
     bool scaled        = ScaledInertial() || parent->ScaledInertial();
+
+    // a body which does not infer its inertial gives no mass to its geoms, e.g. with a massless
+    // inertial: a parent which infers its inertial from geoms must not gain theirs, so the inertia
+    // it has now is written to its spec, as when fusing static bodies
+    bool keepparent = !InfersInertial() && !given && !geoms.empty() && parent->InfersInertial();
 
     // one is given and the other inferred: compile the tree to know what is inferred; if both
     // are inferred, the geoms move to the parent and take the inertia with them. Scaled
     // inertials are merged as compiled
-    if ((given && parent_infers) || (inferred && parent_given) || (given && scaled)) {
+    if ((given && parent_infers) || (inferred && parent_given) || (given && scaled) || keepparent) {
       if (!model->Resolve(nullptr)) {
         std::string error = model->GetError().message;
         throw mjCError(this,
@@ -2642,7 +2647,11 @@ mjCFrame* mjCBody::ToFrame(bool mergeinertial) {
                        "VFS, call mjs_adoptInertial first: %s",
                        error.c_str());
       }
-      if (given || mass >= mjMINVAL) { parent->MergeInertial(this); }
+      if (keepparent) {
+        parent->AdoptInertial();
+      } else if (given || mass >= mjMINVAL) {
+        parent->MergeInertial(this);
+      }
     } else if (given) {
       parent->MergeInertial(this);
     }
@@ -2899,7 +2908,7 @@ mjsElement* mjCBody::NextChild(const mjsElement* child, mjtObj type, bool recurs
 
 
 // compute geom inertial frame: ipos, iquat, mass, inertia
-void mjCBody::InertiaFromGeom(void) {
+bool mjCBody::InertiaFromGeom(void) {
   int    sz;
   double com[3]  = {0, 0, 0};
   double toti[6] = {0, 0, 0, 0, 0, 0};
@@ -2961,8 +2970,11 @@ void mjCBody::InertiaFromGeom(void) {
     // compute principal axes of inertia
     mjuu_copyvec(fullinertia, toti, 6);
     const char* errq = mjuu_fullInertia(iquat, inertia, fullinertia);
-    if (errq) { throw mjCError(this, "error '%s' in alternative for principal axes", errq); }
+    if (errq && (compiler->boundinertia <= 0 || inertia[2] < -mjEPS * std::max(1.0, inertia[0]))) {
+      throw mjCError(this, "error '%s' in alternative for principal axes", errq);
+    }
   }
+  return sz > 0;
 }
 
 
@@ -3129,11 +3141,9 @@ void mjCBody::MergeInertial(const mjCBody* child) {
   double coms[2][3], inerts[2][6];
   mjuu_zerovec(coms[0], 3);
   mjuu_zerovec(inerts[0], 6);
-  if (InfersInertial()) {
-    if (!geoms.empty()) {
-      masses[0] = mass;
-      CompiledInertial(coms[0], inerts[0]);
-    }
+  if (InfersInertial() && !geoms.empty()) {
+    masses[0] = mass;
+    CompiledInertial(coms[0], inerts[0]);
   } else if (mjuu_defined(spec.ipos[0]) && scaled) {
     masses[0] = mass;
     CompiledInertial(coms[0], inerts[0]);
@@ -3143,7 +3153,7 @@ void mjCBody::MergeInertial(const mjCBody* child) {
   }
 
   // inertial of the child, in the coordinates of this body
-  if (child->InfersInertial() || scaled) {
+  if ((child->InfersInertial() && !child->geoms.empty()) || scaled) {
     masses[1] = child->mass;
     child->CompiledInertial(coms[1], inerts[1]);
   } else {
@@ -3385,7 +3395,13 @@ void mjCBody::Compile(void) {
 
     // decompose rotated tensor into principal axes
     const char* err = mjuu_fullInertia(iquat, inertia, fullinertia_body);
-    if (err) { throw mjCError(this, "error '%s' in fullinertia", err); }
+
+    // small principal moments: bounded below with diagonal inertia, if boundinertia is set
+    if (err && (id == 0 ||
+                compiler->boundinertia <= 0 ||
+                inertia[2] < -mjEPS * std::max(1.0, inertia[0]))) {
+      throw mjCError(this, "error '%s' in fullinertia", err);
+    }
   }
 
   if (ialt.type != mjORIENTATION_QUAT) {
@@ -3408,13 +3424,14 @@ void mjCBody::Compile(void) {
 
   // set inertial frame from geoms if necessary; how the body got its inertia is kept, for saving
   // the compiled values also once the spec is edited
-  inertia_inferred_ =
+  bool infer_inertia =
       id > 0 && (compiler->inertiafromgeom == mjINERTIAFROMGEOM_TRUE ||
                  (!mjuu_defined(ipos[0]) && compiler->inertiafromgeom == mjINERTIAFROMGEOM_AUTO));
+  bool from_geom     = infer_inertia && InertiaFromGeom();
+  inertia_inferred_  = from_geom || (infer_inertia && !mjuu_defined(ipos[0]));
   inertia_given_     = !inertia_inferred_ && mjuu_defined(ipos[0]);
   inertia_groups_[0] = compiler->inertiagrouprange[0];
   inertia_groups_[1] = compiler->inertiagrouprange[1];
-  if (inertia_inferred_) { InertiaFromGeom(); }
 
   // ipos undefined: copy body frame into inertial
   if (!mjuu_defined(ipos[0])) {
@@ -6979,7 +6996,7 @@ void mjCPair::Compile(void) {
     // reference
     if (!mjuu_defined(solref[0])) {
       // standard: mix
-      if (solref[0] > 0) {
+      if (geom1->solref[0] > 0 && geom2->solref[0] > 0) {
         for (int i = 0; i < mjNREF; i++) {
           solref[i] = mix * geom1->solref[i] + (1 - mix) * geom2->solref[i];
         }
@@ -7187,8 +7204,15 @@ void mjCEquality::PointToLocal() {
 
 void mjCEquality::NameSpace(const mjCModel* m) {
   mjCBase::NameSpace(m);
-  if (!spec_name1_.empty()) { spec_name1_ = m->prefix + spec_name1_ + m->suffix; }
-  if (!spec_name2_.empty()) { spec_name2_ = m->prefix + spec_name2_ + m->suffix; }
+
+  // the world body keeps its name
+  bool body = spec.objtype == mjOBJ_BODY;
+  if (!spec_name1_.empty() && !(body && spec_name1_ == "world")) {
+    spec_name1_ = m->prefix + spec_name1_ + m->suffix;
+  }
+  if (!spec_name2_.empty() && !(body && spec_name2_ == "world")) {
+    spec_name2_ = m->prefix + spec_name2_ + m->suffix;
+  }
 }
 
 
@@ -7282,12 +7306,16 @@ void mjCEquality::ApplyGauge(bool inverse) {
     }
     const mjCGauge mean = mjCGauge::Mean(g1, g2);
     width               = mean.Shape(1);
-    if (body && type == mjEQ_CONNECT) {
-      g1.Point(data);
-      width = g1.Shape(1);
-    } else if (body) {
-      g2.Point(data);
-      g1.Point(data + 3);
+    if (type == mjEQ_CONNECT) {
+      if (body) {
+        g1.Point(data);
+        width = g1.Shape(1);
+      }
+    } else {
+      if (body) {
+        g2.Point(data);
+        g1.Point(data + 3);
+      }
       data[10] *= mean.Shape(1);
     }
   } else if (type == mjEQ_JOINT || type == mjEQ_TENDON) {
@@ -8265,6 +8293,16 @@ void mjCActuator::ResolveReferences(const mjCModel* m) {
 }
 
 
+// factor of the coordinate: the stretch along a slide, or that of a length
+double mjCActuator::CoordinateFactor(const mjCGauge& g) const {
+  if (!linear_) { return 1; }
+  const bool      tojoint = trntype == mjTRN_JOINT || trntype == mjTRN_JOINTINPARENT;
+  const mjCJoint* joint   = tojoint ? static_cast<const mjCJoint*>(ptarget) : nullptr;
+  const bool      slide   = joint && joint->spec.type == mjJNT_SLIDE;
+  return slide ? g.Stretch(joint->spec.axis) : g.Shape(1);
+}
+
+
 // scale the compiled copy by the gauge of the transmission target, or back. Q is the coordinate of
 // the transmission, L^q, and G the generalized force, M L^(2-q) T^-2; gains and biases are force
 // class whatever their dimension, and a control follows its declared input
@@ -8309,8 +8347,7 @@ void mjCActuator::ApplyGauge(bool inverse) {
   if (g.IsIdentity()) { return; }
 
   // factor of the coordinate: the stretch along a slide, or that of a length
-  const bool   slide = joint && joint->spec.type == mjJNT_SLIDE;
-  const double fq    = !linear_ ? 1 : (slide ? g.Stretch(joint->spec.axis) : g.Shape(1));
+  const double fq = CoordinateFactor(g);
 
   // factors of the inputs which are declared, packed in the order pos, vel, ff, voltage, and of
   // the activation
@@ -8409,8 +8446,12 @@ void mjCActuator::ApplyGauge(bool inverse) {
     if (biasprm[2] < 0) { biasprm[2] *= g.Force(2, 1); }
   }
 
-  // dc motor under geometry: only position and velocity inputs change
+  // dc motor under geometry: only position and velocity quantities change
   else if (gaintype == mjGAIN_DCMOTOR) {
+    if (ctrlspec_ & (mjINPUT_POS | mjINPUT_VEL)) { dynprm[7] *= fq; }
+    dynprm[8]   *= fq;
+    biasprm[1]  /= fq;
+    biasprm[5]  *= fq;
     velrange[0] *= fq;
     velrange[1] *= fq;
     packinputs(fq, fq, 1, 1);
@@ -8823,8 +8864,26 @@ void mjCActuator::Compile(void) {
     }
   }
 
+  // DC motor: one activation per enabled state, as in mj_dcmotorSlots
+  if (dyntype == mjDYN_DCMOTOR && !plugin.active) {
+    int nslot =
+        (dynprm[7] > 0) + (gainprm[5] > 0) + (dynprm[2] > 0) + (dynprm[5] > 0) + (dynprm[0] > 0);
+    if (actdim < 0) {
+      actdim = nslot;
+    } else if (actdim != nslot) {
+      char msg[200];
+      mju::sprintf_arr(msg,
+                       "DC motor parameters in actuator '%s' (id = %d) require actdim %d, got %d",
+                       name.c_str(),
+                       id,
+                       nslot,
+                       actdim);
+      throw mjCError(this, "%s", msg);
+    }
+  }
+
   // set actdim to 1 if it is unset and type is standard one-activation dyntype
-  if (actdim < 0) { actdim = (dyntype != mjDYN_NONE && dyntype != mjDYN_DCMOTOR); }
+  if (actdim < 0) { actdim = (dyntype != mjDYN_NONE); }
 
   // DC motor always uses actearly
   if (dyntype == mjDYN_DCMOTOR && !actearly) {
@@ -9239,7 +9298,7 @@ void mjCSensor::ApplyGauge(bool inverse) {
       const mjCActuator* actuator = static_cast<const mjCActuator*>(obj);
       g                           = actuator->gauge_;
       q                           = actuator->linear_;
-      fq                          = q ? g.Shape(1) : 1;
+      fq                          = actuator->CoordinateFactor(g);
       break;
     }
     case mjOBJ_BODY:
@@ -9249,7 +9308,11 @@ void mjCSensor::ApplyGauge(bool inverse) {
     default:
       g = obj->Gauge();
   }
-  if ((type == mjSENS_GEOMDIST || type == mjSENS_GEOMFROMTO) && ref) {
+  if ((type == mjSENS_GEOMDIST ||
+       type == mjSENS_GEOMNORMAL ||
+       type == mjSENS_GEOMFROMTO ||
+       (type == mjSENS_INSIDESITE && intprm[0])) &&
+      ref) {
     bool body = reftype == mjOBJ_BODY || reftype == mjOBJ_XBODY;
     g         = mjCGauge::Mean(g, body ? ref->ContentGauge() : ref->Gauge());
   }
@@ -9281,6 +9344,9 @@ void mjCSensor::ApplyGauge(bool inverse) {
     case mjSENS_SUBTREELINVEL:
       f = g.Shape(1);
       break;
+    case mjSENS_INSIDESITE:
+      if (intprm[0]) { f = g.Shape(1); }
+      break;
     case mjSENS_JOINTPOS:
     case mjSENS_JOINTVEL:
     case mjSENS_TENDONPOS:
@@ -9303,8 +9369,12 @@ void mjCSensor::ApplyGauge(bool inverse) {
     default:
       break;
   }
-  if (inverse) { f = 1 / f; }
-  cutoff *= f;
+  double f_cutoff = (type == mjSENS_GEOMNORMAL) ? g.Shape(1) : f;
+  if (inverse) {
+    f        = 1 / f;
+    f_cutoff = 1 / f_cutoff;
+  }
+  cutoff *= f_cutoff;
   noise  *= f;
 }
 
@@ -9928,6 +9998,16 @@ void mjCTuple::PointToLocal() {
 void mjCTuple::NameSpace(const mjCModel* m) {
   if (!name.empty()) { name = m->prefix + name + m->suffix; }
   for (int i = 0; i < spec_objname_.size(); i++) {
+    // the world body keeps its name, and so do assets, which are not copied for self-attach
+    mjtObj type  = i < (int)spec_objtype_.size() ? (mjtObj)spec_objtype_[i] : mjOBJ_UNKNOWN;
+    bool   world = (type == mjOBJ_BODY || type == mjOBJ_XBODY) && spec_objname_[i] == "world";
+    bool   asset = type == mjOBJ_MESH ||
+                   type == mjOBJ_HFIELD ||
+                   type == mjOBJ_TEXTURE ||
+                   type == mjOBJ_MATERIAL ||
+                   type == mjOBJ_NUMERIC ||
+                   type == mjOBJ_TEXT;
+    if (world || (asset && model == m)) { continue; }
     spec_objname_[i] = m->prefix + spec_objname_[i] + m->suffix;
   }
 }
@@ -9972,8 +10052,12 @@ void mjCTuple::ResolveReferences(const mjCModel* m) {
 
   // find objects, fill in ids
   for (int i = 0; i < objtype_.size(); i++) {
-    // find object by type and name
+    // find object by type and name; a tuple which is being attached is not yet in the name map of
+    // the model, nor are those attached with it, and it can reference itself
     mjCBase* res = m->FindObject(objtype_[i], objname_[i]);
+    if (!res && objtype_[i] == mjOBJ_TUPLE) {
+      res = objname_[i] == name ? this : m->SearchObject(mjOBJ_TUPLE, objname_[i]);
+    }
     if (!res) {
       throw mjCError(this, "unrecognized object '%s' in tuple %d", objname_[i].c_str(), id);
     }

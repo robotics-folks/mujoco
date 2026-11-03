@@ -73,6 +73,9 @@ def _rod_hinge_size() -> int:
 
 ROD_HINGE_SIZE = _rod_hinge_size()
 
+# maximum number of edges in a 1D DER rod chain with twist or anisotropic cross-section
+ROD_MAX_EDGES = 64
+
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -1648,6 +1651,8 @@ class Model:
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
     has_efm_actuator: whether any actuator contributes effective metric coupling
+    has_actuator_wrap: whether any wrap-eligible rotational actuator is present
+    has_actuator_dcmotor: whether any DC motor actuator is present
     efm0_active: whether zero-mass flex Cholesky preconditioner is active
     flex_interp_assemblable: whether interpolated flex stiffness can be assembled into efm_K
     has_unsupported_flex_interp: whether model has unsupported flex interpolation orders
@@ -2196,6 +2201,8 @@ class Model:
   has_tendon_stiffness: bool
   has_tendon_damping: bool
   has_efm_actuator: bool
+  has_actuator_wrap: bool
+  has_actuator_dcmotor: bool
   efm0_active: bool
   flex_interp_assemblable: bool
   has_unsupported_flex_interp: bool

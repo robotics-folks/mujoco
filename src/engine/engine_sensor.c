@@ -1596,8 +1596,8 @@ void mj_sensorPos(const mjModel* m, mjData* d) {
     mjtSensor type = (mjtSensor) m->sensor_type[i];
 
     // skip sleeping sensor without history
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP &&
-        m->sensor_history[2*i] == 0) {
+    if (sleep_filter && m->sensor_history[2*i] == 0 &&
+        mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -1650,8 +1650,8 @@ void mj_sensorVel(const mjModel* m, mjData* d) {
     }
 
     // skip sleeping sensor without history
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP &&
-        m->sensor_history[2*i] == 0) {
+    if (sleep_filter && m->sensor_history[2*i] == 0 &&
+        mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -1700,8 +1700,8 @@ void mj_sensorAcc(const mjModel* m, mjData* d) {
   // process sensors matching stage
   for (int i=0; i < m->nsensor; i++) {
     // skip sleeping sensor without history
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP &&
-        m->sensor_history[2*i] == 0) {
+    if (sleep_filter && m->sensor_history[2*i] == 0 &&
+        mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -1822,11 +1822,11 @@ void mj_energyPos(const mjModel* m, mjData* d) {
     }
   }
 
-  // add flex-level springs for dim=1
+  // add flex-level edge springs
   if (!mjDISABLED(mjDSBL_SPRING)) {
     for (int i=0; i < m->nflex; i++) {
       stiffness = m->flex_edgestiffness[i];
-      if (m->flex_rigid[i] || stiffness == 0 || m->flex_dim[i] > 1) {
+      if (m->flex_rigid[i] || m->flex_interp[i] || stiffness == 0) {
         continue;
       }
 

@@ -864,13 +864,13 @@ const char* mjuu_fullInertia(double quat[4], double inertia[3], const double ful
 
   mjuu_eig3(eigval, eigvec, quattmp, full);
 
-  // check mimimal eigenvalue
-  if (eigval[2] < mjEPS) { return "inertia must have positive eigenvalues"; }
-
-  // copy
+  // copy, also on error so that callers can bound the inertia
   if (quat) { mjuu_copyvec(quat, quattmp, 4); }
 
   if (inertia) { mjuu_copyvec(inertia, eigval, 3); }
+
+  // check minimal eigenvalue
+  if (eigval[2] < mjEPS) { return "inertia must have positive eigenvalues"; }
 
   return nullptr;
 }
@@ -1211,6 +1211,7 @@ int StrToNum(char* str, char** c) {
 template <>
 float StrToNum(char* str, char** c) {
   float f = strtof(str, c);
+  if (errno == ERANGE && std::isfinite(f)) errno = 0;
   if (std::isnan(f)) errno = EDOM;
   return f;
 }
@@ -1218,6 +1219,7 @@ float StrToNum(char* str, char** c) {
 template <>
 double StrToNum(char* str, char** c) {
   double d = strtod(str, c);
+  if (errno == ERANGE && std::isfinite(d)) errno = 0;
   if (std::isnan(d)) errno = EDOM;
   return d;
 }
@@ -1244,21 +1246,28 @@ inline char* SkipSpace(char* c) {
 template <typename T>
 std::vector<T> StringToVector(char* cs) {
   std::vector<T> v;
-  char*          ch = cs;
+  char*          ch      = cs;
+  bool           has_nan = false;
 
   errno = 0;
   // reserve worst case
   v.reserve((std::strlen(cs) >> 1) + 1);
 
   for (;;) {
-    cs = SkipSpace(ch);                      // skip leading spaces
-    if (*cs == '\0') break;                  // end of string
+    cs = SkipSpace(ch);      // skip leading spaces
+    if (*cs == '\0') break;  // end of string
+    errno = 0;
     T num = StrToNum<T>(cs, &ch);            // parse number
     if (!IsNullOrSpace(ch)) errno = EINVAL;  // invalid separator
     if (cs == ch) errno = EINVAL;            // failed to parse number
-    if (errno && errno != EDOM) break;       // NaNs are quietly ignored
+    if (errno == EDOM) {
+      has_nan = true;
+      errno   = 0;
+    }
+    if (errno) break;  // NaNs are quietly ignored
     v.push_back(num);
   }
+  if (!errno && has_nan) errno = EDOM;
 
   v.shrink_to_fit();
   return v;

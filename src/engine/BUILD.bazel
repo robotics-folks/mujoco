@@ -48,14 +48,25 @@ alias(
     }),
 )
 
+_C_CONLYOPTS = [
+    "-std=c11",
+    "-Werror",
+    "-Wall",
+    "-Wpedantic",
+    "-Wstrict-prototypes",
+    "-Wshadow",
+    "-Wunused",
+    "-Wvla",
+    "-Wimplicit-fallthrough",
+]
+
 cc_library(
     name = "engine",
     srcs = ["engine_print.c"],
     hdrs = ["engine_print.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -70,7 +81,6 @@ cc_library(
     ],
     visibility = [":_api_visibility"],
     deps = [
-        ":engine_core",
         ":engine_core_util",
         ":engine_derivative",  # buildcleaner: keep
         ":engine_derivative_fd",  # buildcleaner: keep
@@ -102,10 +112,9 @@ cc_library(
     name = "engine_derivative_fd",
     srcs = ["engine_derivative_fd.c"],
     hdrs = ["engine_derivative_fd.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -119,9 +128,11 @@ cc_library(
         "mjUSEPLATFORMSIMD",
     ],
     deps = [
+        ":engine_core_util",
         ":engine_forward",
         ":engine_macro",
         ":engine_memory",
+        ":engine_sensor",
         ":engine_support",
         ":engine_util_blas",
         ":engine_util_errmem",
@@ -136,10 +147,9 @@ cc_library(
     name = "engine_setconst",
     srcs = ["engine_setconst.c"],
     hdrs = ["engine_setconst.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -182,10 +192,9 @@ cc_library(
         "engine_inverse.h",
         "engine_ipc.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -230,10 +239,9 @@ cc_library(
     name = "engine_solver",
     srcs = ["engine_solver.c"],
     hdrs = ["engine_solver.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -274,10 +282,9 @@ cc_library(
         "engine_metric.h",
         "engine_passive.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -313,10 +320,9 @@ cc_library(
     name = "engine_sensor",
     srcs = ["engine_sensor.c"],
     hdrs = ["engine_sensor.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -375,10 +381,9 @@ cc_library(
     name = "engine_callback",
     srcs = ["engine_callback.c"],
     hdrs = ["engine_callback.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -405,10 +410,9 @@ cc_library(
         "engine_collision_sdf.h",
         "engine_ray.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -439,10 +443,9 @@ cc_library(
     hdrs = [
         "engine_collision_driver.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -485,10 +488,9 @@ cc_library(
     srcs = [
         "engine_collision_box.c",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -518,10 +520,9 @@ cc_library(
         "engine_collision_convex.h",
         "engine_collision_gjk.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -552,10 +553,9 @@ cc_library(
     name = "engine_collision_primitive",
     srcs = ["engine_collision_primitive.c"],
     hdrs = ["engine_collision_primitive.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -581,10 +581,9 @@ cc_library(
     name = "engine_collision_flex",
     srcs = ["engine_collision_flex.c"],
     hdrs = ["engine_collision_flex.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -612,10 +611,9 @@ cc_library(
     name = "engine_collision_continuous",
     srcs = ["engine_collision_continuous.c"],
     hdrs = ["engine_collision_continuous.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -673,10 +671,9 @@ cc_library(
     name = "engine_core_util",
     srcs = ["engine_core_util.c"],
     hdrs = ["engine_core_util.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -711,10 +708,9 @@ cc_library(
         "engine_core_constraint.h",
         "engine_core_smooth.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -748,10 +744,9 @@ cc_library(
     name = "engine_island",
     srcs = ["engine_island.c"],
     hdrs = ["engine_island.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -777,10 +772,9 @@ cc_library(
     name = "engine_support",
     srcs = ["engine_support.c"],
     hdrs = ["engine_support.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -818,10 +812,9 @@ cc_library(
         "engine_vis_interact.h",
         "engine_vis_visualize.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -856,10 +849,9 @@ cc_library(
     name = "engine_vis_init",
     srcs = ["engine_vis_init.c"],
     hdrs = ["engine_vis_init.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -884,10 +876,9 @@ cc_library(
     name = "engine_init",
     srcs = ["engine_init.c"],
     hdrs = ["engine_init.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -934,10 +925,9 @@ cc_library(
     name = "engine_io",
     srcs = ["engine_io.c"],
     hdrs = ["engine_io.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -993,10 +983,9 @@ cc_library(
     name = "engine_memory",
     srcs = ["engine_memory.c"],
     hdrs = ["engine_memory.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -1019,10 +1008,9 @@ cc_library(
     name = "engine_name",
     srcs = ["engine_name.c"],
     hdrs = ["engine_name.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -1074,10 +1062,9 @@ cc_library(
     name = "engine_sleep",
     srcs = ["engine_sleep.c"],
     hdrs = ["engine_sleep.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -1127,10 +1114,9 @@ cc_library(
         "engine_util_blas.h",
         "engine_util_blas_avx.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -1152,10 +1138,9 @@ cc_library(
     name = "engine_util_errmem",
     srcs = ["engine_util_errmem.c"],
     hdrs = ["engine_util_errmem.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -1181,10 +1166,9 @@ cc_library(
     name = "engine_util_misc",
     srcs = ["engine_util_misc.c"],
     hdrs = ["engine_util_misc.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -1215,10 +1199,9 @@ cc_library(
         "engine_util_sparse.h",
         "engine_util_sparse_avx.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -1244,10 +1227,9 @@ cc_library(
     name = "engine_util_spatial",
     srcs = ["engine_util_spatial.c"],
     hdrs = ["engine_util_spatial.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [
@@ -1271,10 +1253,9 @@ cc_library(
     name = "engine_util_solve",
     srcs = ["engine_util_solve.c"],
     hdrs = ["engine_util_solve.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
-        "-Wshadow",
         "-fvisibility=hidden",
     ],
     cxxopts = [

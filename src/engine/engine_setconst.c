@@ -775,6 +775,19 @@ static void setFixed(mjModel* m, mjData* d) {
           m->tree_sleep_policy[treeid] = mjSLEEP_AUTO_NEVER;
         }
       }
+      if (m->flex_dim[i] == 1 && m->flex_bendingadr[i] >= 0) {
+        const mjtNum* b = m->flex_bending + m->flex_bendingadr[i];
+        for (int h = 0; h < (int)b[0]; ++h) {
+          const mjtNum* hinge = b + 1 + 10 * h;
+          if (hinge[3] < 0 && hinge[7] >= 0) {
+            int jnt = (int)hinge[7];
+            int treeid = m->dof_treeid[m->jnt_dofadr[jnt]];
+            if (treeid != -1 && m->tree_sleep_policy[treeid] == mjSLEEP_AUTO) {
+              m->tree_sleep_policy[treeid] = mjSLEEP_AUTO_NEVER;
+            }
+          }
+        }
+      }
     }
   }
 
@@ -897,9 +910,15 @@ static void makeFlexSparse(mjModel* m, mjData* d) {
   mju_zeroInt(m->flexedge_J_colind, m->nJfe);
 
   // compute lengths and Jacobians of edges
+  int total_nnz = 0;
   for (int f = 0; f < m->nflex; f++) {
+    int ebase = m->flex_edgeadr[f];
+
     // skip if edges cannot generate forces
     if (m->flex_rigid[f] || m->flex_interp[f]) {
+      for (int e = 0; e < m->flex_edgenum[f]; e++) {
+        rowadr[ebase + e] = total_nnz;
+      }
       continue;
     }
 
@@ -909,15 +928,11 @@ static void makeFlexSparse(mjModel* m, mjData* d) {
 
     // process edges of this flex
     int vbase = m->flex_vertadr[f];
-    int ebase = m->flex_edgeadr[f];
     for (int e = 0; e < m->flex_edgenum[f]; e++) {
+      // set rowadr
+      rowadr[ebase + e] = total_nnz;
       if (skipjacobian) {
         continue;
-      }
-
-      // set rowadr
-      if (ebase + e > 0) {
-        rowadr[ebase + e] = rowadr[ebase + e - 1] + rownnz[ebase + e - 1];
       }
 
       int v1 = m->flex_edge[2 * (ebase + e)];
@@ -931,7 +946,8 @@ static void makeFlexSparse(mjModel* m, mjData* d) {
 
       // copy sparsity info
       rownnz[ebase + e] = NV;
-      mju_copyInt(colind + rowadr[ebase + e], chain, NV);
+      mju_copyInt(colind + total_nnz, chain, NV);
+      total_nnz += NV;
     }
   }
 

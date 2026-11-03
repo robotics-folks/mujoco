@@ -624,6 +624,40 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       | (mjm.actuator_biastype == mujoco.mjtBias.mjBIAS_SO3)
     )
   )
+  has_actuator_wrap = False
+  for i in range(mjm.nactuator):
+    dyntype = int(mjm.actuator_dyntype[i])
+    if dyntype in (
+      int(mujoco.mjtDyn.mjDYN_INTEGRATOR),
+      int(mujoco.mjtDyn.mjDYN_FILTER),
+      int(mujoco.mjtDyn.mjDYN_FILTEREXACT),
+    ):
+      gaintype = int(mjm.actuator_gaintype[i])
+      biastype = int(mjm.actuator_biastype[i])
+      if (
+        gaintype == int(mujoco.mjtGain.mjGAIN_FIXED)
+        and biastype == int(mujoco.mjtBias.mjBIAS_AFFINE)
+        and mjm.actuator_gainprm[i, 0] == -mjm.actuator_biasprm[i, 1]
+      ):
+        trntype = int(mjm.actuator_trntype[i])
+        if trntype in (int(mujoco.mjtTrn.mjTRN_JOINT), int(mujoco.mjtTrn.mjTRN_JOINTINPARENT)):
+          jntid = int(mjm.actuator_trnid[i, 0])
+          jnt_type = int(mjm.jnt_type[jntid])
+          if jnt_type == int(mujoco.mjtJoint.mjJNT_BALL) and np.any(mjm.actuator_gear[i, :3] != 0.0):
+            has_actuator_wrap = True
+            break
+        elif (
+          trntype == int(mujoco.mjtTrn.mjTRN_SITE)
+          and mjm.actuator_trnid[i, 1] >= 0
+          and np.all(mjm.actuator_gear[i, :3] == 0.0)
+          and np.any(mjm.actuator_gear[i, 3:6] != 0.0)
+        ):
+          has_actuator_wrap = True
+          break
+  m.has_actuator_wrap = has_actuator_wrap
+  m.has_actuator_dcmotor = bool(
+    mjm.nactuator > 0 and np.any(mjm.actuator_dyntype == int(mujoco.mjtDyn.mjDYN_DCMOTOR))
+  )
   m.has_1d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 1))
   m.has_2d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 2))
   m.has_3d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 3))
@@ -1322,7 +1356,20 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     bendingadr = int(mjm.flex_bendingadr[fi])
     if mjm.flex_dim[fi] != 1 or mjm.flex_interp[fi] != 0 or mjm.flex_rigid[fi] or bendingadr < 0:
       continue
-    for h in range(int(mjm.flex_bending[bendingadr])):
+    nhinge = int(mjm.flex_bending[bendingadr])
+    if types.ROD_HINGE_SIZE == 10 and nhinge + 1 > types.ROD_MAX_EDGES:
+      records = mjm.flex_bending[bendingadr + 1 : bendingadr + 1 + types.ROD_HINGE_SIZE * nhinge].reshape(
+        nhinge, types.ROD_HINGE_SIZE
+      )
+      va = int(mjm.flex_vertadr[fi])
+      root_clamped = mjm.flex_vertbodyid[va + int(records[0, 0])] == mjm.flex_vertbodyid[va + int(records[0, 1])]
+      has_twist = root_clamped and records[0, 7] >= 0 and records[0, 8] > 0
+      has_aniso = bool((records[:, 5] != 0).any())
+      if has_twist or has_aniso:
+        raise NotImplementedError(
+          f"1D rod chain with {nhinge + 1} edges exceeds ROD_MAX_EDGES ({types.ROD_MAX_EDGES})."
+        )
+    for h in range(nhinge):
       flex_rodhinge_map.append((fi, bendingadr + 1 + types.ROD_HINGE_SIZE * h))
   m.nflexrodhinge = len(flex_rodhinge_map)
   m.flex_rodhinge_map = np.array(flex_rodhinge_map, dtype=np.int32).reshape(-1, 2)
