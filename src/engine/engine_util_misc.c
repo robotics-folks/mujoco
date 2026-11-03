@@ -724,31 +724,6 @@ void mju_interpolate3D(mjtNum res[3], const mjtNum x[3], const mjtNum* coeff, in
 }
 
 
-// polar rotation of a 3x3 matrix; for large rotations (non-positive trace), warm-start from the
-// Gram-Schmidt rotation of the first two columns so that the iteration does not stall at the
-// identity saddle point (e.g. 180 degree rotations)
-void mju_flexPolarRotation(mjtNum quat[4], const mjtNum mat[9]) {
-  quat[0] = 1;
-  quat[1] = 0;
-  quat[2] = 0;
-  quat[3] = 0;
-  mjtNum c0[3] = {mat[0], mat[3], mat[6]};
-  mjtNum c1[3] = {mat[1], mat[4], mat[7]};
-  if (mat[0] + mat[4] + mat[8] <= 0 && mju_normalize3(c0) > mjMINVAL) {
-    mju_addToScl3(c1, c0, -mju_dot3(c0, c1));
-    if (mju_normalize3(c1) > mjMINVAL) {
-      mjtNum c2[3];
-      mju_cross(c2, c0, c1);
-      mjtNum rot[9] = {c0[0], c1[0], c2[0],
-                       c0[1], c1[1], c2[1],
-                       c0[2], c1[2], c2[2]};
-      mju_mat2Quat(quat, rot);
-    }
-  }
-  mju_mat2Rot(quat, mat);
-}
-
-
 static void flexInterpRotation(int order, const mjtNum* xpos_c,
                                const mjtNum dref[3], const mjtNum local[3],
                                mjtNum* quat) {
@@ -772,7 +747,8 @@ static void flexInterpRotation(int order, const mjtNum* xpos_c,
   }
 
   // find rotation
-  mju_flexPolarRotation(quat, mat);
+  mju_unit4(quat);
+  mju_mat2Rot(quat, mat);
   mju_negQuat(quat, quat);
 }
 
@@ -857,7 +833,8 @@ void mju_flexInterpRotation2D(int order, const mjtNum* xpos_f, int npe,
   }
 
   // extract rotation via polar decomposition
-  mju_flexPolarRotation(quat, mat);
+  mju_unit4(quat);
+  mju_mat2Rot(quat, mat);
   mju_negQuat(quat, quat);
 }
 
@@ -968,7 +945,8 @@ void mju_flexGatherFaceState(int order, int cx, int cy, int cz,
         mat[1*3 + col] = vecs[col][1];
         mat[2*3 + col] = vecs[col][2];
       }
-      mju_flexPolarRotation(quat, mat);
+      mju_unit4(quat);
+      mju_mat2Rot(quat, mat);
       mju_negQuat(quat, quat);
     } else {
       mjtNum p[2] = {.5, .5};
@@ -1003,6 +981,10 @@ void mju_flexFaceNormal2D(mjtNum normal[3], mjtNum t1[3], mjtNum t2[3],
 
 // helper: get nodexpos value for node (i,j,k) in an nx*ny*nz grid
 static inline const mjtNum* nodeAt(const mjtNum* nodexpos, int ny, int nz, int i, int j, int k) {
+  return nodexpos + 3*(i*ny*nz + j*nz + k);
+}
+
+static inline mjtNum* nodeAtMut(mjtNum* nodexpos, int ny, int nz, int i, int j, int k) {
   return nodexpos + 3*(i*ny*nz + j*nz + k);
 }
 
@@ -1083,6 +1065,65 @@ void mju_shellTrackInterior(mjtNum* nodexpos, int nx, int ny, int nz) {
 }
 
 
+// distribute interior node forces to boundary nodes via transpose of Transfinite Interpolation
+void mju_shellScatterInterior(mjtNum* nodefrc, int nx, int ny, int nz) {
+  if (nx < 3 || ny < 3 || nz < 3) {
+    return;
+  }
+
+  for (int i = 1; i < nx-1; i++) {
+    for (int j = 1; j < ny-1; j++) {
+      for (int k = 1; k < nz-1; k++) {
+        mjtNum* f_ptr = nodeAtMut(nodefrc, ny, nz, i, j, k);
+        mjtNum f[3] = {f_ptr[0], f_ptr[1], f_ptr[2]};
+        mju_zero3(f_ptr);
+        if (!f[0] && !f[1] && !f[2]) {
+          continue;
+        }
+
+        mjtNum s = (mjtNum)i / (nx-1);
+        mjtNum t = (mjtNum)j / (ny-1);
+        mjtNum u = (mjtNum)k / (nz-1);
+
+        // face contributions
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, j, k), f, 1-s);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, j, k), f, s);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, 0, k), f, 1-t);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, ny-1, k), f, t);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, j, 0), f, 1-u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, j, nz-1), f, u);
+
+        // edge corrections
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, 0, 0), f, -(1-t)*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, 0, nz-1), f, -(1-t)*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, ny-1, 0), f, -t*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, ny-1, nz-1), f, -t*u);
+
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, j, 0), f, -(1-s)*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, j, nz-1), f, -(1-s)*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, j, 0), f, -s*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, j, nz-1), f, -s*u);
+
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, 0, k), f, -(1-s)*(1-t));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, ny-1, k), f, -(1-s)*t);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, 0, k), f, -s*(1-t));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, ny-1, k), f, -s*t);
+
+        // corner corrections
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, 0, 0), f, (1-s)*(1-t)*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, 0, nz-1), f, (1-s)*(1-t)*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, ny-1, 0), f, (1-s)*t*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, ny-1, nz-1), f, (1-s)*t*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, 0, 0), f, s*(1-t)*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, 0, nz-1), f, s*(1-t)*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, ny-1, 0), f, s*t*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, ny-1, nz-1), f, s*t*u);
+      }
+    }
+  }
+}
+
+
 // helper to accumulate weights in a sparse list
 static void addWeight(int* nb, int* body, mjtNum* bweight, int b, mjtNum w) {
   for (int i = 0; i < *nb; i++) {
@@ -1108,41 +1149,45 @@ void mju_shellTFIWeights(int nx, int ny, int nz, int i, int j, int k,
   mjtNum t = (mjtNum)j / (ny-1);
   mjtNum u = (mjtNum)k / (nz-1);
 
+  #define NODE_ID(idx) (nodebodyid ? nodebodyid[nstart + (idx)] : nstart + (idx))
+
   // face contributions
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + j*nz + k], w * (1-s));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + j*nz + k], w * s);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + j*nz + k), w * (1-s));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + j*nz + k), w * s);
 
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + 0*nz + k], w * (1-t));
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + (ny-1)*nz + k], w * t);
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + 0*nz + k), w * (1-t));
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + (ny-1)*nz + k), w * t);
 
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + j*nz + 0], w * (1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + j*nz + (nz-1)], w * u);
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + j*nz + 0), w * (1-u));
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + j*nz + (nz-1)), w * u);
 
   // edge corrections
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + 0*nz + 0], -w * (1-t)*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + 0*nz + (nz-1)], -w * (1-t)*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + (ny-1)*nz + 0], -w * t*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + (ny-1)*nz + (nz-1)], -w * t*u);
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + 0*nz + 0), -w * (1-t)*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + 0*nz + (nz-1)), -w * (1-t)*u);
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + (ny-1)*nz + 0), -w * t*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + (ny-1)*nz + (nz-1)), -w * t*u);
 
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + j*nz + 0], -w * (1-s)*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + j*nz + (nz-1)], -w * (1-s)*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + j*nz + 0], -w * s*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + j*nz + (nz-1)], -w * s*u);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + j*nz + 0), -w * (1-s)*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + j*nz + (nz-1)), -w * (1-s)*u);
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + j*nz + 0), -w * s*(1-u));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + j*nz + (nz-1)), -w * s*u);
 
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + 0*nz + k], -w * (1-s)*(1-t));
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + (ny-1)*nz + k], -w * (1-s)*t);
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + 0*nz + k], -w * s*(1-t));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + (ny-1)*nz + k], -w * s*t);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + 0*nz + k), -w * (1-s)*(1-t));
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + (ny-1)*nz + k), -w * (1-s)*t);
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + 0*nz + k), -w * s*(1-t));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + (ny-1)*nz + k), -w * s*t);
 
   // corner corrections
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + 0*nz + 0], w * (1-s)*(1-t)*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + 0*nz + (nz-1)], w * (1-s)*(1-t)*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + (ny-1)*nz + 0], w * (1-s)*t*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + (ny-1)*nz + (nz-1)], w * (1-s)*t*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + 0*nz + 0], w * s*(1-t)*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + 0*nz + (nz-1)], w * s*(1-t)*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + (ny-1)*nz + 0], w * s*t*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + (ny-1)*nz + (nz-1)], w * s*t*u);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + 0*nz + 0), w * (1-s)*(1-t)*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + 0*nz + (nz-1)), w * (1-s)*(1-t)*u);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + (ny-1)*nz + 0), w * (1-s)*t*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + (ny-1)*nz + (nz-1)), w * (1-s)*t*u);
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + 0*nz + 0), w * s*(1-t)*(1-u));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + 0*nz + (nz-1)), w * s*(1-t)*u);
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + (ny-1)*nz + 0), w * s*t*(1-u));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + (ny-1)*nz + (nz-1)), w * s*t*u);
+
+  #undef NODE_ID
 }
 
 

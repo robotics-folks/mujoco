@@ -807,13 +807,20 @@ TEST_F(SolverTest, ConeFoldEquivalent) {
 // magnitude below their diagonals. In single precision rounding loses one:
 // Newton must clamp and decouple it and continue, not abort or diverge.
 TEST_F(SolverTest, NewtonHessianSurvivesLostPivot) {
-  constexpr char xml[] = R"(
-  <mujoco>
-    <worldbody>
-      <composite type="cable" curve="s" count="41 1 1" size="1" initial="none">
-        <joint kind="main" damping=".015"/>
-        <geom type="capsule" size=".005" contype="0" conaffinity="0"/>
-      </composite>
+  std::string xml = "<mujoco><worldbody>";
+  for (int i = 0; i < 40; i++) {
+    xml += (i == 0)    ? "<body pos='0 0 0'>"
+           : (i == 39) ? "<body name='B_last' pos='.025 0 0'>"
+                       : "<body pos='.025 0 0'>";
+    xml += "<joint type='ball' damping='.015'/>";
+    xml +=
+        "<geom type='capsule' size='.005' fromto='0 0 0 .025 0 0' "
+        "contype='0' conaffinity='0'/>";
+  }
+  for (int i = 0; i < 40; i++) {
+    xml += "</body>";
+  }
+  xml += R"(
       <body name="slider" pos="1 0 0">
         <joint type="slide" axis="1 0 0" damping=".1"/>
         <geom size=".01" contype="0" conaffinity="0"/>
@@ -826,7 +833,7 @@ TEST_F(SolverTest, NewtonHessianSurvivesLostPivot) {
   )";
 
   char error[1024];
-  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  MjModelPtr model = LoadModelFromString(xml.c_str(), error, sizeof(error));
   ASSERT_THAT(model.get(), NotNull()) << error;
   model->opt.solver = mjSOL_NEWTON;
 
@@ -996,6 +1003,78 @@ TEST_F(SolverTest, UnconstrainedMetricIslandBeyondMaxStat) {
   ASSERT_EQ(data->nisland, mjNISLAND + 1);
   ASSERT_EQ(data->island_nefc[mjNISLAND], 0);
   EXPECT_EQ(data->solver_nnz[0], 1);
+}
+
+// under integrator="discrete", CG does not false-certify at 0 iterations when
+// a stiff coupled tendon suppresses P^-1*grad along a zero-strain mode
+TEST_F(SolverTest, DiscreteCGCoupledTendonConverges) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.01" gravity="0 0 0"
+      iterations="50"/>
+    <worldbody>
+      <body>
+        <joint name="j1" type="slide"/>
+        <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+      </body>
+      <body>
+        <joint name="j2" type="slide"/>
+        <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed stiffness="1e9">
+        <joint joint="j1" coef="1"/>
+        <joint joint="j2" coef="-1"/>
+      </fixed>
+    </tendon>
+    <equality>
+      <joint joint1="j1" solimp="0.01 0.01 0.01" solref="0 -1e-6"/>
+      <joint joint1="j2" solimp="0.01 0.01 0.01" solref="0 -1e-6"/>
+    </equality>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+
+  const mjtNum tolerance = MjTol(1e-8, 1e-5);
+
+  // reference solution via Newton with tolerance = 0
+  model->opt.solver = mjSOL_NEWTON;
+  model->opt.tolerance = 0;
+  MjDataPtr data_ref = MakeData(model);
+  data_ref->qfrc_applied[1] = 0.2;
+  mj_forward(model.get(), data_ref.get());
+
+  for (bool disable_island : {true, false}) {
+    for (mjtJacobian jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
+      if (disable_island) {
+        model->opt.disableflags |= mjDSBL_ISLAND;
+      } else {
+        model->opt.disableflags &= ~mjDSBL_ISLAND;
+      }
+      model->opt.solver = mjSOL_CG;
+      model->opt.jacobian = jacobian;
+      model->opt.tolerance = tolerance;
+
+      MjDataPtr data = MakeData(model);
+      data->qfrc_applied[1] = 0.2;
+      mj_forward(model.get(), data.get());
+
+      EXPECT_GT(data->solver_niter[0], 0);
+      EXPECT_NEAR(data->qacc[0], data_ref->qacc[0], MjTol(1e-7, 1e-5));
+      EXPECT_NEAR(data->qacc[1], data_ref->qacc[1], MjTol(1e-7, 1e-5));
+
+#ifndef mjUSESINGLE
+      // exact warmstart still certifies in 0 iterations
+      mju_copy(data->qacc_warmstart, data_ref->qacc, model->nv);
+      mj_forward(model.get(), data.get());
+      EXPECT_EQ(data->solver_niter[0], 0);
+#endif
+    }
+  }
 }
 
 }  // namespace

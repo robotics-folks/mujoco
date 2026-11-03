@@ -119,6 +119,42 @@ Engine
      `two-link arm <https://github.com/google-deepmind/mujoco/blob/main/model/tendon_arm/arm26.xml>`__ were moved from
      directly below the joints to 45 degrees below the arm, which reproduces the previous tendon lengths exactly.
 
+   - Removed the ``cable`` plugin (``plugin/elasticity``) and the ``composite`` element, which are superseded by 1D
+     :ref:`flexcomp<body-flexcomp>` with :ref:`elasticity<flex-elasticity>`.
+
+     **Migration:**
+
+     - ``count`` and ``curve`` / ``size`` / ``vertex``: use :ref:`flexcomp<body-flexcomp>` ``dim="1"`` with
+       ``type="grid"``, ``count``, and ``spacing`` (or ``type="circle"`` for closed loops), or ``type="direct"`` with
+       ``point``. Add ``<edge equality="true"/>`` to keep edges inextensible.
+     - Geom ``size`` (capsule radius): set flexcomp ``radius``. For geom ``type="box"``, set
+       ``<elasticity section="box" sectionsize="..."/>``.
+     - Plugin ``bend`` and ``twist``: set ``<elasticity young="..." shear="..."/>``.
+     - Root attachment ``initial``: ``initial="none"`` maps to ``<pin id="0 1"/>`` (clamps the first edge's material
+       frame to the parent body and creates the ``<name>_twist`` body and hinge joint); ``initial="ball"`` maps to
+       ``<pin id="0"/>`` (spherical anchor at the first vertex, no twist joint); ``initial="free"`` maps to no
+       ``<pin/>``.
+     - Plugin ``flat="true"``: define the rod straight in ``qpos0`` (e.g., ``type="grid"``) and set the curved initial
+       pose via ``qpos`` or a :ref:`keyframe<keyframe>` (curves defined directly in ``point`` are at rest in ``qpos0``,
+       corresponding to ``flat="false"``).
+     - Plugin ``vmax`` stress coloring: not supported.
+     - Integrator: use ``integrator="discrete"`` for implicit integration (or ``Euler`` / ``RK4``; ``implicit`` and
+       ``implicitfast`` are not supported for 1D rod elasticity).
+     - Body names ``B_first`` / ``B_<i>`` / ``B_last``: unpinned vertices create bodies ``<name>_<i>`` (pinned vertices
+       attach directly to the parent body), plus ``<name>_twist`` when ``<pin id="0 1"/>`` is used.
+
+   - 1D rod bending :ref:`elasticity<flex-elasticity>` (``dim="1"`` with positive ``young``) is no longer supported under
+     ``implicit`` and ``implicitfast``, matching 2D and 3D flex elasticity.
+
+     **Migration:** Use ``integrator="discrete"`` for implicit integration, or ``integrator="Euler"`` with a small
+     timestep for explicit integration.
+
+   - Flex :ref:`edge stiffness<flex-edge-stiffness>` and :ref:`damping<flex-edge-damping>` are no longer supported under
+     ``integrator="discrete"`` (where they were integrated explicitly rather than in the effective metric).
+
+     **Migration:** Use :ref:`elasticity<flex-elasticity>` (or :ref:`edge equality<flexcomp-edge-equality>`), or use
+     ``Euler``/``RK4``/``implicitfast``.
+
 - Flex improvements:
 
   - .. admonition:: Breaking change
@@ -164,16 +200,15 @@ Engine
   - Fixed contact Jacobians of quadratic flexes, which dropped nodes with negative basis weights.
   - Flex :ref:`edge damping<flex-edge-damping>` is now integrated explicitly under ``implicit`` and ``implicitfast``
     (previously it also damped rigid translation).
-  - 1D rod bending :ref:`elasticity<flex-elasticity>` now supports curved reference configurations: vertices bent by
-    more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature, so that rods such as rings and arcs are
-    at rest in their compiled shape. Previously, such models failed to compile. Curved rods have no torsional
-    stiffness, see the :ref:`documentation<flex-elasticity>` (or use the :ref:`cable<CComposite>` composite).
-  - 1D rod bending :ref:`elasticity<flex-elasticity>` (``dim="1"`` with positive ``young``) is no longer supported under
-    ``implicit`` and ``implicitfast``, matching 2D and 3D flex elasticity. Migrate to ``integrator="discrete"`` for
-    implicit integration, or ``integrator="Euler"`` with a small timestep for explicit integration.
-  - Flex :ref:`edge stiffness<flex-edge-stiffness>` and :ref:`damping<flex-edge-damping>` are no longer supported under
-    ``integrator="discrete"`` (where they were integrated explicitly rather than in the effective metric). Migrate to
-    :ref:`elasticity<flex-elasticity>` (or :ref:`edge equality<flexcomp-edge-equality>`), or use ``Euler``/``RK4``/``implicitfast``.
+  - 1D rod bending :ref:`elasticity<flex-elasticity>` now supports curved reference configurations and torsional
+    stiffness: vertices bent by more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature and dihedral
+    twist angle, so that rods such as rings, arcs, and coil springs are at rest in their compiled shape. Previously,
+    such models failed to compile. The new :ref:`shear<flex-elasticity-shear>` attribute optionally overrides the
+    shear modulus used for torsion. Open elastic 1D flexcomps with a clamped root edge get a ``<name>_twist`` hinge
+    joint that holds the material frame of the last edge, with the polar inertia and Rayleigh torsional damping of the
+    rod; the geometric twist is carried in time in the plastic state, so the twist energy stays continuous when the rod
+    coils. Box sections solve the twist of the interior edges quasistatically. See the
+    :ref:`documentation<flex-elasticity>`.
 
 - Improved numerical stability of sphere and cylinder :ref:`spatial tendon<tendon-spatial>` :ref:`geom<spatial-geom>`
   wrapping at wrap onset. Thanks to :github:user:`M-Colley` for reporting and analyzing the issue in
@@ -189,6 +224,8 @@ Engine
   a single relative tangential velocity arrow per active frictional contact.
 - Added ``xiquat``, ``geom_xquat``, and ``site_xquat`` to :ref:`mjData`, storing the Cartesian quaternion orientations
   of body inertias, geoms, and sites alongside ``ximat``, ``geom_xmat``, and ``site_xmat``.
+- ``mju_mat2Rot`` now normalizes the input quaternion and escapes 180-degree stationary points (saddles and minima)
+  that do not maximize :math:`\operatorname{tr}(R^\top M)`.
 
 Compiler
 ^^^^^^^^
@@ -243,6 +280,8 @@ Filament Rendering
   scaled by the brightness of its diffuse color, which is factored out of the light's color. Lights look the same,
   but the brightest directional light now casts the shadows, rather than an arbitrary one that could differ between
   runs.
+- Added :ref:`filament.material.base_color_type<reFlags>` flag for configuring how the base color material parameter is
+  interpreted.
 
 Rendering
 ^^^^^^^^^
@@ -254,12 +293,29 @@ Python bindings
 
 Bug fixes
 ^^^^^^^^^
+- :ref:`fullinertia<body-inertial-fullinertia>` and inertias inferred from geoms which are not positive definite are
+  now bounded by :ref:`boundinertia<compiler-boundinertia>` when it is positive. Previously they gave a compile error.
+- Contact pairs created with an undefined ``mjsPair.solref`` now mix the ``solref`` of their geoms using ``solmix``
+  when both are positive, like contacts not defined by pairs. Previously they always took the element-wise minimum.
 - :ref:`mj_setConst` now wakes all :ref:`sleeping<siSleep>` trees, since it recomputes their kinematics at ``qpos0`` and
   ``qpos_spring``. Previously their cached poses could be left at ``qpos_spring``. It also no longer overwrites
   ``cam_xpos``, ``cam_xmat``, ``light_xpos`` and ``light_xdir`` in :ref:`mjData`, which left static cameras and lights
   with tracking or targeting at their fixed-mode poses.
+- Fixed :ref:`sleep<siSleep>` filtering bugs in history sensors (:at:`nsample`, :at:`delay`, :at:`interval`),
+  :ref:`mj_energyPos`, flex passive forces, tendon limit and frictionloss constraints, two-tree tendon
+  :ref:`armature<tendon-fixed-armature>` and bias, :ref:`mj_subtreeVel`, and caller-supplied :ref:`mj_rne` buffers.
+- Fixed :ref:`dcmotor<actuator-dcmotor>` parameter handling: allow zero :ref:`motorconst<actuator-dcmotor-motorconst>`
+  for ``input="none"``, reject negative constants (e.g. ``motorconst="-a b"`` is now rejected instead of silently
+  using ``K = b``), replace capacitance when an inconsistent :ref:`thermal<actuator-dcmotor-thermal>` triple is given,
+  clear inherited :ref:`forcerange<actuator-general-forcerange>` when :ref:`saturation<actuator-dcmotor-saturation>`
+  is authored, let zero ``saturation`` or ``inductance`` clear class defaults, and validate
+  :ref:`actdim<actuator-general-actdim>` at compile time.
 - Fixed a bug where tendon actuators saturated by :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` still
   contributed to implicit actuator derivatives.
+- Actuators saturated by joint :ref:`actuatorfrcrange<body-joint-actuatorfrcrange>` now also skip implicit actuator
+  derivatives, changing integration under ``implicit``, ``implicitfast``, and ``discrete``. Because actuators on
+  saturated joints no longer contribute implicit damping, models with light links and no armature may need joint
+  armature or a smaller timestep.
 - Fixed several MJCF XML loading and saving bugs:
 
   - :ref:`include<include>` no longer double-prefixes the model directory on nested or relative paths.
@@ -283,6 +339,9 @@ Bug fixes
 - Legacy ``.msh`` meshes with mirrored :ref:`scale<asset-mesh-scale>` no longer double-flip face winding (which
   inverted faces), and ``.msh`` files without vertex normals no longer populate empty face normals or reject custom
   normals on recompilation.
+- :ref:`accelerometer<sensor-accelerometer>` and :ref:`framelinacc<sensor-framelinacc>` sensors and
+  :ref:`mj_objectAcceleration` on static and mocap bodies now report the gravitational proper acceleration, like a
+  dynamic body at rest. Previously they returned zero, a regression introduced in 3.3.7.
 
 Documentation
 ^^^^^^^^^^^^^
@@ -2214,7 +2273,7 @@ General
    length.
 4. :commit:`f96f3e1c` Added the :ref:`compiler/saveinertial<compiler-saveinertial>` flag, writing explicit inertial
    clauses for all bodies when saving to XML.
-5. :commit:`e8c67ca5` Added :ref:`orientation<body-composite-quat>` attribute to :ref:`composite<body-composite>`.
+5. :commit:`e8c67ca5` Added ``quat`` orientation attribute to ``composite``.
    Moreover, allow the composite to be the direct child of a frame.
 6. :commit:`96dda6ea` Added :ref:`tendon actuator force limits<tendon-spatial-actuatorfrclimited>` and
    :ref:`tendon actuator force sensor<sensor-tendonactuatorfrc>`.
@@ -2369,7 +2428,7 @@ Version 3.2.6 (Dec 2, 2024)
 
 General
 ^^^^^^^
-1. :commit:`300450f8` Removed rope and loop from :ref:`composite<body-composite>`. The user is encouraged to instead use
+1. :commit:`300450f8` Removed rope and loop from ``composite``. The user is encouraged to instead use
    the :at:`cable` plugin or :ref:`flexcomp<body-flexcomp>`, respectively.
 
 MJX
@@ -2501,7 +2560,7 @@ General
       the MPR algorithm. The semantics of these options remain identical.
    2. :commit:`d3dfa6f9` The functions ``mjs_findMesh`` and ``mjs_findKeyframe`` were replaced by ``mjs_findElement``,
       which allows to look for any object type.
-   3. :commit:`4862b9e7` The experimental use of 2D/3D elasticity plugins with :ref:`composite<body-composite>` has been
+   3. :commit:`4862b9e7` The experimental use of 2D/3D elasticity plugins with ``composite`` has been
       removed. Users should instead use :ref:`flexcomp<body-flexcomp>`, which provides the correct collision behavior.
 
 4. :commit:`0bffd744` Added the :ref:`nativeccd<option-flag-nativeccd>` flag. When this flag is enabled, general convex
@@ -3158,16 +3217,16 @@ New features
    `simplicial complexes <https://en.wikipedia.org/wiki/Simplicial_complex>`__ can be of dimension 1, 2
    or 3, corresponding to stretchable lines, triangles or tetrahedra. Two new MJCF elements are used
    to define flexes. The top-level :ref:`deformable<deformable>` section contains the low-level flex definition.
-   The :ref:`flexcomp<body-flexcomp>` element, similar to :ref:`composite<body-composite>` is a convenience macro for
+   The :ref:`flexcomp<body-flexcomp>` element, similar to ``composite`` is a convenience macro for
    creating deformables, and supports the GMSH tetrahedral file format.
 
    - Added `shell <https://github.com/google-deepmind/mujoco/blob/45fc15b8447b56d3e6f12d3a158e2bc0d4d30dc8/plugin/elasticity/shell.cc>`__ passive force plugin,
      computing bending forces using a constant precomputed Hessian (cotangent operator).
 
    **Note**: This feature is still under development and subject to change. In particular, deformable object
-   functionality is currently available both via :ref:`deformable<CDeformable>` and :ref:`composite<CComposite>`,
+   functionality is currently available both via :ref:`deformable<CDeformable>` and ``composite``,
    and both are modifiable by the first-party
-   `elasticity plugins <https://github.com/google-deepmind/mujoco/tree/main/plugin/elasticity>`__. We expect some of
+   `elasticity plugins <https://github.com/google-deepmind/mujoco/tree/45fc15b8447b56d3e6f12d3a158e2bc0d4d30dc8/plugin/elasticity>`__. We expect some of
    this functionality to be unified in the future.
 
 .. youtube:: Vc1tq0fFvQA
@@ -3193,7 +3252,7 @@ New features
    Engine-internal threading is a work in progress and currently only available in first-party code via the
    :ref:`testspeed<saTestspeed>` utility, exposed with the ``npoolthread`` flag.
 
-6. :commit:`139a8ae2` Added capability to initialize :ref:`composite<body-composite>` particles from OBJ files. Fixes
+6. :commit:`139a8ae2` Added capability to initialize ``composite`` particles from OBJ files. Fixes
    :issue:`642` and :issue:`674`.
 
 General
@@ -3758,7 +3817,7 @@ General
    are only allowed for dyntype :at-val:`user`, as native activation dynamics are all scalar. Added example test
    implementing 2nd-order activation dynamics to
    `engine_forward_test.cc <https://github.com/google-deepmind/mujoco/blob/main/test/engine/engine_forward_test.cc>`__.
-#. :commit:`3b89b0fd` Improved particle :ref:`composite<body-composite>` type, which now permits a user-specified
+#. :commit:`3b89b0fd` Improved particle ``composite`` type, which now permits a user-specified
    geometry and multiple joints. See the two new examples:
    `particle_free.xml <https://github.com/google-deepmind/mujoco/blob/0fcd20f0da67ede7b16ef7e439a28be67505a037/model/composite/particle_free.xml>`__ and
    `particle_free2d.xml <https://github.com/google-deepmind/mujoco/blob/0fcd20f0da67ede7b16ef7e439a28be67505a037/model/composite/particle_free2d.xml>`__.
@@ -3774,7 +3833,7 @@ General
       :align: right
       :height: 150px
 
-   - This is new force field compatible with the :ref:`composite<body-composite>` particles.
+   - This is new force field compatible with the ``composite`` particles.
    - Generates a tetrahedral mesh having particles with mass concentrated at vertices.
    - Uses a piecewise-constant strain model equivalent to finite elements but expressed in a coordinate-free
      formulation. This implies that all quantities can be precomputed except edge elongation, as in a mass-spring model.
@@ -3881,11 +3940,11 @@ General
 
    - Twist and bending stiffness can be set separately with the parameters :at:`twist` and :at:`bend`.
    - The stress-free configuration can be set to be the initial one or flat with the flag :at:`flat`.
-   - New `cable.xml <https://github.com/google-deepmind/mujoco/blob/main/model/plugin/elasticity/cable.xml>`__ example
+   - New `cable.xml <https://github.com/google-deepmind/mujoco/blob/e250ff0d/model/plugin/elasticity/cable.xml>`__ example
      showing the formation of plectoneme.
-   - New `coil.xml <https://github.com/google-deepmind/mujoco/blob/main/model/plugin/elasticity/coil.xml>`__  example
+   - New `coil.xml <https://github.com/google-deepmind/mujoco/blob/e250ff0d/model/plugin/elasticity/coil.xml>`__  example
      showing a curved equilibrium configuration.
-   - New `belt.xml <https://github.com/google-deepmind/mujoco/blob/main/model/plugin/elasticity/belt.xml>`__  example
+   - New `belt.xml <https://github.com/google-deepmind/mujoco/blob/e250ff0d/model/plugin/elasticity/belt.xml>`__  example
      showing interaction between twist and anisotropy.
    - Added test using cantilever exact solution.
 

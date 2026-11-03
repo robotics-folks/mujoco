@@ -812,7 +812,8 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
           mat[1*3 + col] = vecs[col][1];
           mat[2*3 + col] = vecs[col][2];
         }
-        mju_flexPolarRotation(elem_quat, mat);
+        mju_unit4(elem_quat);
+        mju_mat2Rot(elem_quat, mat);
         mju_negQuat(elem_quat, elem_quat);
       } else {
         mjtNum center[3] = {0.5, 0.5, 0.5};
@@ -827,7 +828,8 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
             mat[2*3 + col] *= inv;
           }
         }
-        mju_flexPolarRotation(elem_quat, mat);
+        mju_unit4(elem_quat);
+        mju_mat2Rot(elem_quat, mat);
         mju_negQuat(elem_quat, elem_quat);
       }
 
@@ -1239,6 +1241,11 @@ static int mj_instantiateFriction(const mjModel* m, mjData* d, int count_only, i
   // find frictional tendons
   for (int i=0; i < m->ntendon; i++) {
     if (m->tendon_frictionloss[i] > 0) {
+      // sleeping tendon: skip
+      if (sleep_filter && mj_sleepState(m, d, mjOBJ_TENDON, i) == mjS_ASLEEP) {
+        continue;
+      }
+
       if (count_only) {
         nf += mj_addConstraintCount(m, 1, m->ten_J_rownnz[i]);
         if (nnz) *nnz += m->ten_J_rownnz[i];
@@ -1399,6 +1406,11 @@ static int mj_instantiateLimit(const mjModel* m, mjData* d, int count_only, int*
   // find tendon limits
   for (int i=0; i < m->ntendon; i++) {
     if (!m->tendon_limited[i]) {
+      continue;
+    }
+
+    // sleeping tendon: skip
+    if (sleep_filter && mj_sleepState(m, d, mjOBJ_TENDON, i) == mjS_ASLEEP) {
       continue;
     }
 

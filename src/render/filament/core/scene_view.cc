@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include <filament/Color.h>
 #include <filament/ColorGrading.h>
 #include <filament/ColorSpace.h>
 #include <filament/LightManager.h>
@@ -232,7 +233,7 @@ SceneView::~SceneView() {
 
 void SceneView::AddToScene(Light* light) {
   if (lights_.insert(light).second) {
-    light->AddToScene(scene_);
+    light->AddToScene(scene_, [this](Light* light) { RemoveFromScene(light); });
   }
 }
 
@@ -244,7 +245,8 @@ void SceneView::RemoveFromScene(Light* light) {
 
 void SceneView::AddToScene(Renderable* renderable) {
   if (renderables_.insert(renderable).second) {
-    renderable->AddToScene(scene_);
+    renderable->AddToScene(
+        scene_, [this](Renderable* renderable) { RemoveFromScene(renderable); });
   }
 }
 
@@ -508,6 +510,16 @@ static OutputColorSpace OutputColorSpaceFromString(
   return OutputColorSpace::kRec709_sRGB_D65;
 }
 
+static filament::RgbaType ColorTypeFromString(std::string_view name) {
+  if (name == "linear") {
+    return filament::RgbaType::LINEAR;
+  } else if (name == "srgb") {
+    return filament::RgbaType::sRGB;
+  }
+  mju_warning("Unknown color type: %s", name.data());
+  return filament::RgbaType::sRGB;
+}
+
 static filament::QualityLevel QualityLevelFromString(std::string_view name) {
   if (name == "low") {
     return filament::QualityLevel::LOW;
@@ -660,5 +672,9 @@ void SceneView::Configure(const mjModel* model) {
   vignette.midPoint =
       ReadElement(model, "filament.vignette.midpoint", vignette.midPoint);
   main_view_->setVignetteOptions(vignette);
+
+  material_mgr_->SetBaseColorType(
+      ColorTypeFromString(ReadElement<std::string_view>(
+          model, "filament.material.base_color_type", "srgb")));
 }
 }  // namespace mujoco
