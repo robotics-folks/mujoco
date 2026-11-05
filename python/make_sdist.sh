@@ -42,6 +42,8 @@ for item in "${package_dir}"/*; do
   fi
   cp -r "${item}" .
 done
+rm -rf mujoco_full studio mujoco/mujoco_full mujoco/sample/studio mujoco/studio
+rm -f mujoco/render_filament.cc mujoco/render_filament.h
 
 # Generate header files.
 old_pythonpath="${PYTHONPATH}"
@@ -56,8 +58,6 @@ python "${package_dir}"/mujoco/codegen/generate_function_traits.py > \
     mujoco/function_traits.h
 python "${package_dir}"/mujoco/codegen/generate_spec_bindings.py > \
     mujoco/specs.cc.inc
-python "${package_dir}"/mujoco/codegen/generate_mjrf_bindings.py > \
-    mujoco/render_filament_generated.cc.inc
 export PYTHONPATH="${old_pythonpath}"
 
 # Copy over the LICENSE file.
@@ -78,8 +78,19 @@ for item in "${package_dir}"/../simulate/*; do
   cp -r "${item}" mujoco/simulate/
 done
 
+# Copy over documentation chapters and agent skills (excluding images and scripts).
+mkdir -p mujoco/doc
+(
+  cd "${package_dir}/../doc"
+  find . -path ./internal -prune -o -type f \( -name '*.rst' -o -path './skills/*.md' \) -print0 |
+    while IFS= read -r -d '' f; do
+      mkdir -p "${tmp_dir}/mujoco/doc/${f%/*}"
+      cp "${f}" "${tmp_dir}/mujoco/doc/${f}"
+    done
+)
+
 python -m build --no-isolation . --sdist
-tar -tf dist/mujoco-*.tar.gz
+tar -tf dist/mujoco_core-*.tar.gz
 popd
 
 mkdir -p "${package_dir}"/dist
