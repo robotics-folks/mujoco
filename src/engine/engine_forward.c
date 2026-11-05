@@ -1228,10 +1228,10 @@ static void fwdConstraint(const mjModel* m, mjData* d, mjtSolver solver, int flg
   warmstart(m, d);
   mju_zeroInt(d->solver_niter, mjNISLAND);
 
-  // check if islands are supported: IPC folds its subproblem monolithically, and so does CG when it
-  // folds into the step's sparse flex factor
+  // check if islands are supported: IPC solves its subproblem monolithically, and so does CG
+  // when the step holds the sparse flex factor (mj_effCGMonolithic)
   int islands_supported = flg_island && nisland > 0 && !mjENABLED(mjENBL_IPC) &&
-                          !mj_effFoldMonolithic(m, d, solver);
+                          !mj_effCGMonolithic(m, d, solver);
 
   // run solver over constraint islands
   if (islands_supported) {
@@ -1301,21 +1301,12 @@ static void fwdConstraint(const mjModel* m, mjData* d, mjtSolver solver, int flg
 
 // forward constraint solve, using the model's own solver and island policy
 void mj_fwdConstraint(const mjModel* m, mjData* d) {
-  // check for invalid solver type, on the entry callers invoke (mj_fwdConstraintCG pins a valid
-  // one); the condition mirrors fwdConstraint's early-out
+  // check for invalid solver type; the condition mirrors fwdConstraint's early-out
   if (d->nefc && m->opt.solver != mjSOL_PGS &&
       m->opt.solver != mjSOL_CG && m->opt.solver != mjSOL_NEWTON) {
     mjERROR("unknown solver type %d", m->opt.solver);
   }
   fwdConstraint(m, d, (mjtSolver)m->opt.solver, !mjDISABLED(mjDSBL_ISLAND));
-}
-
-
-// forward constraint solve pinned to matrix-free CG over the monolithic problem, for the IPC
-// mode's inner subproblem: the metric operators have no island-local form, and engine_ipc
-// should not have to mutate m->opt to say so
-void mj_fwdConstraintCG(const mjModel* m, mjData* d) {
-  fwdConstraint(m, d, mjSOL_CG, 0);
 }
 
 
@@ -1503,10 +1494,7 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
       if (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) != mjS_AWAKE) {
         continue;
       }
-      mjtNum state[mjROD_STATE_SIZE];
-      if (mj_rodChain(m, d, f, NULL, NULL, NULL, NULL, NULL, state)) {
-        mju_copy(d->plastic + m->flex_plasticadr[f], state, mjROD_STATE_SIZE);
-      }
+      mj_rodChain(m, d, f, NULL, NULL, NULL, NULL, NULL, NULL, d->plastic + m->flex_plasticadr[f]);
     }
   }
 
@@ -1598,7 +1586,9 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
         continue;
       }
 
-      mjtNum yield = mju_max(0, m->flex_yield[f]);
+      mjtNum yield = mju_max(0, m->flex_yield[2*f]);
+      mjtNum yield_bend = mju_max(0, m->flex_yield[2*f + 1]);
+      int mode = m->flex_plasticmode[f];  // 1: bending, 2: stretching
       mjtNum* plastic = d->plastic + m->flex_plasticadr[f];
 
       // interpolated flex: cell-center / face-center corotational strain return mapping
@@ -1802,9 +1792,8 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
 
       // element stretch return mapping (von Mises / J2 deviatoric strain)
       int stiffnessadr = m->flex_stiffnessadr[f];
-      int stretch_pnum = 0;
-      if (stiffnessadr >= 0 && m->flex_stiffness[stiffnessadr] != 0 && elemnum > 0) {
-        stretch_pnum = nedge * elemnum;
+      int stretch_pnum = (mode & 2) ? nedge * elemnum : 0;
+      if (stretch_pnum > 0) {
         const mjtNum* k = m->flex_stiffness + stiffnessadr;
         const int* eelem = m->flex_elemedge + m->flex_elemedgeadr[f];
         const int* edges = m->flex_edge + 2 * m->flex_edgeadr[f];
@@ -1934,14 +1923,14 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
 
       // 2D shell bending return mapping in dihedral angle space
       int bendingadr = m->flex_bendingadr[f];
-      if (dim == 2 && bendingadr >= 0 && stiffnessadr >= 0) {
+      if ((mode & 1) && dim == 2 && bendingadr >= 0 && stiffnessadr >= 0) {
         // 2D shell thickness is stored in stiffness[6] (stiffness[0:6] holds the 2D stretch metric)
         mjtNum thickness = m->flex_stiffness[stiffnessadr + 6];
         if (thickness > mjMINVAL) {
           mjtNum* bend_plastic = plastic + stretch_pnum;
           const mjtNum* b = m->flex_bending + bendingadr;
           const mjtNum* rest = m->flexedge_length0 + m->flex_edgeadr[f];
-          mjtNum kappa_yield = 2 * yield / thickness;
+          mjtNum kappa_yield = 2 * yield_bend / thickness;
 
           for (int e = 0; e < edgenum; e++) {
             const int* edge = m->flex_edge + 2 * (e + m->flex_edgeadr[f]);
@@ -2385,10 +2374,9 @@ void mj_checkDiscrete(const mjModel* m) {
     mjERROR("flag ipc requires integrator='discrete'");
   }
 
-  // the inner solves are matrix-free CG: the metric operators are never factored, which keeps
-  // them well defined under stiff contact
-  if (mjENABLED(mjENBL_IPC) && m->opt.solver != mjSOL_CG) {
-    mjERROR("flag ipc requires solver='CG'");
+  // the inner solves use a primal solver (Newton or CG) over the monolithic problem
+  if (mjENABLED(mjENBL_IPC) && m->opt.solver != mjSOL_NEWTON && m->opt.solver != mjSOL_CG) {
+    mjERROR("flag ipc requires solver='Newton' or 'CG'");
   }
 
   // inverse dynamics is not supported under the flag (mj_discreteAcc), and this option runs it
@@ -2436,17 +2424,6 @@ void mj_checkDiscrete(const mjModel* m) {
       mjERROR("discrete integrator: flex edge stiffness and damping are not supported; "
               "use <elasticity> or <edge equality> instead");
     }
-  }
-  if (m->opt.solver == mjSOL_NEWTON) {
-    for (int f=0; f < m->nflex; f++) {
-      if (!m->flex_interp[f] && mj_effFlexStiffPossible(m, f) && !mj_flexSimple(m, f)) {
-        mjERROR("discrete integrator: flex with general attachments requires solver='CG'");
-      }
-    }
-  }
-  if (m->opt.solver == mjSOL_NEWTON && !mjd_flexInterpAssemblable(m)) {
-    mjERROR("discrete integrator: interpolated flex with non-simple nodes not yet "
-            "supported with the Newton solver");
   }
   if (m->opt.solver == mjSOL_PGS || m->opt.noslip_iterations > 0) {
     // the dual solvers assemble the constraint-space AR from an explicit factorization of

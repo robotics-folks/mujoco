@@ -54,7 +54,7 @@ struct UxState {
   int camera_index = mujoco::studio::kTumbleCameraIdx;
 
   // Read/edited by simulation_gui.
-  int key_idx = 0;
+  int key_idx = -1;
   int nthread = 0;
   bool update_threadpool = false;
   mujoco::studio::SimulationTimelineState timeline;
@@ -345,6 +345,24 @@ void InitUx(py::module_& m) {
       py::arg("model"), py::arg("data"), py::arg("camera"), py::arg("ux_state"),
       "Render the camera selection GUI. Modifies ux_state.camera_index. "
       "Returns true if camera changed.");
+
+  m.def(
+      "view_gizmo_gui",
+      [](const mujoco::python::MjModelWrapper& model,
+         mujoco::python::MjDataWrapper& data,
+         mujoco::python::MjvCameraWrapper& camera, UxState& ux_state,
+         const std::array<float, 4>& workspace_rect) {
+        py::gil_scoped_release no_gil;
+        return mujoco::studio::ViewGizmoGui(
+            model.get(), data.get(), *camera.get(), ux_state.camera_index,
+            ImVec4(workspace_rect[0], workspace_rect[1], workspace_rect[2],
+                   workspace_rect[3]));
+      },
+      py::arg("model"), py::arg("data"), py::arg("camera"), py::arg("ux_state"),
+      py::arg("workspace_rect"),
+      "Renders the XYZ view gizmo in workspace_rect, the (x, y, w, h) from "
+      "configure_docking_layout. May modify ux_state.camera_index. Returns "
+      "true if the camera changed.");
 
   m.def(
       "set_camera",

@@ -765,13 +765,14 @@ from its default.
    This flag selects the IPC contact mode of the ``discrete`` :ref:`integrator<option-integrator>`; it is an error
    with any other integrator. The mode is experimental. It keeps contact multipliers in :ref:`mjData` across steps
    that no :ref:`state specification<mjtState>` covers, so :ref:`mj_getState` and :ref:`mj_setState` do not capture
-   its full state and exact replay from a saved state is not supported. The mode solves its subproblems with
-   matrix-free conjugate gradient, so :ref:`solver<option-solver>` must be ``CG``, and it cannot be combined with
-   the ``fwdinv`` or ``sleep`` flags. It applies model-wide: every flex the mode supports has its contact solved this
-   way. Contacts between two supported flexes, and between a supported flex and a static plane, sphere, capsule, box
-   or mesh, are resolved by the mode and the collision pipeline does not generate them; contacts with moving bodies
-   and with the other geom types keep their constraint rows. The pairs the mode resolves are frictionless: they carry
-   normal forces only, and the friction parameters of the flexes and geoms involved do not apply to them.
+   its full state and exact replay from a saved state is not supported. The mode solves its subproblems with a primal
+   solver (``Newton`` by default, or ``CG``), so :ref:`solver<option-solver>` cannot be ``PGS``, and it cannot be
+   combined with the ``fwdinv`` or ``sleep`` flags. It applies model-wide: every flex the mode supports has its contact
+   solved this way. Contacts between two supported flexes, and between a supported flex and a static plane, sphere,
+   capsule, box or mesh, are resolved by the mode and the collision pipeline does not generate them; contacts with
+   moving bodies and with the other geom types keep their constraint rows. The pairs the mode resolves are
+   frictionless: they carry normal forces only, and the friction parameters of the flexes and geoms involved do not
+   apply to them.
    The usual collision filtering applies to the pairs the mode resolves: none with the ``contact`` flag disabled, the
    contype/conaffinity rule of contact :ref:`selection<coSelection>` between a flex and a geom or between two flexes,
    and each flex's ``selfcollide`` for its self-contact. A pinned flex vertex may ride a static body or a body reached
@@ -3610,9 +3611,11 @@ parent body), and then the coordinates of the flex vertex within that new body a
 Flexes generate their own collisions and shape-preserving forces, so the bodies created here need no geoms, sites or
 tendons.
 Most of the bodies created here have 3 orthogonal slider joints, corresponding to freely moving point masses. In some
-cases we generate radial slider joints, allowing only expansion and contraction, and for clamped elastic 1D rods
-(``<pin id="0 1"/>``) an extra ``<name>_twist`` body with a hinge joint of the same name is created to represent the
-end twist. Since no geoms are generated, the bodies need to have explicit inertial parameters.
+cases we generate radial slider joints, allowing only expansion and contraction, and for open-chain elastic 1D rods
+with :math:`n \ge 2` edges, extra per-edge ``<name>_twist_0``, ..., ``<name>_twist_{n-2}``, ``<name>_twist`` bodies
+and hinge joints are created under the world body to represent the edge twist angles (omitting ``<name>_twist_0`` when
+the first edge is clamped via ``<pin id="0 1"/>``, and ``<name>_twist`` when the last two points of a rod with
+:math:`n \ge 3` edges are pinned). Since no geoms are generated, the bodies need to have explicit inertial parameters.
 
 Below is a simple example of a flexcomp, modeling a (somewhat flexible) double pendulum with one end pinned to the
 world:
@@ -3992,7 +3995,9 @@ element is used to adjust the properties of all edges in the flex.
 
 |body/flexcomp/elasticity attrib list|
    Same as in :ref:`flex/elasticity<flex-elasticity>`.
-   All attributes are passed through to the automatically-generated flex.
+   All attributes are passed through to the automatically-generated flex. In particular, :at:`yield` takes one or two
+   values, for stretching and bending; a single value is also the bending yield strain only if the generated flex is a
+   non-interpolated 2D flex.
 
 .. _flexcomp-pin:
 
@@ -4004,14 +4009,20 @@ which points are pinned. Note that each attribute below can be used to specify m
 the :el:`pin` element itself can be repeated for user convenience. The effects are cumulative; pinning the same point
 multiple times is allowed.
 
+For interpolated flexcomps (**trilinear** or **quadratic** :ref:`dof<body-flexcomp-dof>`), degrees of freedom live on a
+3D grid of ``order * cellcount + 1`` nodes per axis (``order`` = 1 for **trilinear**, 2 for **quadratic**; see
+:ref:`cellcount<body-flexcomp-cellcount>`) rather than at mesh vertices. Pinning fixes these nodes: :at:`id` and
+:at:`range` use linear node indices (``z`` fastest, then ``y``, ``x``), while :at:`grid` and :at:`gridrange` use node
+coordinates regardless of flexcomp :ref:`type<body-flexcomp-type>` (for :at:`dim` 2 or 3).
+
 .. _flexcomp-pin-id:
 
 :at:`id`: :at-val:`int(n), required`
    Zero-based ids of points to pin. When the points are automatically-generated, the user needs to understand their
    layout in order to decide which points to pin. This can be done by first creating a flexcomp without any pins,
-   loading it in the simulator, and showing the body labels. For 1D elastic rods, ``<pin id="0 1"/>`` clamps the first
-   edge and its material frame to the parent body and creates a ``<name>_twist`` hinge joint at the other end, whereas
-   ``<pin id="0"/>`` anchors only the first point (a spherical joint) without a twist joint.
+   loading it in the simulator, and showing the body labels. For open-chain 1D elastic rods, ``<pin id="0 1"/>`` clamps
+   the first edge and its material frame to the parent body (omitting ``<name>_twist_0``), whereas ``<pin id="0"/>``
+   anchors only the first point (a spherical joint) while keeping ``<name>_twist_0`` free.
 
 .. _flexcomp-pin-range:
 
@@ -4021,13 +4032,16 @@ multiple times is allowed.
 .. _flexcomp-pin-grid:
 
 :at:`grid`: :at-val:`int(dim*n), required`
-   Grid coordinates of points to pin. This can only be used with type grid.
+   Grid coordinates of points or interpolation nodes to pin. This can only be used with :at:`dim` 2 or 3, and requires
+   type **grid** or an interpolated :ref:`dof<body-flexcomp-dof>` (**trilinear** or **quadratic**).
 
 .. _flexcomp-pin-gridrange:
 
 :at:`gridrange`: :at-val:`int(2*dim*n), required`
-   Ranges of grid coordinates of points to pin. Each range is specified by (dim) integers for the minimum of the range
-   followed by (dim) integers for the maximum of the range. This can only be used with type grid.
+   Ranges of grid coordinates of points or interpolation nodes to pin. Each range is specified by (dim) integers for
+   the minimum of the range followed by (dim) integers for the maximum of the range. This can only be used with
+   :at:`dim` 2 or 3, and requires type **grid** or an interpolated :ref:`dof<body-flexcomp-dof>` (**trilinear** or
+   **quadratic**).
 
 .. _flexcomp-plugin:
 
@@ -4549,38 +4563,66 @@ and cross-section given by :ref:`section<flex-elasticity-section>` (see :ref:`Ro
   energy :math:`k |\kappa b - \kappa b_0|^2` with stiffness :math:`k = E I / (\ell_0 + \ell_1)`, where :math:`\kappa b`
   is the discrete curvature binormal and :math:`I` is the second moment of area of the cross-section. Vertices bent by
   more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature :math:`\kappa b_0` (so curved rods such as
-  rings or arcs are at rest in ``qpos0``); for an isolated curved vertex with circular cross-section, only the curvature
+  rings or arcs are at rest in ``qpos0``); for an isolated curved vertex on a twistless circular rod, only the curvature
   magnitude :math:`|\kappa b_0|` is held and its bending plane is free. Less-bent vertices are treated as straight
   (:math:`\kappa b_0 = 0`); to start a straight rod in a bent or coiled pose with stored energy, set ``qpos`` or use a
   :ref:`keyframe<keyframe>`.
 - **Torsion:** Each vertex of a single-hinge chain has torsional stiffness :math:`k_t = G J / (\ell_0 + \ell_1)`, while
-  pairs of adjacent curved vertices on a circular rod penalize the dihedral twist of their osculating planes across the
-  shared edge of length :math:`\ell_1` with stiffness :math:`k_d = G J / (2 \ell_1)`. Here :math:`G` is the shear
-  modulus from :ref:`shear<flex-elasticity-shear>` or :math:`G = E / (2 (1 + \nu))` when :at:`shear` is zero, and
-  :math:`J` is the Saint-Venant torsional constant of the cross-section.
-- **Clamped vs. free ends:** With ``<pin id="0 1"/>``, the body holding the first edge clamps the material frame at the
-  root and receives the reaction torque of the rod; for open rods created by :ref:`flexcomp<body-flexcomp>`, a
-  ``<name>_twist`` body and hinge joint are added to control the twist at the other end (which can be actuated, with
-  polar mass moment of inertia and Rayleigh damping of the torsional chain). Without a clamped first edge (e.g.,
-  ``<pin id="0"/>`` or unpinned), no twist joint is created and end twist relaxes instantaneously.
-- **Box sections:** For :at:`section` **box**, the principal bending stiffnesses :math:`k_{1,2} = E I_{1,2} / (\ell_0 +
-  \ell_1)` are anisotropic and the edge material angles are solved quasistatically at each step so bending and twist
-  relax into the weak bending axis; all vertices remain single hinges with directional reference curvature in the
-  material frame. Requires a single open chain.
-- **State:** Each rod with a twist joint stores 7 numbers in ``mjData.plastic`` at ``flex_plasticadr[f]`` for its
-  parallel-transported twist reference frame, so state snapshots must include ``mjSTATE_PLASTIC``.
+  pairs of adjacent curved vertices on closed circular loops (or raw ``<flex dim="1">`` chains without twist joints)
+  penalize the dihedral twist of their osculating planes across the shared edge of length :math:`\ell_1` with stiffness
+  :math:`k_d = G J / (2 \ell_1)`. Here :math:`G` is the shear modulus from :ref:`shear<flex-elasticity-shear>` or
+  :math:`G = E / (2 (1 + \nu))` when :at:`shear` is zero, and :math:`J` is the Saint-Venant torsional constant of the
+  cross-section.
+- **Per-edge twist joints and clamped vs. free ends:** For open-chain 1D elastic rods with :math:`n \ge 2` edges (both
+  **circle** and **box** :ref:`sections<flex-elasticity-section>`), :ref:`flexcomp<body-flexcomp>` creates per-edge
+  twist bodies and hinge joints ``<name>_twist_0``, ..., ``<name>_twist_{n-2}``, ``<name>_twist`` parented to the world
+  body, with per-edge polar mass moment of inertia (:math:`\frac{1}{2} m_e r^2` for **circle** and
+  :math:`\frac{1}{3} m_e (a^2 + b^2)` for **box** half-sizes :math:`a, b`) and frame-indifferent relative Rayleigh
+  torsional damping. An edge whose two points are pinned is clamped: the first edge with ``<pin id="0 1"/>``, or the
+  last edge when the last two points of a rod with :math:`n \ge 3` edges are pinned. A clamped edge has no twist joint
+  (``<name>_twist_0`` or ``<name>_twist`` is omitted), and the body holding it fixes that end's material frame and
+  receives the reaction torque of the rod. With ``<pin id="0"/>`` or no pin, ``<name>_twist_0`` remains free, and an
+  unclamped ``<name>_twist`` can be actuated to twist the far end. A raw :ref:`flex<deformable-flex>` binds the hinge
+  joints with these names: each unclamped edge needs one and, when the first edge is free, ``<name>_twist_0`` must
+  immediately precede the joint of the second edge. Contact Jacobians couple frictional contact forces via their
+  cross-sectional lever arm into each element's two vertices and edge twist DOF, including the velocity of the surface
+  point due to the rotation of the element, enabling circular cables to roll on surfaces and twist in grippers. Because
+  the per-edge twist DOFs have small polar inertia and stiff torsional coupling, the :ref:`discrete<option-integrator>`
+  integrator with the ``CG`` or ``Newton`` :ref:`solver<option-solver>` is recommended: it solves the tridiagonal
+  torsional system, including the bending stiffness of each twist angle, implicitly (``PGS`` is not supported with
+  flex). Otherwise use a smaller timestep with ``Euler`` or ``RK4``.
+- **Box sections:** For :at:`section` **box** (requires a single open chain with at least two elements and per-edge
+  twist joints, which :ref:`flexcomp<body-flexcomp>` creates; a raw flex without them fails to compile), the principal
+  bending stiffnesses :math:`k_{1,2} = E I_{1,2} / (\ell_0 + \ell_1)` are anisotropic, all interior vertices carry
+  directional reference curvature in the material frame, and bending damping uses the geometric mean
+  :math:`\sqrt{k_1 k_2}` on the weak axis so that the damping ratio :math:`\zeta_i \propto \sqrt{k_i}` is equalized
+  across both principal axes. Rendering and collisions with planes, spheres, capsules, boxes, and other 1D rods use an
+  oriented box of half-sizes :ref:`sectionsize<flex-elasticity-sectionsize>` in the DER material frame.
+  Against other geom types (meshes, cylinders, ellipsoids, height fields) and 2D or 3D flexes, the elements collide as
+  capsules whose radius is the minor half-size, which the compiler assigns to :at:`radius`; an explicit :at:`radius`
+  that differs from it is a compile error.
+- **State:** In ``mjData.plastic`` at ``flex_plasticadr[f]``, an open rod with per-edge twist joints (every box-section
+  rod has them) stores ``6 n + (n - 1)`` numbers: the time-parallel reference frames ``(t_old, u_old)`` of its
+  :math:`n` edges, followed by the reference twist of each interior vertex, unwrapped across steps so that the twist
+  energy stays continuous when the rod writhes or tumbles. This is not plasticity, but state snapshots must include
+  ``mjSTATE_PLASTIC`` to save and restore it. Without it (after :ref:`mj_resetData` or a keyframe without plastic
+  state), the reference frames restart from the reference frame of the first edge (following its body when clamped, or
+  transported from ``qpos0`` to the current tangent when free), propagated twist-free along the rod.
 - **Limitations:** Stretching is not included; use :ref:`edge<flex-edge>` equality constraints (or edge stiffness under
   integrators other than ``discrete``) instead. Rod elasticity is integrated implicitly by
   :ref:`discrete<option-integrator>` (using a positive semi-definite Hessian approximation) and explicitly by ``Euler``
   and ``RK4``; ``implicit`` and ``implicitfast`` are not supported, nor are :ref:`dof<body-flexcomp-dof>` **trilinear**
   and **quadratic**.
 
-Non-interpolated flex elasticity supports vertices attached to articulated bodies, including jointless welded children.
-A vertex pinned to a moving body follows that body's motion and applies its reaction force and torque to the body.
-With the :ref:`discrete<option-integrator>` integrator, use :ref:`solver<option-solver>` **CG** for general attachments.
-Newton supports fixed attachments and independent slide bodies with local positive X, Y and Z joints in that order
-and fixed ancestors. Mocap attachments are not supported for non-rigid flexes with elasticity because mocap poses do
-not provide velocities for elastic damping, except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
+Flex elasticity (both standard and interpolated) supports vertices or nodes attached to articulated bodies, including
+jointless welded children, under both **Newton** and **CG** with the :ref:`discrete<option-integrator>` integrator.
+A vertex or node pinned to a moving body follows that body's motion and applies its reaction force and torque to the
+body. **Newton** is fastest when every vertex and node is fixed or sits on a body with three slide joints along the
+world axes: their stiffness is then assembled as 3x3 vertex blocks. Once any flex in the model has another kind of
+attachment, the stiffness of all its flexes is pulled back through the attachment Jacobians, which costs more per step.
+MuJoCo Warp does not yet support articulated attachments with **Newton**; use **CG** there. Mocap attachments are not
+supported for non-rigid flexes with elasticity because mocap poses do not provide velocities for elastic damping,
+except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
 
 .. _flex-elasticity-young:
 
@@ -4624,22 +4666,31 @@ not provide velocities for elastic damping, except for 1D flexes with zero :ref:
 
 .. _flex-elasticity-yield:
 
-:at:`yield`: :at-val:`real(1), "0"`
-   Dimensionless plastic yield strain threshold :math:`\varepsilon_y` for 2D and 3D flexes. If zero, the flex is purely
-   elastic. If positive, each element's (or interpolated cell's/face's) elastic stretching strain tensor is bounded by
-   the von Mises (:math:`J_2`) yield criterion (3D isochoric in 3D, plane-stress with out-of-plane thinning in tension
-   in 2D) via radial return mapping, and for non-interpolated 2D shells with bending enabled
-   (:ref:`elastic2d<flex-elasticity-elastic2d>` **bend** or **both**), each interior hinge's outer-fiber bending strain
-   :math:`\frac{t}{2} |\Delta\kappa_e| \le \varepsilon_y` is bounded via return mapping in dihedral angle space
-   (assuming an initially flat rest configuration). In ``mjData.plastic`` at ``flex_plasticadr[f]``, a non-interpolated
-   flex stores its stretching plastic metric offsets first (``3 * elemnum`` entries in 2D or ``6 * elemnum`` entries in
-   3D when stretching is active), followed by ``edgenum`` bending plastic entries in 2D when bending is active. An
+:at:`yield`: :at-val:`real(1 or 2), "0"`
+   Dimensionless plastic yield strain thresholds :math:`\varepsilon_y` for stretching and bending of 2D and 3D flexes.
+   For non-interpolated 2D flexes, a single value applies to both, e.g., ``yield="0.01"`` is equivalent to
+   ``yield="0.01 0.01"``; for other flexes, a single value is the stretching threshold. A mode (stretching or bending)
+   is plastic if its threshold is positive at compile time; its plastic state is then allocated in ``mjData.plastic``
+   and the bit of the mode is set in ``mjModel.flex_plasticmode[f]`` (1: bending, 2: stretching). A mode whose threshold
+   is zero has no plastic state and remains purely elastic, e.g., ``yield="0.01 0"`` makes only stretching plastic. As
+   for joints and tendons, setting the threshold of a plastic mode to zero at runtime in ``mjModel.flex_yield`` (which
+   has two columns) corresponds to zero yield strain (full plastic flow). If the stretching (first) threshold is
+   positive, each element's (or interpolated cell's/face's) elastic stretching strain tensor is bounded by the von Mises
+   (:math:`J_2`) yield criterion (3D isochoric in 3D, plane-stress with out-of-plane thinning in tension in 2D) via
+   radial return mapping. If the bending (second) threshold is positive, which requires a non-interpolated 2D flex (a
+   compiler error otherwise), for shells with bending enabled (:ref:`elastic2d<flex-elasticity-elastic2d>` **bend** or
+   **both**), each interior hinge's outer-fiber bending strain :math:`\frac{t}{2} |\Delta\kappa_e| \le \varepsilon_y` is
+   bounded via return mapping in dihedral angle space (assuming an initially flat rest configuration). For example,
+   ``yield="0 0.001"`` makes a shell yield in bending while its stretching remains elastic. 1D flexes do not support
+   plasticity (both values must be zero). In ``mjData.plastic`` at ``flex_plasticadr[f]``, a non-interpolated flex
+   stores its stretching plastic metric offsets first (``3 * elemnum`` entries in 2D or ``6 * elemnum`` entries in 3D
+   when stretching is plastic), followed by ``edgenum`` bending plastic entries in 2D when bending is plastic. An
    interpolated flex with :ref:`cellcount<body-flexcomp-cellcount>` :math:`(c_x, c_y, c_z)` stores one dimensionless
    plastic stretching strain per grid cell (``6 * cx * cy * cz`` entries in 3D) or per outer grid face in 2D shell mode
    (``3 * 2 * (cy*cz + cx*cz + cx*cy)`` entries); the elastic strain is measured in the corotated frame of the polar
    decomposition of the physical deformation gradient :math:`J_e = \partial x / \partial X`. Bending plasticity is not
-   supported for interpolated flexes: with :ref:`elastic2d<flex-elasticity-elastic2d>` **bend**, :at:`yield` is
-   ignored and the flex remains purely elastic.
+   supported for interpolated flexes: with :ref:`elastic2d<flex-elasticity-elastic2d>` **bend**, :at:`yield` is ignored
+   and the flex remains purely elastic.
 
 .. _flex-elasticity-elastic2d:
 
@@ -4656,13 +4707,16 @@ not provide velocities for elastic damping, except for 1D flexes with zero :ref:
    :math:`J = \pi r^4 / 2`, where :math:`r` is the flex :ref:`radius <deformable-flex-radius>`. "box": rectangle with
    half-sizes given by :ref:`sectionsize<flex-elasticity-sectionsize>` and full sizes :math:`w, h`, with principal
    second moments :math:`I_1 = h w^3 / 12`, :math:`I_2 = w h^3 / 12`, and Saint-Venant torsional constant :math:`J`
-   (requires an open chain). Collisions and rendering always use the flex radius.
+   (requires an open chain). Both rendering and collision detection use an oriented box of half-sizes
+   :ref:`sectionsize<flex-elasticity-sectionsize>` in the DER material frame when :at:`section` is "box" and a capsule
+   of the flex radius otherwise.
 
 .. _flex-elasticity-sectionsize:
 
 :at:`sectionsize`: :at-val:`real(2), "0 0"`
    Half-sizes of the "box" cross-section of 1D flexes, units of length. Both values must be positive when
-   :ref:`section<flex-elasticity-section>` is "box"; ignored otherwise.
+   :ref:`section<flex-elasticity-section>` is "box"; ignored otherwise. With a "box" section the flex radius is set
+   to the minor half-size, so :at:`radius` must be omitted or equal to it.
 
 .. _flex-contact:
 

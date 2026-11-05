@@ -122,7 +122,7 @@ public const int mjSC_IN = 1;
 public const int mjSC_OUT = 2;
 public const int mjSC_INOUT = 3;
 public const bool THIRD_PARTY_MUJOCO_MUJOCO_H_ = true;
-public const int mjVERSION_HEADER = 3017001;
+public const int mjVERSION_HEADER = 4000000;
 
 
 // ------------------------------------Enums------------------------------------
@@ -1382,6 +1382,7 @@ public unsafe struct mjModel_ {
   public int* flex_elemedgeadr;
   public int* flex_bendingadr;
   public int* flex_plasticadr;
+  public int* flex_plasticmode;
   public int* flex_shellnum;
   public int* flex_shelldataadr;
   public int* flex_texcoordadr;

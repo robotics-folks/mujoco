@@ -189,6 +189,13 @@ static void BodyTreeGuiRecursive(mjsElement** element, mjsBody* body, SpecEditor
   }
   if (editor && *element == body->element) {
     AddEditorButtons(body->element, element, *editor);
+    if (!*element) {
+      if (tree_open) {
+        ImGui::TreePop();
+      }
+      ImGui::PopID();
+      return;
+    }
   }
 
   if (tree_open) {
@@ -545,7 +552,7 @@ void ElementSpecGui(mjsElement* element, SpecEditor* editor) {
       FIELD(shear, "1D torsion shear modulus; 0: young / (2 (1 + poisson))");
       FIELD(damping, "Rayleigh's damping");
       FIELD(thickness, "thickness (2D only)");
-      FIELD(stressyield, "yield strain threshold; 0: elastic");
+      FIELD(stressyield, "yield strain thresholds (stretch, bend); 0: elastic");
       FIELD(elastic2d, "2D passive forces; 0: none, 1: bending, 2: stretching, 3: both");
       FIELD(section, "1D cross-section (mjtFlexSection)");
       FIELD(sectionsize, "1D box cross-section half-sizes");
