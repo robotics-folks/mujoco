@@ -50,6 +50,7 @@
 #include "studio/hal/window.h"
 #include "studio/render/model_scene.h"
 #include "studio/sim/model_holder.h"
+#include "studio/ux/camera_control.h"
 #include "studio/ux/imgui_widgets.h"
 #include "studio/ux/interaction.h"
 #include "studio/ux/theme.h"
@@ -120,6 +121,7 @@ class AppCallbacks final : public RemoteUi::Callbacks,
   void ConnectRemoteUi() override;
   void ShutdownRemoteUi() override;
   void SetCameraMode(int mode) override;
+  void SetFpsCap(int fps_cap) override;
 };
 
 struct App {
@@ -138,9 +140,18 @@ struct App {
   mjvOption vis_options;
   mjtByte render_flags[mjNRNDFLAG];
 
-  // Spectator camera
+  // Local camera control (MoveLocalCamera): shared by spectators in a free
+  // camera mode and the controller, which maps input with the viewer's input
+  // state from the latest payload and sends the moved camera back.
   int spectator_cam_mode = kSpecCamTumble;
-  float spectator_cam_speed = 0.001f;  // WASD speed; accelerates while held.
+  mujoco::studio::ViewerInputState viewer_input;
+  bool view_mouse_focus = false;  // The 3D view has the mouse (drag) focus.
+  float cam_speed = mujoco::studio::kMinFlySpeed;  // WASD fly speed.
+  // The viewer's camera generation (ViewerInputState::camera_generation) as of
+  // the last payload camera adopted; see client_camera.py. Invalid until this
+  // page is the controller and has adopted one.
+  uint32_t camera_generation = 0;
+  bool camera_generation_valid = false;
 
   // The part of the canvas above the role bar, in logical pixels (x, y,
   // width, height): the 3D scene renders into it, the remote UI lays out in
@@ -155,10 +166,14 @@ struct App {
   int frame_count = 0;
   int last_state_retry_frame = 0;
 
-  // Backend state received from the Python simulation via WebSocket.
-  std::vector<mjtNum> backend_state;
-  int backend_state_sig = 0;
-  bool backend_state_dirty = false;
+  // Client framerate cap in Hz (0 for Uncapped; defaults to 60).
+  int fps_cap = 60;
+  double next_frame_time_ms = 0.0;
+
+  // FIFO jitter buffer for state payloads received from the Python simulation
+  // via WebSocket, plus a reusable scratch entry for popping on each frame.
+  mujoco::studio::StateQueue state_queue;
+  mujoco::studio::StateQueue::Entry scratch_state;
 
   // User-injected geoms received with the state payload.
   std::vector<mjvGeom> extra_geoms;
@@ -221,65 +236,24 @@ bool IsFilamentReady() {
   return g_app.renderer && g_app.model_holder && g_app.model_holder->ok();
 }
 
-// Applies a parsed state payload to the app. Called via AppCallbacks::OnPayload
-// after Session validates model CRC and payload readiness.
+// Enqueues a parsed state payload to be applied on the next rendered frame.
+// Called via AppCallbacks::OnPayload after Session validates model CRC and
+// payload readiness.
 void ApplyStatePayload(const StatePayloadView& view) {
   // Physics state. While a new model is downloading, buffer it unconditionally
   // (the current model's state size is the old model's); MainLoopImpl checks
   // the size against the model actually in use right before mj_setState.
-  if (view.physics != nullptr) {
-    bool accept = true;
-    if (!g_app.download_status.is_downloading) {
-      mjModel* model = g_app.model_holder->model();
-      const size_t expected_bytes =
-          mj_stateSize(model, view.physics_spec) * sizeof(mjtNum);
-      accept = view.physics_bytes == expected_bytes;
-      if (!accept) {
-        LOG(Warning, "Physics state size mismatch (%zu != %zu); dropping",
-            view.physics_bytes, expected_bytes);
-      }
-    }
-    if (accept) {
-      g_app.backend_state.resize(view.physics_bytes / sizeof(mjtNum));
-      memcpy(g_app.backend_state.data(), view.physics, view.physics_bytes);
-      g_app.backend_state_sig = view.physics_spec;
-      g_app.backend_state_dirty = true;
+  if (view.physics != nullptr && !g_app.download_status.is_downloading) {
+    mjModel* model = g_app.model_holder->model();
+    const size_t expected_bytes =
+        mj_stateSize(model, view.physics_spec) * sizeof(mjtNum);
+    if (view.physics_bytes != expected_bytes) {
+      LOG(Warning, "Physics state size mismatch (%zu != %zu); dropping",
+          view.physics_bytes, expected_bytes);
+      return;
     }
   }
-
-  // Render state. The headless viewer owns the camera and perturbation state
-  // (all input is forwarded to it and handled by the same code as the native
-  // viewer); the browser just renders them.
-  if (view.render_state != nullptr) {
-    mujoco::studio::RenderStateView rs;
-    mujoco::studio::ParseRenderState(view.render_state, &rs);
-
-    // Spectators in a free camera mode keep their own local camera; everyone
-    // else (the controller, and spectators in Follow Controller) mirrors the
-    // controller's camera.
-    if (g_app.session.Role() != SessionRole::kSpectating ||
-        g_app.spectator_cam_mode == kSpecCamFollow) {
-      g_app.camera = rs.camera;
-    }
-
-    g_app.perturb = rs.perturb;
-    g_app.vis_options = rs.vis_options;
-    if (!g_app.download_status.is_downloading) {
-      mjModel* model = g_app.model_holder->model();
-      model->opt = rs.opt;
-      model->vis = rs.vis;
-      model->stat = rs.stat;
-    }
-
-    memcpy(g_app.render_flags, rs.render_flags, mjNRNDFLAG);
-  }
-
-  // Extra geoms. memcpy since the payload data is not guaranteed to be aligned.
-  g_app.extra_geoms.resize(view.extra_geom_count);
-  if (view.extra_geom_count > 0) {
-    memcpy(g_app.extra_geoms.data(), view.extra_geoms,
-           view.extra_geom_count * sizeof(mjvGeom));
-  }
+  g_app.state_queue.Push(view);
 }
 
 void SetSpectatorCameraMode(int mode) {
@@ -301,20 +275,59 @@ void SetSpectatorCameraMode(int mode) {
   // kSpecCamFollow: the next state payload restores the controller's camera.
 }
 
+// Moves g_app.camera from this frame's mouse drags/wheel and WASD/QE keys with
+// the viewer's own camera controls (ux/camera_control.h), and returns whether
+// the camera moved. `viewer_mouse_focus` and `viewer_keyboard_focus` tell
+// whether the viewer's UI (for the controller) leaves the mouse/keyboard focus
+// to the 3D view; this page's own local UI is checked here as well.
+bool MoveLocalCamera(const mjModel* model, bool wasd, bool viewer_mouse_focus,
+                     bool viewer_keyboard_focus) {
+  mujoco::studio::CameraInput input = mujoco::studio::ReadImGuiCameraInput();
+
+  // Mouse motion is normalised by the scene rect (the canvas above the role
+  // bar), the area the camera actually renders into, not the whole display.
+  const ImVec4& rect = g_app.scene_rect;
+  if (rect.z > 0 && rect.w > 0) {
+    input.mouse_dx = ImGui::GetIO().MouseDelta.x / rect.z;
+    input.mouse_dy = ImGui::GetIO().MouseDelta.y / rect.w;
+  } else {
+    input.mouse_focus = false;
+  }
+
+  // The viewer's mouse focus arrives a round trip late, so whether the view
+  // has the mouse focus for a drag is decided as it starts and kept until it
+  // ends, as ImGui does for its own UI.
+  const bool any_button =
+      ((input.left_button | input.right_button | input.middle_button) &
+       mujoco::studio::kButtonPressed) != 0;
+  if (!any_button || ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+      ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||
+      ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
+    g_app.view_mouse_focus = viewer_mouse_focus && input.mouse_focus;
+  }
+  input.mouse_focus = g_app.view_mouse_focus;
+  input.keyboard_focus = viewer_keyboard_focus && input.keyboard_focus;
+
+  bool moved =
+      mujoco::studio::MoveCameraWithMouse(model, &g_app.camera, wasd, input);
+  if (wasd) {
+    moved |= mujoco::studio::MoveCameraWithKeys(model, &g_app.camera, input,
+                                                &g_app.cam_speed);
+  }
+  return moved;
+}
+
 // Local camera control for a spectating page in a free camera mode. The
-// controller's input goes to the headless viewer instead (CaptureAndSendInput),
-// which streams its camera back over the state WebSocket.
-// TODO(matijak): Share the camera handling code with the studio app (e.g. in
-// platform/ux/interaction.cc) instead of duplicating it here.
+// controller moves its camera in HandleControllerCameraInput instead.
 void HandleSpectatorCameraInput() {
   if (g_app.spectator_cam_mode == kSpecCamFollow) {
     return;
   }
-  if (!g_app.model_holder || !g_app.model_holder->ok()) {
+  if (!g_app.model_holder || !g_app.model_holder->ok() ||
+      g_app.download_status.is_downloading) {
     return;
   }
   const mjModel* model = g_app.model_holder->model();
-  ImGuiIO& io = ImGui::GetIO();
   const bool wasd = g_app.spectator_cam_mode == kSpecCamWasd;
 
   // The camera can be fixed on entry (SetupScene honours the model's
@@ -329,74 +342,32 @@ void HandleSpectatorCameraInput() {
     }
   }
 
-  // Mouse motion is normalised by the scene rect (the canvas above the role
-  // bar), the area the camera actually renders into.
-  const ImVec4& rect = g_app.scene_rect;
-  if (!io.WantCaptureMouse && rect.z > 0 && rect.w > 0) {
-    const float mouse_dx = io.MouseDelta.x / rect.z;
-    const float mouse_dy = io.MouseDelta.y / rect.w;
-    const bool is_mouse_dragging =
-        (mouse_dx != 0.0f || mouse_dy != 0.0f) &&
-        (ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
-         ImGui::IsMouseDown(ImGuiMouseButton_Right) ||
-         ImGui::IsMouseDown(ImGuiMouseButton_Middle));
-    if (is_mouse_dragging) {
-      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        if (wasd) {
-          mjv_moveCamera(model, mjMOUSE_TURN_H, mouse_dx, 0.f, &g_app.camera);
-          mjv_moveCamera(model, mjMOUSE_TURN_V, 0.f, mouse_dy, &g_app.camera);
-        } else {
-          mjv_moveCamera(model, mjMOUSE_ROTATE_H, mouse_dx, 0.f, &g_app.camera);
-          mjv_moveCamera(model, mjMOUSE_ROTATE_V, 0.f, mouse_dy, &g_app.camera);
-        }
-      } else if (ImGui::IsMouseDown(ImGuiMouseButton_Middle) && !wasd) {
-        mjv_moveCamera(model, mjMOUSE_ZOOM, 0.f, mouse_dy, &g_app.camera);
-      }
-      if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-        mjv_moveCamera(model, io.KeyShift ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V,
-                       mouse_dx, mouse_dy, &g_app.camera);
-      }
-    }
-    // Mouse scroll zooms towards/away from the lookat point; ignored by the
-    // user-centered WASD camera which has no lookat point.
-    const float mouse_scroll = io.MouseWheel / 50.0f;
-    if (mouse_scroll != 0.0f && !wasd) {
-      mjv_moveCamera(model, mjMOUSE_ZOOM, 0.f, -mouse_scroll, &g_app.camera);
-    }
-  }
+  MoveLocalCamera(model, wasd, /*viewer_mouse_focus=*/true,
+                  /*viewer_keyboard_focus=*/true);
+}
 
-  // WASD/QE flying, with the same accelerating speed as the studio app.
-  if (wasd && !io.WantCaptureKeyboard) {
-    bool moved = false;
-    const float speed = g_app.spectator_cam_speed;
-    if (ImGui::IsKeyDown(ImGuiKey_W)) {
-      mjv_moveCamera(model, mjMOUSE_MOVE_H_REL, 0, speed, &g_app.camera);
-      moved = true;
-    } else if (ImGui::IsKeyDown(ImGuiKey_S)) {
-      mjv_moveCamera(model, mjMOUSE_MOVE_H_REL, 0, -speed, &g_app.camera);
-      moved = true;
-    }
-    if (ImGui::IsKeyDown(ImGuiKey_A)) {
-      mjv_moveCamera(model, mjMOUSE_MOVE_H_REL, -speed, 0, &g_app.camera);
-      moved = true;
-    } else if (ImGui::IsKeyDown(ImGuiKey_D)) {
-      mjv_moveCamera(model, mjMOUSE_MOVE_H_REL, speed, 0, &g_app.camera);
-      moved = true;
-    }
-    if (ImGui::IsKeyDown(ImGuiKey_Q)) {
-      mjv_moveCamera(model, mjMOUSE_MOVE_V_REL, 0, speed, &g_app.camera);
-      moved = true;
-    } else if (ImGui::IsKeyDown(ImGuiKey_E)) {
-      mjv_moveCamera(model, mjMOUSE_MOVE_V_REL, 0, -speed, &g_app.camera);
-      moved = true;
-    }
-    if (moved) {
-      const float max_speed = io.KeyShift ? 0.1f : 0.01f;
-      g_app.spectator_cam_speed =
-          std::min(g_app.spectator_cam_speed + 0.001f, max_speed);
-    } else {
-      g_app.spectator_cam_speed = 0.001f;
-    }
+// Local camera control for the controlling page. Drags and scrolls over the 3D
+// view, and WASD/QE keys in the free camera, move the camera here, at the
+// page's frame rate rather than once per network round trip, with the same
+// camera controls as the viewer, and the camera is then sent to the viewer.
+// The viewer still receives the input (for picking, perturbation and
+// shortcuts) but leaves the camera alone (see Viewer.client_camera).
+void HandleControllerCameraInput() {
+  if (!g_app.model_holder || !g_app.model_holder->ok() ||
+      g_app.download_status.is_downloading) {
+    return;
+  }
+  // Until the first payload as controller arrives, the camera (and generation)
+  // is still the spectator's, and the viewer's would replace any move anyway.
+  if (!g_app.camera_generation_valid) {
+    return;
+  }
+  const mjModel* model = g_app.model_holder->model();
+  const mujoco::studio::ViewerInputState& input = g_app.viewer_input;
+  const bool wasd = input.camera_index == mujoco::studio::kFreeCameraIdx;
+  if (MoveLocalCamera(model, wasd, input.mouse_focus != 0,
+                      input.keyboard_focus != 0)) {
+    g_app.session.SendCamera(g_app.camera, g_app.camera_generation);
   }
 }
 
@@ -479,6 +450,7 @@ void AppCallbacks::OnModelChanged(uint32_t model_crc32) {
   // and fetches it by crc32 otherwise. The crc32 crosses as a signed int; the
   // page restores the unsigned value.
   g_app.download_status.is_downloading = true;
+  g_app.state_queue.Clear();
   EM_ASM({ reloadModel($0); }, model_crc32);
 }
 
@@ -487,6 +459,15 @@ void AppCallbacks::ConnectRemoteUi() { g_app.remote_ui.Connect(WsUrl("/ui")); }
 void AppCallbacks::ShutdownRemoteUi() { g_app.remote_ui.Shutdown(); }
 
 void AppCallbacks::SetCameraMode(int mode) { SetSpectatorCameraMode(mode); }
+
+void AppCallbacks::SetFpsCap(int fps_cap) {
+  fps_cap = std::max(0, fps_cap);
+  g_app.fps_cap = fps_cap;
+  g_app.next_frame_time_ms = 0.0;
+  const std::string script = "try { localStorage.setItem('mjwv_fps_cap', '" +
+                             std::to_string(fps_cap) + "'); } catch (e) {}";
+  emscripten_run_script(script.c_str());
+}
 
 void BuildBrowserGui() {
   // Refresh the byte-rate telemetry the role bar shows.
@@ -512,6 +493,7 @@ void BuildBrowserGui() {
   view.have_remote_frame = g_app.remote_ui.RemoteDrawData() != nullptr;
   view.seconds_since_last_payload = stale_sec;
   view.camera_mode = g_app.spectator_cam_mode;
+  view.fps_cap = g_app.fps_cap;
   view.is_downloading = g_app.download_status.is_downloading;
   view.bytes_downloaded = g_app.download_status.bytes_downloaded;
   view.total_bytes = g_app.download_status.total_bytes;
@@ -645,6 +627,23 @@ void MainLoop() {
 }
 
 void MainLoopImpl() {
+  if (g_app.fps_cap > 0) {
+    const double now_ms = emscripten_get_now();
+    const double period_ms = 1000.0 / static_cast<double>(g_app.fps_cap);
+    // Allow 2ms of VSync timestamp jitter so a 60 FPS cap on a 60Hz display
+    // never skips a VSync, while cleanly throttling on 120Hz+ displays.
+    if (g_app.next_frame_time_ms > 0.0 &&
+        now_ms + 2.0 < g_app.next_frame_time_ms) {
+      return;
+    }
+    if (g_app.next_frame_time_ms <= 0.0 ||
+        now_ms - g_app.next_frame_time_ms > period_ms) {
+      g_app.next_frame_time_ms = now_ms + period_ms;
+    } else {
+      g_app.next_frame_time_ms += period_ms;
+    }
+  }
+
   g_app.frame_count++;
 
   // Session upkeep (the liveness heartbeat).
@@ -708,15 +707,21 @@ void MainLoopImpl() {
     return;
   }
 
-  // For the controller, all scene interaction (camera orbit/zoom, perturbation,
-  // picking) is handled by the headless viewer: CaptureAndSendInput()
-  // forwards this frame's input over NetImgui, and the resulting camera/perturb
-  // state streams back over the state WebSocket (see ApplyStatePayload).
-  // Spectators have no input channel; in a free camera mode they drive their
-  // local camera directly.
+  // For the controller, the camera moves here (HandleControllerCameraInput) and
+  // is sent to the headless viewer, while all other scene interaction
+  // (perturbation, picking) is handled by the viewer: CaptureAndSendInput()
+  // forwards this frame's input over NetImgui, and the resulting state streams
+  // back over the state WebSocket (see ApplyStatePayload). Spectators have no
+  // input channel; in a free camera mode they drive their local camera
+  // directly.
   g_app.remote_ui.CaptureAndSendInput();
-  if (g_app.session.Role() == SessionRole::kSpectating) {
-    HandleSpectatorCameraInput();
+  if (g_app.session.Role() == SessionRole::kControlling) {
+    HandleControllerCameraInput();
+  } else {
+    g_app.camera_generation_valid = false;
+    if (g_app.session.Role() == SessionRole::kSpectating) {
+      HandleSpectatorCameraInput();
+    }
   }
 
   BuildBrowserGui();
@@ -726,18 +731,57 @@ void MainLoopImpl() {
   // ImGui::Begin("labels", ...).
   bool can_submit = false;
   if (g_app.renderer && g_app.model_holder && g_app.model_holder->ok()) {
-    // Apply backend state if available.
-    if (g_app.backend_state_dirty && !g_app.download_status.is_downloading) {
+    // Pop one queued state payload per rendered frame so network micro-bursts
+    // play out smoothly across consecutive VSync intervals with physics state,
+    // camera, perturbation, options, and extra geoms kept in sync.
+    if (!g_app.download_status.is_downloading &&
+        g_app.state_queue.Pop(&g_app.scratch_state)) {
       mjModel* model = g_app.model_holder->model();
       mjData* data = g_app.model_holder->data();
-      const size_t expected_size =
-          static_cast<size_t>(mj_stateSize(model, g_app.backend_state_sig));
-      if (g_app.backend_state.size() == expected_size) {
-        mj_setState(model, data, g_app.backend_state.data(),
-                    g_app.backend_state_sig);
-        mj_forward(model, data);
+      if (g_app.scratch_state.has_render_state) {
+        const mujoco::studio::RenderStateView& rs =
+            g_app.scratch_state.render_state;
+        // Spectators in a free camera mode keep their own local camera, and
+        // those in Follow Controller mirror the controller's camera. The
+        // controller moves its camera itself and sends it to the viewer, so the
+        // payload camera is mostly an echo of one it sent; it adopts it only
+        // when the viewer changed the camera itself (a new generation, see
+        // client_camera.py), e.g. from a camera shortcut or the view gizmo.
+        bool adopt_camera;
+        if (g_app.session.Role() == SessionRole::kControlling) {
+          const uint32_t generation =
+              g_app.scratch_state.viewer_input.camera_generation;
+          adopt_camera = !g_app.camera_generation_valid ||
+                         generation != g_app.camera_generation;
+          g_app.camera_generation = generation;
+          g_app.camera_generation_valid = true;
+        } else {
+          adopt_camera = g_app.session.Role() != SessionRole::kSpectating ||
+                         g_app.spectator_cam_mode == kSpecCamFollow;
+          // Adopt again once controlling.
+          g_app.camera_generation_valid = false;
+        }
+        if (adopt_camera) {
+          g_app.camera = rs.camera;
+        }
+        g_app.perturb = rs.perturb;
+        g_app.vis_options = rs.vis_options;
+        model->opt = rs.opt;
+        model->vis = rs.vis;
+        model->stat = rs.stat;
+        memcpy(g_app.render_flags, rs.render_flags, mjNRNDFLAG);
       }
-      g_app.backend_state_dirty = false;
+      if (!g_app.scratch_state.state.empty()) {
+        const size_t expected_size =
+            static_cast<size_t>(mj_stateSize(model, g_app.scratch_state.sig));
+        if (g_app.scratch_state.state.size() == expected_size) {
+          mj_setState(model, data, g_app.scratch_state.state.data(),
+                      g_app.scratch_state.sig);
+          mj_forward(model, data);
+        }
+      }
+      g_app.extra_geoms.swap(g_app.scratch_state.extra_geoms);
+      g_app.viewer_input = g_app.scratch_state.viewer_input;
     }
 
     const int width = FramebufferWidth();
@@ -1159,6 +1203,19 @@ void StartApp() {
 
   NetImgui::Internal::Network::Startup();
   SDL_StartTextInput();
+
+  const char* saved_fps_str = emscripten_run_script_string(
+      "(function() { try { return localStorage.getItem('mjwv_fps_cap') || ''; "
+      "} catch (e) { return ''; } })()");
+  int saved_fps_cap = 60;
+  if (saved_fps_str != nullptr && saved_fps_str[0] != '\0') {
+    char* end = nullptr;
+    const long parsed = std::strtol(saved_fps_str, &end, 10);
+    if (end != saved_fps_str && *end == '\0' && parsed >= 0) {
+      saved_fps_cap = static_cast<int>(parsed);
+    }
+  }
+  g_app.callbacks.SetFpsCap(saved_fps_cap);
 
   // The UI stream is a path on the page's own host and port.
   g_app.remote_ui.Connect(WsUrl("/ui"));

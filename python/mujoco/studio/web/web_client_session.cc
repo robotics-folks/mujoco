@@ -20,6 +20,7 @@
 #include <cstring>
 
 #include "google/logging.h"
+#include "state_payload.h"
 
 namespace mujoco::studio {
 
@@ -325,6 +326,8 @@ void Session::ReleaseControl() {
 
 void Session::SetCameraMode(int mode) { callbacks_.SetCameraMode(mode); }
 
+void Session::SetFpsCap(int fps_cap) { callbacks_.SetFpsCap(fps_cap); }
+
 void Session::SetMaxSpectators(int count) {
   char msg[48];
   snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix, count);
@@ -341,4 +344,10 @@ void Session::SendTheme() {
   SendText((std::string(kMsgThemePrefix) + theme_).c_str());
 }
 
+void Session::SendCamera(const mjvCamera& camera, uint32_t generation) {
+  if (socket_ && connected_) {
+    ClientCameraMessage message = MakeClientCameraMessage(camera, generation);
+    emscripten_websocket_send_binary(socket_, &message, sizeof(message));
+  }
+}
 }  // namespace mujoco::studio
