@@ -116,36 +116,19 @@ def run(
 
   Args:
     config: Optional ViewerConfig (defaults to standard ViewerConfig()).
-    model: In-memory model to publish instead.
+    model: An already compiled model to show; exclusive with ``model_path``.
     data: The data for ``model``; a fresh one is created when None.
-    model_path: Model file to load.
+    model_path: A model file (XML, URDF, MJB or MJZ) to load on startup.
     plugins: Optional viewer and sim plugins.
 
   Raises:
     ValueError: If both ``model`` and ``model_path`` are given.
   """
   if model is not None and model_path:
-    raise ValueError("Pass either model_path or model, not both.")
-
-  match sys.platform:
-    case "darwin":
-
-      def sim_loop(handle: viewer_handle.ViewerHandle) -> None:
-        nonlocal model, model_path
-        if model is not None:
-          handle.set_model(model)
-        elif model_path is not None:
-          handle.dispatch(messages.LoadModelEvent(path=model_path))
-        viewer_handle.run_sim_loop(handle)
-
-      viewer_plugins, sim_plugins = plugin.split_plugins(plugins)
-      _run_viewer_on_main_thread(
-        config, sim_loop, viewer_plugins=viewer_plugins, sim_plugins=sim_plugins
-      )
-    case _:
-      with launch(config, plugins=plugins) as handle:
-        if model is not None:
-          handle.set_model(model, data=data)
-        elif model_path:
-          handle.dispatch(messages.LoadModelEvent(path=model_path))
-        viewer_handle.run_sim_loop(handle)
+    raise ValueError('Pass either model_path or model, not both.')
+  with launch(config, plugins=plugins) as handle:
+    if model is not None:
+      handle.set_model(model, data=data)
+    else:
+      handle.dispatch(messages.LoadModelEvent(path=model_path or ''))
+    viewer_handle.run_sim_loop(handle)

@@ -20,7 +20,7 @@ that the calling thread uses to push simulation state into the viewer.
 from collections.abc import Iterable
 
 import mujoco
-from mujoco.studio import plugin, viewer_handle, viewer_protocol
+from mujoco.studio import messages, plugin, viewer_handle, viewer_protocol
 
 
 def launch(
@@ -64,22 +64,19 @@ def run(
 
   Args:
     config: Viewer window configuration.
-    model: In-memory model to publish instead.
+    model: An already compiled model to show; exclusive with ``model_path``.
     data: The data for ``model``; a fresh one is created when None.
-    model_path: Model file to load.
+    model_path: A model file (XML, URDF, MJB or MJZ) to load on startup.
     plugins: Optional viewer and sim plugins.
 
   Raises:
     ValueError: If both ``model`` and ``model_path`` are given.
   """
   if model is not None and model_path:
-    raise ValueError("Pass either model_path or model, not both.")
-
-  if config.gfx in ("web", "webgl"):
-    from .launch_web import run as run_web
-
-    run_web(config, model=model, data=data, model_path=model_path, plugins=plugins)
-  else:
-    from .launch_native import run as run_native
-
-    run_native(config, model=model, data=data, model_path=model_path, plugins=plugins)
+    raise ValueError('Pass either model_path or model, not both.')
+  with launch(config, plugins=plugins) as handle:
+    if model is not None:
+      handle.set_model(model, data=data)
+    else:
+      handle.dispatch(messages.LoadModelEvent(path=model_path or ''))
+    viewer_handle.run_sim_loop(handle)
