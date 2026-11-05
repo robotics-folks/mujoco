@@ -52,6 +52,7 @@
 #include "studio/sim/model_holder.h"
 #include "studio/ux/imgui_widgets.h"
 #include "studio/ux/interaction.h"
+#include "studio/ux/theme.h"
 #include <NetImgui_Api.h>
 #include "google/logging.h"
 #include "state_payload.h"
@@ -71,6 +72,7 @@
 extern "C" GLenum __wrap_glGetError(void) { return GL_NO_ERROR; }
 
 using mujoco::studio::DisconnectNotice;
+using mujoco::studio::GuiTheme;
 using mujoco::studio::RemoteUi;
 using mujoco::studio::RemoteUiState;
 using mujoco::studio::RoleWindow;
@@ -114,7 +116,7 @@ class AppCallbacks final : public RemoteUi::Callbacks,
   // Session::Callbacks
   bool ReadyForPayload() override;
   void OnPayload(const StatePayloadView& view) override;
-  void OnModelChanged() override;
+  void OnModelChanged(uint32_t model_crc32) override;
   void ConnectRemoteUi() override;
   void ShutdownRemoteUi() override;
   void SetCameraMode(int mode) override;
@@ -168,6 +170,7 @@ struct App {
   Session session{callbacks};
   DisconnectNotice disconnect_notice;
   RoleWindow role_window;
+  GuiTheme theme = GuiTheme::kDark;
 };
 App g_app;
 
@@ -290,10 +293,10 @@ void SetSpectatorCameraMode(int mode) {
   const mjModel* model = g_app.model_holder->model();
   if (mode == kSpecCamTumble) {
     mujoco::studio::SetCamera(model, &g_app.camera,
-                                mujoco::studio::kTumbleCameraIdx);
+                              mujoco::studio::kTumbleCameraIdx);
   } else if (mode == kSpecCamWasd) {
     mujoco::studio::SetCamera(model, &g_app.camera,
-                                mujoco::studio::kFreeCameraIdx);
+                              mujoco::studio::kFreeCameraIdx);
   }
   // kSpecCamFollow: the next state payload restores the controller's camera.
 }
@@ -322,7 +325,7 @@ void HandleSpectatorCameraInput() {
     mjv_defaultFreeCamera(model, &g_app.camera);
     if (wasd) {
       mujoco::studio::SetCamera(model, &g_app.camera,
-                                  mujoco::studio::kFreeCameraIdx);
+                                mujoco::studio::kFreeCameraIdx);
     }
   }
 
@@ -397,6 +400,52 @@ void HandleSpectatorCameraInput() {
   }
 }
 
+// Styles the browser's local ImGui context (the role bar and notices) with
+// one of the Studio themes. Picked with the role bar's theme button and
+// remembered in localStorage so it survives page reloads (every model change
+// reloads the page). The remote UI follows this page's theme while it
+// controls (see Session::SetTheme).
+constexpr char kThemeStorageKey[] = "mjwv_theme";
+
+// The theme's key in localStorage: "light", "dark" or "classic".
+const char* ThemeStorageValue(GuiTheme theme) {
+  switch (theme) {
+    case GuiTheme::kLight:
+      return "light";
+    case GuiTheme::kClassic:
+      return "classic";
+    case GuiTheme::kDark:
+      return "dark";
+  }
+  return "dark";
+}
+
+// The theme stored by a previous page load, or dark.
+GuiTheme LoadTheme() {
+  const std::string script = std::string("(function() { try { return ") +
+                             "localStorage.getItem('" + kThemeStorageKey +
+                             "') || ''; } catch (e) { return ''; } })()";
+  const char* name = emscripten_run_script_string(script.c_str());
+  const std::string stored = name != nullptr ? name : "";
+  if (stored == "light") return GuiTheme::kLight;
+  if (stored == "classic") return GuiTheme::kClassic;
+  return GuiTheme::kDark;
+}
+
+void ApplyTheme(GuiTheme theme) {
+  g_app.theme = theme;
+  // SetupTheme sizes paddings from FontScaleDpi, which Window set for the
+  // display's DPI. The font scale itself stays 1: browser zoom scales the
+  // whole page, bar included.
+  mujoco::studio::SetupTheme(theme);
+  const std::string script = std::string("try { localStorage.setItem('") +
+                             kThemeStorageKey + "', '" +
+                             ThemeStorageValue(theme) + "'); } catch (e) {}";
+  emscripten_run_script(script.c_str());
+  // The remote UI follows this page's theme while it controls.
+  g_app.session.SetTheme(ThemeStorageValue(theme));
+}
+
 // --- AppCallbacks method bodies (see the class declaration above App). ---
 
 uintptr_t AppCallbacks::UploadTexture(uintptr_t current, const std::byte* rgba,
@@ -422,11 +471,15 @@ void AppCallbacks::OnPayload(const StatePayloadView& view) {
   ApplyStatePayload(view);
 }
 
-void AppCallbacks::OnModelChanged() {
+void AppCallbacks::OnModelChanged(uint32_t model_crc32) {
   // Mark downloading immediately so the main loop stops applying state updates
-  // to the old model while the new one downloads asynchronously.
+  // to the old model while the new one downloads asynchronously. The page
+  // loads the bundle from its cache when it was prefetched (synchronously, so
+  // the payload that announced the change already applies to the new model),
+  // and fetches it by crc32 otherwise. The crc32 crosses as a signed int; the
+  // page restores the unsigned value.
   g_app.download_status.is_downloading = true;
-  EM_ASM({ reloadModel(); });
+  EM_ASM({ reloadModel($0); }, model_crc32);
 }
 
 void AppCallbacks::ConnectRemoteUi() { g_app.remote_ui.Connect(WsUrl("/ui")); }
@@ -465,16 +518,33 @@ void BuildBrowserGui() {
   view.retry_count = g_app.download_status.retry_count;
   // The session is the SessionActions implementation: the role window's
   // intents land there directly.
-  g_app.role_window.Draw(view, g_app.session);
+  GuiTheme theme = g_app.theme;
+  g_app.role_window.Draw(view, g_app.session, &theme);
+  if (theme != g_app.theme) {
+    ApplyTheme(theme);
+  }
 }
+
+// The canvas's backing store in device pixels: the render target, the
+// scene viewport and the UI's orthographic camera all have to be exactly
+// this size. SDL sizes it to floor(css size * devicePixelRatio) on each
+// axis, so with a fractional ratio the height is not the CSS height times
+// the width's scale: that lands one row short for about a quarter of all
+// window sizes, which left the top row of the canvas unrendered (a dark
+// line above the menu bar) and squashed the UI pass by a row so its bottom
+// edges landed between pixels.
+static int FramebufferWidth() { return g_app.window->GetDrawableWidth(); }
+static int FramebufferHeight() { return g_app.window->GetDrawableHeight(); }
 
 // The scene's viewport in framebuffer pixels (GL convention: origin at the
 // bottom-left): the window minus the role bar along the bottom. The bar's
 // inset is floored so that at a fractional DPI scale the scene reaches at
 // most one pixel under the opaque bar rather than leaving a gap above it.
 static mjrRect SceneViewport(int width, int height) {
-  const int bar_px = static_cast<int>(
-      std::floor(g_app.role_window.BarHeight() * g_app.window->GetScale()));
+  const float scale_y = static_cast<float>(height) /
+                        static_cast<float>(g_app.window->GetHeight());
+  const int bar_px =
+      static_cast<int>(std::floor(g_app.role_window.BarHeight() * scale_y));
   const int scene_height = std::max(1, height - bar_px);
   return {0, height - scene_height, width, scene_height};
 }
@@ -482,8 +552,8 @@ static mjrRect SceneViewport(int width, int height) {
 static mujoco::Renderer::View GetSceneView() {
   const mjModel* model = g_app.model_holder->model();
   const mjData* data = g_app.model_holder->data();
-  const int width = g_app.window->GetWidth() * g_app.window->GetScale();
-  const int height = g_app.window->GetHeight() * g_app.window->GetScale();
+  const int width = FramebufferWidth();
+  const int height = FramebufferHeight();
 
   mujoco::Renderer::View view;
   view.scene = g_app.renderer->GetSceneHandle("studio");
@@ -524,8 +594,8 @@ static mujoco::Renderer::View GetSceneView() {
 }
 
 static mujoco::Renderer::View GetUxView() {
-  const int width = g_app.window->GetWidth() * g_app.window->GetScale();
-  const int height = g_app.window->GetHeight() * g_app.window->GetScale();
+  const int width = FramebufferWidth();
+  const int height = FramebufferHeight();
 
   mujoco::Renderer::View view;
   view.scene = g_app.renderer->GetSceneHandle("ux");
@@ -670,10 +740,8 @@ void MainLoopImpl() {
       g_app.backend_state_dirty = false;
     }
 
-    int width =
-        static_cast<int>(g_app.window->GetWidth() * g_app.window->GetScale());
-    int height =
-        static_cast<int>(g_app.window->GetHeight() * g_app.window->GetScale());
+    const int width = FramebufferWidth();
+    const int height = FramebufferHeight();
     if (width > 0 && height > 0) {
       g_app.renderer->ResizeRenderTarget(mujoco::Renderer::kWindowRenderTarget,
                                          width, height);
@@ -872,9 +940,8 @@ static void RegisterBundledTextures(mjModel* m,
   for (int i = 0; i < m->ntex; ++i) {
     if (m->tex_adr[i] != -1 || m->tex_pathadr[i] < 0) continue;
     std::string_view path(m->paths + m->tex_pathadr[i]);
-    auto it = std::find_if(
-        b.resources.begin(), b.resources.end(),
-        [path](const auto& r) { return r.path == path; });
+    auto it = std::find_if(b.resources.begin(), b.resources.end(),
+                           [path](const auto& r) { return r.path == path; });
     if (it == b.resources.end()) {
       LOG(Warning, "Texture %d (%.*s) is not in the model bundle", i,
           static_cast<int>(path.size()), path.data());
@@ -887,11 +954,11 @@ static void RegisterBundledTextures(mjModel* m,
                 (slash == std::string_view::npos || dot > slash)
             ? path.substr(dot)
             : std::string_view();
-    std::string name = std::string(kBundledTexturePrefix) +
-                       std::to_string(i) + std::string(ext);
+    std::string name = std::string(kBundledTexturePrefix) + std::to_string(i) +
+                       std::string(ext);
     AssetRegistry::Instance().RegisterAssetView(
-        name, std::string_view(reinterpret_cast<const char*>(it->data),
-                               it->size));
+        name,
+        std::string_view(reinterpret_cast<const char*>(it->data), it->size));
     const std::string uri = "asset:" + name;
     m->tex_pathadr[i] = static_cast<int>(paths.size());
     paths.insert(paths.end(), uri.begin(), uri.end());
@@ -901,12 +968,14 @@ static void RegisterBundledTextures(mjModel* m,
   if (rewritten) m->paths = paths.data();
 }
 
-bool ParseModelBufferImpl(const char* data, size_t size) {
+// Parses a model bundle and installs its model; returns the bundle's crc32
+// (the identity the state payloads carry), or 0 on failure.
+uint32_t ParseModelBufferImpl(const char* data, size_t size) {
   LOG(Info, "Fetched model bundle, size: %zu", size);
   mujoco::studio::ModelBundleView bundle;
   if (!mujoco::studio::ParseModelBundle(data, size, &bundle)) {
     LOG(Error, "Failed to load model: malformed model bundle");
-    return false;
+    return 0;
   }
   LOG(Info, "Model bundle: %zu byte MJB, %zu texture file(s)", bundle.mjb_size,
       bundle.resources.size());
@@ -934,15 +1003,15 @@ bool ParseModelBufferImpl(const char* data, size_t size) {
       }
     }
     if (m) RegisterBundledTextures(m, bundle);
-    g_app.session.SetModelCrc32(
-        Crc32(reinterpret_cast<const uint8_t*>(data), size));
+    const uint32_t crc = Crc32(reinterpret_cast<const uint8_t*>(data), size);
+    g_app.session.SetModelCrc32(crc);
     LOG(Info, "Model parsed successfully!");
-    return true;
+    return crc;
   }
   LOG(Error, "Failed to load model: %s",
       g_app.model_holder ? g_app.model_holder->error().data()
                          : "Unknown error");
-  return false;
+  return 0;
 }
 
 void UpdateModelDownloadProgress(size_t bytes_downloaded, size_t total_bytes,
@@ -986,15 +1055,19 @@ void FreeModelBuffer(uintptr_t ptr_val) {
 }
 
 // Parses a model bundle from a buffer and rebuilds the scene from it. The
-// buffer is the page's to free once this returns.
-void ParseModelBuffer(uintptr_t ptr_val, size_t size) {
-  if (ParseModelBufferImpl(reinterpret_cast<char*>(ptr_val), size)) {
+// buffer is the page's to free once this returns. Returns the bundle's crc32,
+// under which the page caches the bundle, or 0 if it failed to load.
+uint32_t ParseModelBuffer(uintptr_t ptr_val, size_t size) {
+  const uint32_t crc =
+      ParseModelBufferImpl(reinterpret_cast<char*>(ptr_val), size);
+  if (crc != 0) {
     FinishModelLoad();
   }
   // SetupScene() has uploaded every bundled texture to the GPU, and nothing
   // reads the encoded bytes again; drop the views before the buffer they
   // point into is freed. A re-upload would need the bundle fetched again.
   AssetRegistry::Instance().ClearPrefix(kBundledTexturePrefix);
+  return crc;
 }
 
 // Exposed to JS (see EMSCRIPTEN_BINDINGS): the page calls this once per asset.
@@ -1059,8 +1132,11 @@ void StartApp() {
   config.load_fonts = true;
 
   g_app.window = std::make_unique<mujoco::studio::Window>("MuJoCo Web Viewer",
-                                                            1400, 720, config);
+                                                          1400, 720, config);
   ImPlot::CreateContext();  // Needed if the server app uses ImPlot.
+  // The local UI's theme from the first frame: the one this browser last
+  // chose, or dark.
+  ApplyTheme(LoadTheme());
 
   for (int i = 0; i < mjNRNDFLAG; i++) {
     g_app.render_flags[i] = (mjRNDSTRING[i][1][0] == '1');
@@ -1108,7 +1184,8 @@ EMSCRIPTEN_BINDINGS(web_client_bindings) {
   emscripten::function("freeModelBuffer", &FreeModelBuffer);
 
   // Parses a completed model bundle buffer (MJB plus by-reference textures)
-  // and reinitializes the Filament scene.
+  // and reinitializes the Filament scene. Returns the bundle's crc32 (0 on
+  // failure), the key the page caches the bundle under.
   emscripten::function("parseModelBuffer", &ParseModelBuffer);
 
   // Initializes the Filament window, ImGui context, WebSocket connections, and

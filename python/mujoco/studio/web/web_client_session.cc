@@ -31,6 +31,10 @@ constexpr char kMsgHeartbeat[] = "heartbeat";
 constexpr char kMsgStateAck[] = "state_ack";
 constexpr char kMsgGrant[] = "grant";
 constexpr char kMsgMaxSpectatorsPrefix[] = "max_spectators=";
+// The model bundles the page may prefetch, "prefetch=<crc32>:<bytes>,...";
+// handled by the page's JS (index.html), which owns the model cache.
+constexpr char kMsgPrefetchPrefix[] = "prefetch=";
+constexpr char kMsgThemePrefix[] = "theme=";
 
 // Liveness heartbeat period. A hidden tab's rendering loop stops, so Update()
 // and the heartbeat stop with it. The server kicks spectators (and releases a
@@ -209,6 +213,14 @@ void Session::OnSessionText(const char* text) {
     // arrives before the next frame refreshes remote_ui_state_, and the settle
     // rule above must not shut down the fresh claim.
     remote_ui_state_ = RemoteUiState::kConnecting;
+  } else if (strncmp(text, kMsgPrefetchPrefix, strlen(kMsgPrefetchPrefix)) ==
+             0) {
+    // The page's JS owns the model cache and the background downloads.
+    EM_ASM(
+        {
+          if (Module.onPrefetchHint) Module.onPrefetchHint(UTF8ToString($0));
+        },
+        text);
   }
 }
 
@@ -244,6 +256,7 @@ void Session::HandleRemoteUiState(RemoteUiState state, int close_code) {
     ui_reject_count_ = 0;
     if (role_ != SessionRole::kControlling) {
       SetRole(SessionRole::kControlling);  // The claim succeeded.
+      SendTheme();  // The remote UI takes this page's theme.
     }
   } else if (state == RemoteUiState::kClosedOrError) {
     last_ui_retry_time_ = now;
@@ -289,9 +302,10 @@ void Session::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
     // Set the new CRC so subsequent payloads don't re-trigger while the new
     // model is being fetched.
     model_crc32_ = view.model_crc32;
-    callbacks_.OnModelChanged();
+    callbacks_.OnModelChanged(view.model_crc32);
     // Fall through: this payload already carries the new model's first state
-    // and camera; OnPayload buffers the state while the download runs.
+    // and camera; OnPayload buffers the state while the download runs (or
+    // applies it right away when the page had the bundle cached).
   }
 
   callbacks_.OnPayload(view);
@@ -315,6 +329,16 @@ void Session::SetMaxSpectators(int count) {
   char msg[48];
   snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix, count);
   SendText(msg);
+}
+
+void Session::SetTheme(const char* theme) {
+  theme_ = theme;
+  SendTheme();
+}
+
+void Session::SendTheme() {
+  if (theme_.empty()) return;
+  SendText((std::string(kMsgThemePrefix) + theme_).c_str());
 }
 
 }  // namespace mujoco::studio

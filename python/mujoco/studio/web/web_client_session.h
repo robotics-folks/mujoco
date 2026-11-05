@@ -116,8 +116,9 @@ class Session : public SessionActions {
     virtual bool ReadyForPayload() = 0;
     // Applies a parsed payload to the application.
     virtual void OnPayload(const StatePayloadView& view) = 0;
-    // Server swapped models; fetch and load the new one in-place.
-    virtual void OnModelChanged() = 0;
+    // Server swapped models: fetch (or take from the page's cache) and load
+    // the bundle whose crc32 the state payload now carries, in place.
+    virtual void OnModelChanged(uint32_t model_crc32) = 0;
     // Role transition: claim the controller slot.
     virtual void ConnectRemoteUi() = 0;
     // Role transition: drop the stream when spectating
@@ -192,6 +193,12 @@ class Session : public SessionActions {
   void SetCameraMode(int mode) override;
   void SetMaxSpectators(int count) override;
 
+  // Remembers this page's theme name ("light", "dark" or "classic") and sends
+  // it to the server, which applies it to the remote UI if this page controls.
+  // Sent again whenever this page gains control, so the remote UI matches the
+  // page's theme from the first frame.
+  void SetTheme(const char* theme);
+
  private:
   // Detaches callbacks and frees socket_ (if any), resetting to disconnected.
   void CloseSocket();
@@ -200,11 +207,15 @@ class Session : public SessionActions {
   // server as a text frame. Dropped silently while not connected.
   void SendText(const char* text);
 
+  // Sends theme_ (see SetTheme).
+  void SendTheme();
+
   // Updates the role and mirrors it into JS (Module.isSpectator), which gates
   // controller-only page behavior (model drag-and-drop upload).
   void SetRole(SessionRole role);
 
-  // Routes a session text frame: roster updates, control grants.
+  // Routes a session text frame: roster updates, control grants, and the
+  // list of model bundles the page may prefetch (handed to the page's JS).
   void OnSessionText(const char* text);
 
   static EM_BOOL OnWsMessage(int event_type,
@@ -239,6 +250,7 @@ class Session : public SessionActions {
   // Role state machine and roster.
   SessionRole role_ = SessionRole::kClaiming;
   Roster roster_;
+  std::string theme_;  // See SetTheme.
 
   // Consecutive rejected /ui claims; the page eventually stops claiming and
   // settles into spectating.
