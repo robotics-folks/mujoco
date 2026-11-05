@@ -62,3 +62,4 @@ pixi.lock
 /typings
 /assets-molmospaces
 /Testing
+/test/*.json
