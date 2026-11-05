@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <sstream>
@@ -464,7 +465,7 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
   const float kInspectorRelWidth = 0.22f;
   const float kPropertiesRelHeight = 0.3f;
   const float kToolsBarHeight = show_toolbar ? 36.f * scale * font_scale : 0.0f;
-  const float kStatusBarHeight = show_status_bar ? 32.f * scale * font_scale : 0.0f;
+  const float status_bar_height = show_status_bar ? kStatusBarHeight * scale * font_scale : 0.0f;
 
   // Lay out from the absolute viewport origin with an explicitly computed
   // menu bar height, NOT from WorkPos/WorkSize: the work area only reflects
@@ -476,7 +477,7 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
   const ImVec2 toolbar_pos{viewport->Pos.x, viewport->Pos.y + menu_bar_height};
   const ImVec2 dockspace_pos{viewport->Pos.x, viewport->Pos.y + menu_bar_height + kToolsBarHeight};
   const ImVec2 dockspace_size{
-      viewport->Size.x, viewport->Size.y - menu_bar_height - kToolsBarHeight - kStatusBarHeight};
+      viewport->Size.x, viewport->Size.y - menu_bar_height - kToolsBarHeight - status_bar_height};
 
   ImGuiID root = ImGui::GetID("Root");
   const bool first_time = (ImGui::DockBuilderGetNode(root) == nullptr);
@@ -566,8 +567,8 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
     style.Var(ImGuiStyleVar_WindowBorderSize, 1.0f);
     style.Var(ImGuiStyleVar_WindowRounding, 0.0f);
     style.Var(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
-    ImGui::SetNextWindowPos(ImVec2(0, viewport->Size.y - kStatusBarHeight), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, kStatusBarHeight), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(0, viewport->Size.y - status_bar_height), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, status_bar_height), ImGuiCond_Always);
     ImGui::Begin("StatusBar", nullptr, kFixedFlags);
     ImGui::End();
   }
@@ -1329,6 +1330,192 @@ bool CameraSelectionGui(const mjModel* model, mjData* data, mjvCamera& camera, i
   return changed;
 }
 
+bool ViewGizmoGui(const mjModel* model, const mjData* data, mjvCamera& camera, int& camera_index,
+                  const ImVec4& workspace_rect) {
+  if (model == nullptr || data == nullptr) {
+    return false;
+  }
+  // Axis colors and labels.
+  static constexpr ImU32 kAxisColors[3] = {IM_COL32(245, 63, 82, 255), IM_COL32(139, 220, 0, 255),
+                                           IM_COL32(44, 143, 255, 255)};
+  static constexpr const char* kAxisLabels[3] = {"X", "Y", "Z"};
+  static constexpr const char* kNegativeAxisLabels[3] = {"-X", "-Y", "-Z"};
+  constexpr double kAnimationSec = 0.25;
+  constexpr double kDragDegPerPixel = 0.4;
+
+  const float scale = ImGui::GetWindowDpiScale();
+  const float axis_length = 40.0f * scale;
+  const float bubble_radius = 9.0f * scale;
+  const float half_extent = axis_length + bubble_radius;
+  const float margin = 8.0f * scale;
+  const ImVec2 size(2.0f * half_extent, 2.0f * half_extent);
+
+  ImGui::SetNextWindowPos(
+      ImVec2(workspace_rect.x + workspace_rect.z - margin, workspace_rect.y + margin),
+      ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+  ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+  constexpr ImGuiWindowFlags kFlags =
+      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove |
+      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollWithMouse;
+  ScopedStyle style;
+  style.Var(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  style.Var(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  style.Var(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
+  bool changed = false;
+  if (!ImGui::Begin("##ViewGizmo", nullptr, kFlags)) {
+    ImGui::End();
+    return false;
+  }
+
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  const ImVec2 center(origin.x + half_extent, origin.y + half_extent);
+  ImGui::InvisibleButton("##Gizmo", size);
+  const bool hovered = ImGui::IsItemHovered();
+  const bool active = ImGui::IsItemActive();
+  const bool released = ImGui::IsItemDeactivated();
+
+  // Project the world axes onto the view (x right, y down, depth away).
+  mjtNum forward[3], up[3], right[3];
+  mjv_cameraFrame(nullptr, forward, up, right, data, &camera);
+  struct Bubble {
+    int axis;
+    int sign;
+    ImVec2 pos;
+    float depth;
+  };
+  Bubble bubbles[6];
+  for (int i = 0; i < 6; ++i) {
+    const int axis = i / 2;
+    const int sign = (i % 2 == 0) ? 1 : -1;
+    bubbles[i] = {axis, sign,
+                  ImVec2(center.x + sign * axis_length * static_cast<float>(right[axis]),
+                         center.y - sign * axis_length * static_cast<float>(up[axis])),
+                  sign * static_cast<float>(forward[axis])};
+  }
+  std::sort(std::begin(bubbles), std::end(bubbles),
+            [](const Bubble& a, const Bubble& b) { return a.depth > b.depth; });
+
+  // The front-most bubble under the mouse.
+  int hot = -1;
+  if (hovered || active) {
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    for (int i = 5; i >= 0; --i) {
+      const float dx = mouse.x - bubbles[i].pos.x;
+      const float dy = mouse.y - bubbles[i].pos.y;
+      if (dx * dx + dy * dy <= bubble_radius * bubble_radius) {
+        hot = i;
+        break;
+      }
+    }
+  }
+
+  // Animation state: start/target angles and start time (negative when idle).
+  ImGuiStorage* storage = ImGui::GetStateStorage();
+  const ImGuiID id_t0 = ImGui::GetID("##t0");
+  const ImGuiID id_az0 = ImGui::GetID("##az0");
+  const ImGuiID id_el0 = ImGui::GetID("##el0");
+  const ImGuiID id_az1 = ImGui::GetID("##az1");
+  const ImGuiID id_el1 = ImGui::GetID("##el1");
+  const double now = ImGui::GetTime();
+
+  // Fixed cameras ignore azimuth/elevation, so switch to the tumble camera.
+  auto release_fixed_camera = [&] {
+    if (camera.type == mjCAMERA_FIXED) {
+      camera_index = SetCamera(model, &camera, kTumbleCameraIdx);
+      mjv_defaultFreeCamera(model, &camera);
+    }
+  };
+
+  // Dragging orbits the camera.
+  const float drag_threshold = ImGui::GetIO().MouseDragThreshold;
+  const bool dragged = ImGui::GetIO().MouseDragMaxDistanceSqr[0] > drag_threshold * drag_threshold;
+  if (active && dragged) {
+    const ImVec2 delta = ImGui::GetIO().MouseDelta;
+    if (delta.x != 0.0f || delta.y != 0.0f) {
+      release_fixed_camera();
+      camera.azimuth -= delta.x * kDragDegPerPixel;
+      camera.elevation = std::clamp(camera.elevation - delta.y * kDragDegPerPixel, -90.0, 90.0);
+      storage->SetFloat(id_t0, -1.0f);  // A drag cancels the animation.
+      changed = true;
+    }
+  }
+
+  // Clicking an axis looks along it, or from the other side if it already does.
+  if (released && !dragged && hot >= 0) {
+    double f[3] = {0, 0, 0};  // The new forward direction.
+    f[bubbles[hot].axis] = -bubbles[hot].sign;
+    if (forward[0] * f[0] + forward[1] * f[1] + forward[2] * f[2] > 0.9999) {
+      f[bubbles[hot].axis] = -f[bubbles[hot].axis];
+    }
+    release_fixed_camera();
+    const double el = std::asin(std::clamp(f[2], -1.0, 1.0)) * 180.0 / mjPI;
+    // Looking straight down (up), keep +Y pointing up the screen.
+    const double az =
+        std::abs(f[2]) > 0.5 ? (f[2] < 0 ? 90.0 : -90.0) : std::atan2(f[1], f[0]) * 180.0 / mjPI;
+    storage->SetFloat(id_az0, static_cast<float>(camera.azimuth));
+    storage->SetFloat(id_el0, static_cast<float>(camera.elevation));
+    storage->SetFloat(id_az1, static_cast<float>(az));
+    storage->SetFloat(id_el1, static_cast<float>(el));
+    storage->SetFloat(id_t0, static_cast<float>(now));
+  }
+
+  // Animate to the target, the short way around in azimuth.
+  const float t0 = storage->GetFloat(id_t0, -1.0f);
+  if (t0 >= 0.0f) {
+    const double u = std::clamp((now - t0) / kAnimationSec, 0.0, 1.0);
+    const double ease = u * u * (3.0 - 2.0 * u);  // Smoothstep.
+    const double az0 = storage->GetFloat(id_az0);
+    const double el0 = storage->GetFloat(id_el0);
+    const double daz = std::remainder(storage->GetFloat(id_az1) - az0, 360.0);
+    camera.azimuth = az0 + daz * ease;
+    camera.elevation = el0 + (storage->GetFloat(id_el1) - el0) * ease;
+    if (u >= 1.0) {
+      storage->SetFloat(id_t0, -1.0f);
+    }
+    changed = true;
+  }
+
+  // Draw back to front, over a faint disc while hovered.
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  if (hovered || active) {
+    dl->AddCircleFilled(center, half_extent, ImGui::GetColorU32(ImGuiCol_Text, 0.12f), 48);
+  }
+  const ImU32 label_color = IM_COL32(20, 20, 20, 255);
+  for (int i = 0; i < 6; ++i) {
+    const Bubble& b = bubbles[i];
+    const ImU32 color = kAxisColors[b.axis];
+    const bool is_hot = (i == hot);
+    if (b.sign > 0) {
+      dl->AddLine(center, b.pos, color, 2.0f * scale);
+      dl->AddCircleFilled(b.pos, bubble_radius, color, 24);
+      const ImVec2 text = ImGui::CalcTextSize(kAxisLabels[b.axis]);
+      dl->AddText(ImVec2(b.pos.x - text.x * 0.5f, b.pos.y - text.y * 0.5f), label_color,
+                  kAxisLabels[b.axis]);
+    } else {
+      dl->AddCircleFilled(b.pos, bubble_radius, (color & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 80),
+                          24);
+      dl->AddCircle(b.pos, bubble_radius, color, 24, 1.5f * scale);
+      if (is_hot) {
+        const char* label = kNegativeAxisLabels[b.axis];
+        const ImVec2 text = ImGui::CalcTextSize(label);
+        dl->AddText(ImVec2(b.pos.x - text.x * 0.5f, b.pos.y - text.y * 0.5f),
+                    ImGui::GetColorU32(ImGuiCol_Text), label);
+      }
+    }
+    if (is_hot) {
+      dl->AddCircle(b.pos, bubble_radius + 1.0f * scale, IM_COL32_WHITE, 24, 1.5f * scale);
+    }
+  }
+  if (hot >= 0) {
+    ImGui::SetTooltip("View from %s%s", bubbles[hot].sign > 0 ? "+" : "-",
+                      kAxisLabels[bubbles[hot].axis]);
+  }
+
+  ImGui::End();
+  return changed;
+}
+
 void SensorGui(const mjModel* model, const mjData* data) {
   if (model->nsensor == 0) {
     return;
@@ -1413,7 +1600,18 @@ void StateGui(const mjModel* model, mjData* data, std::vector<mjtNum>& state, in
       {"MOCAP_QUAT", "Orientations of mocap bodies"},
       {"USERDATA", "User data"},
       {"PLUGIN", "Plugin state"},
+      {"PLASTIC", "Plastic state"},
   };
+  static_assert(
+      [] {
+        for (const auto& row : name_and_tooltip) {
+          if (row[0] == nullptr || row[1] == nullptr) return false;
+        }
+        return true;
+      }(),
+      "name_and_tooltip is missing a row for an mjtState component");
+  static_assert(mjSTATE_INTEGRATION == (1 << mjNSTATE) - 1,
+                "mjNSTATE does not match the number of mjtState components");
 
   int prev_state_sig = state_sig;
 

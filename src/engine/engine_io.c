@@ -27,6 +27,7 @@
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
 #include <mujoco/mjxmacro.h>
 #include "engine/engine_core_smooth.h"
+#include "engine/engine_core_util.h"
 #include "engine/engine_forward.h"
 #include "engine/engine_init.h"
 #include "engine/engine_macro.h"
@@ -1363,11 +1364,13 @@ void mj_resetPlastic(const mjModel* m, mjData* d) {
           int cy = m->flex_cellnum[3*f+1];
           int cz = m->flex_cellnum[3*f+2];
           n = 3 * 2 * (cy*cz + cx*cz + cx*cy);
+        } else if (dim == 1) {
+          n = mj_rodStateSize(m, f);
         } else {
-          if (m->flex_stiffnessadr[f] >= 0 && m->flex_stiffness[m->flex_stiffnessadr[f]] != 0) {
+          if (m->flex_plasticmode[f] & 2) {
             n += (dim == 2 ? 3 : 6) * m->flex_elemnum[f];
           }
-          if (dim == 2 && m->flex_bendingadr[f] >= 0) {
+          if (m->flex_plasticmode[f] & 1) {
             n += m->flex_edgenum[f];
           }
         }
@@ -2321,12 +2324,20 @@ const char* mj_validateReferences(const mjModel* m) {
       int cy = m->flex_cellnum[3*f+1];
       int cz = m->flex_cellnum[3*f+2];
       nplastic = 3 * 2 * (cy*cz + cx*cz + cx*cy);
+    } else if (dim == 1) {
+      if (m->flex_plasticadr[f] >= 0) {
+        nplastic = mj_rodStateSize(m, f);
+      }
     } else {
-      nplastic = (m->flex_stiffnessadr[f] >= 0 && m->flex_stiffness[m->flex_stiffnessadr[f]] != 0)
-                 ? (dim == 2 ? 3 : 6) * m->flex_elemnum[f] : 0;
-      if (dim == 2 && m->flex_bendingadr[f] >= 0) {
+      nplastic = (m->flex_plasticmode[f] & 2) ? (dim == 2 ? 3 : 6) * m->flex_elemnum[f] : 0;
+      if (m->flex_plasticmode[f] & 1) {
         nplastic += m->flex_edgenum[f];
       }
+    }
+    int mode = m->flex_plasticmode[f];
+    if (mode < 0 || mode > 3 || (mode && m->flex_plasticadr[f] < 0) ||
+        ((mode & 2) && dim < 2) || ((mode & 1) && (dim != 2 || m->flex_interp[f]))) {
+      return "Invalid model: flex_plasticmode out of bounds.";
     }
     if (m->flex_plasticadr[f] < -1 ||
         (m->flex_plasticadr[f] >= 0 && m->flex_plasticadr[f] + nplastic > m->nplastic)) {

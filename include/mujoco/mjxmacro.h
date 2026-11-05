@@ -482,6 +482,7 @@
     X   ( int,     flex_elemedgeadr,      nflex,         1                    ) \
     X   ( int,     flex_bendingadr,       nflex,         1                    ) \
     X   ( int,     flex_plasticadr,       nflex,         1                    ) \
+    X   ( int,     flex_plasticmode,      nflex,         1                    ) \
     X   ( int,     flex_shellnum,         nflex,         1                    ) \
     X   ( int,     flex_shelldataadr,     nflex,         1                    ) \
     X   ( int,     flex_texcoordadr,      nflex,         1                    ) \
@@ -512,7 +513,7 @@
     X   ( mjtNum,  efm0_L,                nefm0L,        1                    ) \
     X   ( int,     efmC_perm,             nefmCvert,     1                    ) \
     X   ( mjtNum,  flex_damping,          nflex,         1                    ) \
-    X   ( mjtNum,  flex_yield,            nflex,         1                    ) \
+    X   ( mjtNum,  flex_yield,            nflex,         2                    ) \
     X   ( mjtNum,  flex_edgestiffness,    nflex,         1                    ) \
     X   ( mjtNum,  flex_edgedamping,      nflex,         1                    ) \
     X   ( int,     flex_edgeequality,     nflex,         1                    ) \
@@ -955,7 +956,7 @@
     X( flex_elemnum,         0,          mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_elemdataadr,     0,          mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_stiffnessadr,    mjSC_IN,    0,          0,          mjSC_IN    ) \
-    X( flex_bendingadr,      mjSC_IN,    0,          0,          mjSC_IN    ) \
+    X( flex_bendingadr,      mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_nodebodyid,      mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_vertbodyid,      mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_vertcell,        0,          mjSC_IN,    mjSC_IN,    0          ) \
@@ -969,7 +970,7 @@
     X( flexedge_invweight0,  0,          0,          mjSC_OUT,   0          ) \
     X( flex_radius,          0,          mjSC_IN,    mjSC_IN,    0          ) \
     X( flex_stiffness,       mjSC_IN,    0,          0,          mjSC_IN    ) \
-    X( flex_bending,         mjSC_IN,    0,          0,          mjSC_IN    ) \
+    X( flex_bending,         mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( efm0_dofid,           0,          0,          0,          mjSC_OUT   ) \
     X( efm0_L_rownnz,        0,          0,          0,          mjSC_OUT   ) \
     X( efm0_L_rowadr,        0,          0,          0,          mjSC_OUT   ) \

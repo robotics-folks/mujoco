@@ -49,6 +49,8 @@
 
 namespace mujoco::studio {
 
+struct AppTestPeer;
+
 // Owns, updates, and renders a MuJoCo simulation.
 class App {
  public:
@@ -103,6 +105,7 @@ class App {
   void Render();
 
  private:
+  friend struct AppTestPeer;
   // The kind of model that is currently loaded.
   enum ModelKind {
     kEmptyModel,
@@ -167,6 +170,7 @@ class App {
     bool picture_in_picture = false;
     bool options_panel = true;
     bool toolbar = false;
+    bool view_gizmo = true;
     bool status_bar = true;
     bool console = false;
     bool inspector_panel = true;

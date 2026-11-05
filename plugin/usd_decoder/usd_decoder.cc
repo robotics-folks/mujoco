@@ -200,6 +200,62 @@ bool IsUniformScale(const pxr::GfVec3d& scale) {
          fabs(scale[1] - scale[2]) < epsilon;
 }
 
+template <typename Shape, typename Element>
+bool ParseAxialPrimitive(const Shape& shape, const char* name,
+                         mjtGeom geom_type, const pxr::GfVec3d& scale,
+                         Element* element) {
+  element->type = geom_type;
+  double radius;
+  if (!shape.GetRadiusAttr().template Get<double>(&radius)) {
+    mju_error("Could not get %s radius attr.", name);
+    return false;
+  }
+
+  double height;
+  if (!shape.GetHeightAttr().template Get<double>(&height)) {
+    mju_error("Could not get %s height attr.", name);
+    return false;
+  }
+
+  TfToken axis = pxr::UsdGeomTokens->z;
+  shape.GetAxisAttr().Get(&axis);
+
+  // Scale radius and half-height using the radial and axial components for the
+  // authored USD axis, and rotate local +Z to align with X or Y when needed.
+  double radial_scale_a = std::abs(scale[0]);
+  double radial_scale_b = std::abs(scale[1]);
+  double axial_scale = std::abs(scale[2]);
+  pxr::GfQuatd axis_rot = pxr::GfQuatd::GetIdentity();
+  if (axis == pxr::UsdGeomTokens->x) {
+    radial_scale_a = std::abs(scale[1]);
+    radial_scale_b = std::abs(scale[2]);
+    axial_scale = std::abs(scale[0]);
+    axis_rot =
+        pxr::GfRotation(pxr::GfVec3d::ZAxis(), pxr::GfVec3d::XAxis()).GetQuat();
+  } else if (axis == pxr::UsdGeomTokens->y) {
+    radial_scale_a = std::abs(scale[0]);
+    radial_scale_b = std::abs(scale[2]);
+    axial_scale = std::abs(scale[1]);
+    axis_rot =
+        pxr::GfRotation(pxr::GfVec3d::ZAxis(), pxr::GfVec3d::YAxis()).GetQuat();
+  }
+  if (std::abs(radial_scale_a - radial_scale_b) >= 1e-6) {
+    mju_warning(
+        "Non-uniform radial scale on %s prim %s; using max radial scale.", name,
+        shape.GetPath().GetText());
+  }
+  double radial_scale = std::max(radial_scale_a, radial_scale_b);
+
+  element->size[0] = radial_scale * radius;
+  element->size[1] = axial_scale * height / 2.0;
+  element->size[2] = 0;
+
+  pxr::GfQuatd current_rot(element->quat[0], element->quat[1], element->quat[2],
+                           element->quat[3]);
+  SetDoubleArrFromGfQuatd(element->quat, current_rot * axis_rot);
+  return true;
+}
+
 template <typename T>
 bool MaybeParseGeomPrimitive(const pxr::UsdPrim& prim, T* element,
                              pxr::UsdGeomXformCache& xform_cache) {
@@ -225,58 +281,11 @@ bool MaybeParseGeomPrimitive(const pxr::UsdPrim& prim, T* element,
       element->size[2] = scale[2] * radius;
     }
   } else if (prim.IsA<pxr::UsdGeomCylinder>()) {
-    auto cylinder = pxr::UsdGeomCylinder(prim);
-    element->type = mjGEOM_CYLINDER;
-    double radius;
-    if (!cylinder.GetRadiusAttr().Get<double>(&radius)) {
-      mju_error("Could not get cylinder radius attr.");
-      return false;
-    }
-
-    double height;
-    if (!cylinder.GetHeightAttr().Get<double>(&height)) {
-      mju_error("Could not get cylinder height attr.");
-      return false;
-    }
-    element->size[0] = scale[0] * radius;
-    element->size[1] = scale[1] * height / 2.0f;
-    element->size[2] = 0;
+    return ParseAxialPrimitive(pxr::UsdGeomCylinder(prim), "cylinder",
+                               mjGEOM_CYLINDER, scale, element);
   } else if (prim.IsA<pxr::UsdGeomCapsule>()) {
-    auto capsule = pxr::UsdGeomCapsule(prim);
-    element->type = mjGEOM_CAPSULE;
-    double radius;
-    if (!capsule.GetRadiusAttr().Get<double>(&radius)) {
-      mju_error("Could not get capsule radius attr.");
-      return false;
-    }
-
-    double height;
-    if (!capsule.GetHeightAttr().Get<double>(&height)) {
-      mju_error("Could not get capsule height attr.");
-      return false;
-    }
-    element->size[0] = scale[0] * radius;
-    element->size[1] = scale[1] * height / 2.0f;
-    element->size[2] = 0;
-
-    TfToken axis;
-    capsule.GetAxisAttr().Get(&axis);
-
-    // Mujoco (and USD) capsules are aligned with Z by default.
-    // When USD axis is X or Y, we apply a rotation to align with the Z axis.
-    pxr::GfQuatd axis_rot(1.0);
-    if (axis == pxr::UsdGeomTokens->x) {
-      axis_rot = pxr::GfRotation(pxr::GfVec3d::XAxis(), pxr::GfVec3d::ZAxis())
-                     .GetQuat();
-    } else if (axis == pxr::UsdGeomTokens->y) {
-      axis_rot = pxr::GfRotation(pxr::GfVec3d::YAxis(), pxr::GfVec3d::ZAxis())
-                     .GetQuat();
-    }
-
-    pxr::GfQuatd current_rot(element->quat[0], element->quat[1],
-                             element->quat[2], element->quat[3]);
-    pxr::GfQuatd new_rot = current_rot * axis_rot;
-    SetDoubleArrFromGfQuatd(element->quat, new_rot);
+    return ParseAxialPrimitive(pxr::UsdGeomCapsule(prim), "capsule",
+                               mjGEOM_CAPSULE, scale, element);
   } else if (prim.IsA<pxr::UsdGeomCube>()) {
     element->type = mjGEOM_BOX;
     auto cube = pxr::UsdGeomCube(prim);
@@ -560,6 +569,10 @@ void ParseUsdPhysicsScene(mjSpec* spec,
   mjc_physics_scene.GetCCDToleranceAttr().Get(&ccd_tolerance);
   spec->option.ccd_tolerance = ccd_tolerance;
 
+  double sleep_tolerance;
+  mjc_physics_scene.GetSleepToleranceAttr().Get(&sleep_tolerance);
+  spec->option.sleep_tolerance = sleep_tolerance;
+
   pxr::GfVec3d wind;
   mjc_physics_scene.GetWindAttr().Get(&wind);
   SetMjtNumArrFromGfVec3d(spec->option.wind, wind);
@@ -790,6 +803,18 @@ void ParseUsdPhysicsScene(mjSpec* spec,
   bool multiccd_flag;
   mjc_physics_scene.GetMultiCCDFlagAttr().Get(&multiccd_flag);
   spec->option.disableflags |= (!multiccd_flag ? mjDSBL_MULTICCD : 0);
+
+  pxr::VtArray<int> actuatorgroupdisable;
+  mjc_physics_scene.GetActuatorGroupDisableAttr().Get(&actuatorgroupdisable);
+  for (int group : actuatorgroupdisable) {
+    if (group >= 0 && group < mjNGROUP) {
+      spec->option.disableactuator |= (1 << group);
+    }
+  }
+
+  bool sleep_flag;
+  mjc_physics_scene.GetSleepFlagAttr().Get(&sleep_flag);
+  spec->option.enableflags |= (sleep_flag ? mjENBL_SLEEP : 0);
 
   // Compiler attributes
   auto auto_limits_attr = mjc_physics_scene.GetAutoLimitsAttr();
@@ -1173,10 +1198,6 @@ void ParseMjcPhysicsMeshCollisionAPI(
 void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
   pxr::UsdPrim prim = tendon.GetPrim();
   pxr::UsdStageRefPtr stage = prim.GetStage();
-  mjsTendon* mj_tendon = mjs_addTendon(spec, nullptr);
-  mjs_setName(mj_tendon->element, prim.GetPath().GetAsString().c_str());
-
-  SetUsdPrimPathUserValue(mj_tendon->element, prim.GetPath());
 
   pxr::TfToken type;
   tendon.GetTypeAttr().Get(&type);
@@ -1244,10 +1265,15 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
     // Check that for N targets we have 0 or N elements in coef:
     if (!coefs.empty() && coefs.size() != n_targets) {
       mju_warning(
-          "Spatial tendon %s has %lu coefs but %lu wrap targets, skipping.",
+          "Fixed tendon %s has %lu coefs but %lu wrap targets, skipping.",
           prim.GetPath().GetAsString().c_str(), coefs.size(), n_targets);
+      return;
     }
   }
+
+  mjsTendon* mj_tendon = mjs_addTendon(spec, nullptr);
+  mjs_setName(mj_tendon->element, prim.GetPath().GetAsString().c_str());
+  SetUsdPrimPathUserValue(mj_tendon->element, prim.GetPath());
 
   int last_segment = 0;
   for (int i = 0; i < n_targets; ++i) {
@@ -1264,10 +1290,11 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
             "Tendon %s has at least %d segments but only %lu divisors, "
             "skipping.",
             prim.GetPath().GetAsString().c_str(), segment + 1, divisors.size());
+        mjs_delete(spec, mj_tendon->element);
         return;
       }
 
-      if (segment > last_segment) {
+      if (segment > last_segment || (i == 0 && divisors[segment] != 1.0)) {
         mjsWrap* pulley_wrap = mjs_wrapPulley(mj_tendon, divisors[segment]);
         mjs_setString(pulley_wrap->info, ("Pulley between segments: " +
                                           std::to_string(last_segment) +
@@ -1296,6 +1323,7 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
               "skipping.",
               prim.GetPath().GetAsString().c_str(), side_site_index,
               side_site_paths.size());
+          mjs_delete(spec, mj_tendon->element);
           return;
         }
         if (side_site_index >= 0) {
@@ -1307,6 +1335,7 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
     } else {
       mju_warning("Tendon %s has an invalid wrap target type, skipping.",
                   prim.GetPath().GetAsString().c_str());
+      mjs_delete(spec, mj_tendon->element);
       return;
     }
     mjs_setString(wrap->info, ("Prim: " + wrap_target.GetAsString()).c_str());
@@ -2444,14 +2473,17 @@ void ParseConstraint(mjSpec* spec, const pxr::UsdPrim& prim, mjsBody* body,
     auto relpose_quat = localRot0 * localRot1.GetConjugate();
     relpose_quat.Normalize();
 
-    if (prim.HasAPI<pxr::MjcPhysicsEqualityConnectAPI>()) {
+    if (prim.IsA<pxr::UsdPhysicsSphericalJoint>() ||
+        prim.HasAPI<pxr::MjcPhysicsEqualityConnectAPI>()) {
       eq->type = mjEQ_CONNECT;
       eq->data[0] = localPos0[0];
       eq->data[1] = localPos0[1];
       eq->data[2] = localPos0[2];
 
-      pxr::MjcPhysicsEqualityAPI equality_api(prim);
-      ParseMjcEqualityAPISolverParams(eq, equality_api, prim);
+      if (prim.HasAPI<pxr::MjcPhysicsEqualityConnectAPI>()) {
+        pxr::MjcPhysicsEqualityAPI equality_api(prim);
+        ParseMjcEqualityAPISolverParams(eq, equality_api, prim);
+      }
     } else {
       eq->data[0] = localPos1[0];
       eq->data[1] = localPos1[1];
@@ -2889,6 +2921,10 @@ mjSpec* ParseStage(const pxr::UsdStageRefPtr stage) {
   }
 
   std::unique_ptr<Node> root = BuildKinematicTree(stage);
+  if (!root) {
+    mj_deleteSpec(spec);
+    return nullptr;
+  }
 
   // First parse the physics scene and other root elements such as keyframes
   // and actuators.
