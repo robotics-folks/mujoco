@@ -30,7 +30,9 @@ else
 fi
 trap 'rm -rf "${tmp_dir}"' EXIT
 
-python -m pip install --no-build-isolation \
+command -v uv >/dev/null 2>&1 && py_pip="uv pip" || py_pip="python -m pip"
+
+${py_pip} install --no-build-isolation \
     --index-url "${PYPI_INDEX_URL:-https://pypi.org/simple/}" \
     --upgrade --require-hashes \
     -r "${python_dir}"/make_sdist_requirements.txt

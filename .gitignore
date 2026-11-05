@@ -63,3 +63,7 @@ pixi.lock
 /assets-molmospaces
 /Testing
 /test/*.json
+
+/external_deps
+/mujoco_install
+/python_cmake_deps

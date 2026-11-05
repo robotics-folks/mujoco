@@ -13,6 +13,7 @@ fi
 set -e
 
 build_type="Release"
+build_version="4.0.0"
 
 cd ${ROOT_DIR}
 
@@ -94,10 +95,15 @@ if [[ "${build_filament}" == "ON" ]]; then
     build_simulate=OFF
 fi
 
-[[ -n $install_dir ]] && USER_INSTALL_DIR="${install_dir}" || USER_INSTALL_DIR="${ROOT_DIR}/install"
+[[ -n $install_dir ]] && USER_INSTALL_DIR="${install_dir}" || USER_INSTALL_DIR="${ROOT_DIR}/mujoco_install"
 
 if [ ! -d "${USER_INSTALL_DIR}" ]; then
     mkdir -p $USER_INSTALL_DIR
+fi
+
+EXTERNAL_DEPS_DIR=${ROOT_DIR}/external_deps
+if [ ! -d "${EXTERNAL_DEPS_DIR}" ]; then
+    mkdir -p $EXTERNAL_DEPS_DIR
 fi
 
 [ "$fresh" == "true" ] && FRESH_CMD="--fresh" || FRESH_CMD=""
@@ -166,19 +172,134 @@ if [ "$opt_should_install" == "true" ]; then
     fi
 fi
 
+# Helpers -----------------------------------------------------------------------------------------
+
+# Populate ext_deps_args with -DFETCHCONTENT_SOURCE_DIR_<DEP>=<path> for each
+# cached dependency in $2 (defaults to EXTERNAL_DEPS_DIR). When a target build
+# directory ($1) is given, stage each cached dependency into $1/_deps/<dep>-src
+# so targets and helper scripts that reference ${CMAKE_BINARY_DIR}/_deps/<dep>-src
+# directly (e.g. Studio fonts, Filament WASM host imports,
+# install_studio_platform) find the sources at their standard _deps/<dep>-src
+# paths.
+_setup_ext_deps_args() {
+    local build_dir="${1:-}"
+    local ext_deps_dir="${2:-${EXTERNAL_DEPS_DIR:-${ROOT_DIR:-/tmp}/external_deps}}"
+    ext_deps_args=()
+    if [[ ! -d "${ext_deps_dir}" ]]; then
+        return 0
+    fi
+    ext_deps_dir="$(cd "${ext_deps_dir}" && pwd)"
+    local target_deps_dir=""
+    if [[ -n "${build_dir}" ]]; then
+        mkdir -p "${build_dir}/_deps"
+        target_deps_dir="$(cd "${build_dir}/_deps" && pwd)"
+    fi
+    for dep_path in "${ext_deps_dir}"/*; do
+        if [[ -d "${dep_path}" ]]; then
+            local dep_name
+            dep_name="$(basename "${dep_path}")"
+            if [[ "${dep_name}" == *-build || "${dep_name}" == *-subbuild ]]; then
+                continue
+            fi
+            dep_name="${dep_name%-src}"
+            if [[ "${dep_name}" == "mujoco" ]]; then
+                continue
+            fi
+            local dep_upper
+            dep_upper="$(echo "${dep_name}" | tr '[:lower:]' '[:upper:]')"
+            local use_path="${dep_path}"
+            if [[ -n "${target_deps_dir}" ]]; then
+                local staged_dir="${target_deps_dir}/${dep_name}-src"
+                if [[ ! -d "${staged_dir}" ]]; then
+                    cp -al "${dep_path}" "${staged_dir}" 2>/dev/null || \
+                        cp -RLp "${dep_path}" "${staged_dir}" || \
+                        cp -rp "${dep_path}" "${staged_dir}"
+                fi
+                use_path="${staged_dir}"
+            fi
+            if command -v cygpath >/dev/null 2>&1; then
+                use_path="$(cygpath -m "${use_path}")"
+            fi
+            echo "Using cached ${dep_name} from ${use_path}"
+            ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_${dep_upper}=${use_path}")
+            # python/mujoco/CMakeLists.txt declares "eigen" instead of "Eigen3".
+            if [[ "${dep_upper}" == "EIGEN3" ]]; then
+                ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_EIGEN=${use_path}")
+            elif [[ "${dep_upper}" == "EIGEN" ]]; then
+                ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_EIGEN3=${use_path}")
+            fi
+        fi
+    done
+}
+
+# Copy any newly fetched dependencies from $1/_deps/<dep>-src into
+# EXTERNAL_DEPS_DIR so actions/cache can persist them across runs.
+_populate_ext_deps_cache() {
+    local build_dir="${1:-.}"
+    local ext_deps_dir="${EXTERNAL_DEPS_DIR:-${ROOT_DIR:-/tmp}/external_deps}"
+    for src in "${build_dir}/_deps"/*-src; do
+        if [[ ! -d "${src}" ]]; then
+            continue
+        fi
+        local dep_dir="${src##*/}"
+        local dst_name="${dep_dir%-src}"
+        if [[ "${dst_name}" == "mujoco" ]]; then
+            continue
+        fi
+        if [[ "${dst_name}" == "eigen" ]]; then
+            dst_name="eigen3"
+        fi
+        local dst="${ext_deps_dir}/${dst_name}"
+        if [[ ! -d "${dst}" ]]; then
+            echo "Populating external dependencies cache for ${dst_name}..."
+            mkdir -p "${ext_deps_dir}"
+            rm -rf "${src}/.git"
+            cp -RLp "${src}" "${dst}" || cp -rp "${src}" "${dst}"
+        fi
+    done
+}
+
+# -------------------------------------------------------------------------------------------------
 
 if [[ "${build_python}" == "ON" ]]; then
-    echo "Make source distribution"
+    echo "Make Python sdist ..."
 
     bash ${ROOT_DIR}/python/make_sdist.sh
+    bash ${ROOT_DIR}/python/studio/make_sdist.sh
+    bash ${ROOT_DIR}/python/mujoco_full/make_sdist.sh
+
+    mv ${ROOT_DIR}/python/studio/dist/mujoco_studio-*.tar.gz ${ROOT_DIR}/python/dist/
+    mv ${ROOT_DIR}/python/mujoco_full/dist/mujoco-*.tar.gz ${ROOT_DIR}/python/dist/
 
     echo "Build python wheel"
 
-    export CCACHE_BASEDIR="${ROOT_DIR}/build"
+    if command -v cygpath >/dev/null 2>&1; then
+        export CCACHE_BASEDIR="$(cygpath -m "${ROOT_DIR}")"
+    else
+        export CCACHE_BASEDIR="$(cd "${ROOT_DIR}" && pwd -P)"
+    fi
+
+    export CCACHE_NOHASHDIR=1
     export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
+
+    py_deps_dir="${CCACHE_BASEDIR}/python_cmake_deps"
+    rm -rf "${py_deps_dir}"
+    mkdir -p "${py_deps_dir}/_deps"
+    sdists=(mujoco_core-${build_version}.tar.gz mujoco-${build_version}.tar.gz)
+    if [[ -f "${USER_INSTALL_DIR}/lib/libmujoco_studio_platform.a" || \
+          -f "${USER_INSTALL_DIR}/lib/mujoco_studio_platform.lib" || \
+          -f "${USER_INSTALL_DIR}/bin/Release/mujoco_studio_platform.lib" ]]; then
+        sdists+=(mujoco_studio-${build_version}.tar.gz)
+    fi
+
     export MUJOCO_PATH="${USER_INSTALL_DIR}"
     export MUJOCO_PLUGIN_PATH="${USER_INSTALL_DIR}/mujoco_plugin"
-    export MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS}"
+    export MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF -DFETCHCONTENT_BASE_DIR=${py_deps_dir}/_deps ${CCACHE_ARGS} ${CMAKE_ARGS} ${ext_deps_args[*]}"
 
-    uv build -v --wheel --force-pep517 ${ROOT_DIR}/python/dist/mujoco-*.tar.gz --out-dir ${ROOT_DIR}/python/dist
+    (cd ${ROOT_DIR}/python/dist && echo "Changed to $(pwd)" && echo "Using dists: ${sdists[@]}" && python -m pip wheel -v --no-deps --no-build-isolation "${sdists[@]}")
+
+    _populate_ext_deps_cache "${py_deps_dir}"
+    rm -rf "${py_deps_dir}"
+
+    echo "DONE building Python wheels :D"
 fi
